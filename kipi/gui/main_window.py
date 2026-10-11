@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
 
 from kipi import __version__
 from kipi.gui.viewer3d import Viewer3D
-from kipi.gui.solve_panel import SolvePanel
+from kipi.gui.pi_panel import PIPanel
 from kipi.gui.worker import QtProgress, Task
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import classify_nets, sorted_nets
@@ -187,15 +187,20 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
     def _build_solve_dock(self):
-        self.solve_panel = SolvePanel(self)
+        self.solve_panel = PIPanel(self)
         self.solve_panel.solve_requested.connect(self.run_solve)
         self.solve_panel.field_changed.connect(self.viewer.set_result_field)
+        self.solve_panel.group_changed.connect(self._show_group)
         self.solve_panel.show_geometry.connect(self._show_geometry)
-        dock = QDockWidget("DC solve", self)
+        self.solve_panel.save_requested.connect(self._save_setup)
+        self._tree = None
+        self._scenes = {}
+        self._setup_path = None
+        dock = QDockWidget("PI setup", self)
         dock.setObjectName("solve_dock")
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         dock.setWidget(self.solve_panel)
-        dock.setMinimumWidth(360)
+        dock.setMinimumWidth(420)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self._result = None
 
@@ -376,7 +381,9 @@ class MainWindow(QMainWindow):
         self._populate_nets()
         self._show_board_summary()
         self._result = None
-        self.solve_panel.set_snapshot(snap)
+        self._tree = None
+        self._scenes = {}
+        self._load_setup(snap)
         from kipi.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
         self.sync_nets()
@@ -534,47 +541,90 @@ class MainWindow(QMainWindow):
                 lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
 
     # ============================================================ solve
-    def run_solve(self, problem):
+    # ------------------------------------------------------------ setup file
+    def _load_setup(self, snap):
+        from kipi.pi.model import PISetup, setup_path
+        project_dir = snap.project_dir
+        if not project_dir and snap.source and snap.source != "kicad":
+            project_dir = str(Path(snap.source).parent)
+        path = setup_path(snap.board_name, project_dir)
+        setup = PISetup()
+        label = f"New setup (will be saved as {path.name})"
+        if path.exists():
+            try:
+                setup = PISetup.load(path)
+                label = f"Setup: {path}"
+                self.log(f"Loaded PI setup {path}")
+            except Exception as e:  # noqa: BLE001 - a bad file must not block the board
+                self.log(f"Could not read {path}: {e}", logging.WARNING)
+                label = f"Could not read {path.name}; starting empty"
+        self._setup_path = path
+        self.solve_panel.set_board(snap, setup, label)
+
+    def _save_setup(self):
+        if self._setup_path is None:
+            return
+        try:
+            self.solve_panel.setup.save(self._setup_path)
+            self.solve_panel.lbl_file.setText(f"Setup: {self._setup_path}")
+            self.log(f"Saved PI setup to {self._setup_path}")
+        except OSError as e:
+            self.log(f"Could not save the setup: {e}", logging.WARNING)
+
+    # ------------------------------------------------------------ solve
+    def run_solve(self, setup):
         snap = self.snapshot
         if snap is None:
             return
         if self._busy():
             # A view update (e.g. after ticking nets) is still running: queue the solve
             # instead of refusing it; it starts as soon as the current task finishes.
-            self._pending_solve = problem
+            self._pending_solve = setup
             self.solve_panel.set_busy(True, queued=True)
             self.log("Solve queued until the current task finishes")
             return
+        self._save_setup()
+        import copy
+        frozen = copy.deepcopy(setup)     # edits during the solve don't affect it
 
         def work(progress):
             from kipi.mesh.mesher import MeshError
-            from kipi.solver import SolveError, run
+            from kipi.pi.tree import solve_tree
+            from kipi.solver import SolveError
             from kipi.viz.results import build_result_scene
             try:
-                result = run(snap, problem, progress)
+                tree = solve_tree(snap, frozen, progress)
             except (SolveError, MeshError) as e:
                 progress.warn(str(e))
                 return None, str(e)       # a setup problem, reported in the panel
-            with progress.timed("Building result view"):
-                scene = build_result_scene(snap, result)
-            return result, scene
+            scenes = {}
+            with progress.timed("Building result views"):
+                for name, g in tree.groups.items():
+                    scenes[name] = build_result_scene(snap, g.result)
+            return tree, scenes
 
         def done(out):
-            result, scene = out
-            if result is None:
-                self.solve_panel.show_error(scene)
+            tree, scenes = out
+            if tree is None:
+                self.solve_panel.show_error(scenes)
                 return
-            self._result = result
-            self.viewer.show_result(scene, self.solve_panel.current_field())
-            self.solve_panel.show_results(result)
-            f = result.fields
-            for t in f.terminals:
-                if t.kind == "load":
-                    self.log(f"  {t.name}: {(f.v_ref - t.v_mean) * 1e3:.3f} mV drop "
-                             f"at {t.current * 1e3:.1f} mA")
+            self._tree, self._scenes = tree, scenes
+            first = tree.loads[0].group if tree.loads else next(iter(tree.groups))
+            self.solve_panel.show_results(tree, first)
+            self._show_group(first)
+            for l in tree.loads:
+                verdict = "" if l.passed is None else (" PASS" if l.passed else " FAIL")
+                self.log(f"  {l.name}: {l.drop * 1e3:.3f} mV drop ({l.drop_pct:.3f} %) "
+                         f"at {l.current:g} A{verdict}")
 
-        if self._run(work, done, f"Solving {problem.net}") is not None:
+        if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
+
+    def _show_group(self, name: str):
+        if not self._tree or name not in self._scenes:
+            return
+        self._result = self._tree.groups[name].result
+        self.viewer.show_result(self._scenes[name], self.solve_panel.current_field())
 
     def _show_geometry(self):
         self.viewer.clear_result()

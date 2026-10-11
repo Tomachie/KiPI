@@ -24,7 +24,7 @@ import numpy as np
 
 from kipi.mesh.mesher import mesh_nets
 from kipi.model.board import BoardSnapshot
-from kipi.pi.model import PISetup, PinRef, Vrm, group_name, net_groups, validate
+from kipi.pi.model import PISetup, PinRef, Vrm, net_groups, validate
 from kipi.progress import NULL, ProgressReporter
 from kipi.solver import NetResult, pads_for
 from kipi.solver.fem import LinearSystem, SolveError
@@ -132,6 +132,14 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
     out = TreeResult()
 
     driver = {groups[v.output.net]: v for v in setup.vrms}
+    pad_count: Dict[str, int] = {}
+    for p in snap.pads:
+        pad_count[p.net] = pad_count.get(p.net, 0) + 1
+
+    def label_of(g) -> str:
+        """Short display name: the group's busiest net, plus how many nets it joins."""
+        main = max(sorted(g), key=lambda n: pad_count.get(n, 0))
+        return main if len(g) == 1 else f"{main} (+{len(g) - 1} net{'s' if len(g) > 2 else ''})"
     fed_by: Dict[frozenset, List[Vrm]] = {}      # rail group -> VRMs whose input is in it
     for v in setup.vrms:
         if v.input:
@@ -176,7 +184,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
     for gi, g in enumerate(order):
         progress.check_cancel()
         vrm = driver[g]
-        label = group_name(g)
+        label = label_of(g)
         progress.stage(f"Rail {gi + 1}/{len(order)}: {label} (from {vrm.name})")
         loads = [CurrentLoad(l.name, pads(l.supply), l.current)
                  for l in setup.loads if l.supply.net in g]
@@ -242,7 +250,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
     ground_solutions = {}
     for g in ground_groups:
         progress.check_cancel()
-        label = group_name(g)
+        label = label_of(g)
         progress.stage(f"Ground: {label}")
         refs = [v for v in setup.vrms if v.kind == "source" and v.ground and v.ground.net in g]
         sources = [VoltageSource(f"{v.name} (gnd)", pads(v.ground), 0.0) for v in refs]
@@ -274,12 +282,12 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         passed = None
         if l.tolerance_pct is not None and nominal:
             passed = 100.0 * drop / nominal <= l.tolerance_pct
-        out.loads.append(LoadReport(l.name, group_name(g), l.current, nominal, vs, vmin, vg,
+        out.loads.append(LoadReport(l.name, label_of(g), l.current, nominal, vs, vmin, vg,
                                     eff, drop, l.tolerance_pct, passed))
     for v in setup.vrms:
         p_out = v_out[v.name] * i_out[v.name]
         vi, ii = v_in.get(v.name), i_in.get(v.name)
-        out.vrms.append(VrmReport(v.name, v.kind, group_name(groups[v.output.net]), v.voltage,
+        out.vrms.append(VrmReport(v.name, v.kind, label_of(groups[v.output.net]), v.voltage,
                                   v_out[v.name], v_sense.get(v.name), i_out[v.name], vi, ii,
                                   p_out, None if vi is None else vi * ii))
     out.solve_s = time.perf_counter() - t0
