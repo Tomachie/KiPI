@@ -20,7 +20,7 @@ log = logging.getLogger("kipi")
 _crash_file = None   # kept open for faulthandler for the life of the process
 
 
-def setup_logging(level=logging.INFO) -> Path:
+def setup_logging(level=logging.INFO, console: bool = None) -> Path:
     """Write this session's log to %TEMP%/kipi/kipi-<time>-<pid>.log.
 
     Inside KiCad the plugin has no console, so these files are the only record of
@@ -35,7 +35,12 @@ def setup_logging(level=logging.INFO) -> Path:
     crash_path = LOG_PATH.with_suffix(".crash.log")
     _prune_old_logs()
     handlers = [logging.FileHandler(LOG_PATH, mode="w", encoding="utf-8")]
-    if sys.stderr:
+    # Only echo to an interactive terminal. When KiCad launches the plugin, stderr is a
+    # pipe KiCad does not always drain; once its few-KB buffer fills, a write blocks
+    # forever and freezes whichever thread was logging (a solve, or the UI).
+    if console is None:
+        console = bool(sys.stderr) and _isatty(sys.stderr)
+    if console:
         handlers.append(logging.StreamHandler(sys.stderr))
     logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(threadName)s: "
                         "%(message)s", handlers=handlers, force=True)
@@ -53,13 +58,38 @@ def setup_logging(level=logging.INFO) -> Path:
     return LOG_PATH
 
 
+def _isatty(stream) -> bool:
+    try:
+        return stream.isatty()
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
+def detach_std_streams() -> Path:
+    """Point stdout/stderr, including the OS-level file descriptors that native code
+    (VTK, Qt) writes to, at this session's ``.console.log`` instead of whatever pipe the
+    parent process gave us. Call after :func:`setup_logging` when running as a KiCad
+    plugin, so nothing can ever block writing to KiCad's pipe."""
+    console_path = LOG_PATH.with_suffix(".console.log")
+    f = open(console_path, "a", buffering=1, encoding="utf-8", errors="replace")
+    for fd in (1, 2):
+        try:
+            os.dup2(f.fileno(), fd)
+        except OSError:
+            pass
+    sys.stdout = sys.stderr = f
+    return console_path
+
+
 def _prune_old_logs():
     try:
         logs = sorted(LOG_DIR.glob("kipi-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
-        sessions = [p for p in logs if not p.name.endswith(".crash.log")]
+        sessions = [p for p in logs
+                    if not p.name.endswith((".crash.log", ".console.log"))]
         for old in sessions[KEEP_SESSIONS:]:
             old.unlink(missing_ok=True)
             old.with_suffix(".crash.log").unlink(missing_ok=True)
+            old.with_suffix(".console.log").unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -110,5 +140,12 @@ def run(kicad=None, board=None, snapshot=None) -> int:
     win = MainWindow(kicad=kicad, board=board, snapshot=snapshot)
     win.show()
     code = app.exec()
+    task = getattr(win, "_task", None)
+    if task is not None and task.isRunning():
+        # A worker stuck in native code (e.g. a long direct solve) cannot be interrupted;
+        # don't leave a zombie process behind KiCad.
+        log.warning("Closing with a background task still running; forcing exit")
+        logging.shutdown()
+        os._exit(code)
     log.info("KiPI closed normally")
     return code

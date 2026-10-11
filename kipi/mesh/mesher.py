@@ -71,9 +71,21 @@ class NetMesh:
 # One polygon
 # ---------------------------------------------------------------------------
 
+# KiCad works in integer nanometres, so noding on a 1 nm grid loses nothing.
+NODING_GRID_MM = 1e-6
+
+
 def _linework(lines: Sequence[BaseGeometry]) -> Tuple[np.ndarray, np.ndarray]:
-    """Node the lines against each other and return (vertices, segments)."""
-    noded = shapely.union_all([l for l in lines if l is not None and not l.is_empty])
+    """Node the lines against each other and return (vertices, segments).
+
+    Noding uses GEOS snap-rounding on a fixed grid, so every intersection becomes a
+    shared vertex exactly. (Noding in floating point and rounding afterwards could
+    nudge a vertex just off the segment it splits; Triangle then crashes.)
+    """
+    parts_in = [l for l in lines if l is not None and not l.is_empty]
+    if not parts_in:
+        return np.zeros((0, 2)), np.zeros((0, 2), dtype=np.int64)
+    noded = shapely.union_all(parts_in, grid_size=NODING_GRID_MM)
     parts = [g for g in shapely.get_parts(noded) if g.geom_type in ("LineString", "LinearRing")]
     seg_list = []
     for g in parts:
@@ -83,33 +95,140 @@ def _linework(lines: Sequence[BaseGeometry]) -> Tuple[np.ndarray, np.ndarray]:
     if not seg_list:
         return np.zeros((0, 2)), np.zeros((0, 2), dtype=np.int64)
     segs = np.concatenate(seg_list)                         # (S, 2, 2)
-    verts, inv = np.unique(np.round(segs.reshape(-1, 2), 7), axis=0, return_inverse=True)
+    # Coordinates are already on the grid; rounding only removes float noise.
+    verts, inv = np.unique(np.round(segs.reshape(-1, 2) / NODING_GRID_MM) * NODING_GRID_MM,
+                           axis=0, return_inverse=True)
     idx = inv.reshape(-1, 2)
     idx = idx[idx[:, 0] != idx[:, 1]]
     idx = np.unique(np.sort(idx, axis=1), axis=0)
     return verts, idx
 
 
+def pslg_problems(verts: np.ndarray, segs: np.ndarray, tol: float = NODING_GRID_MM / 10) -> int:
+    """Count defects that can crash Triangle (a segfault takes the whole app down):
+    segments that touch or cross without sharing a vertex, and vertices practically on
+    a segment they do not belong to. Snap-rounding may leave a vertex a fraction of a
+    grid step from a segment; Triangle's exact arithmetic handles that, so only
+    distances well below the grid count."""
+    from shapely.geometry import LineString as _LS, Point as _P
+    from shapely.strtree import STRtree
+
+    lines = [_LS(verts[a]) for a in segs]
+    tree = STRtree(lines)
+    bad = 0
+    pairs = tree.query(lines, predicate="intersects")
+    for i, j in zip(*pairs):
+        if i < j and not (set(segs[i]) & set(segs[j])):
+            bad += 1
+    pts = [_P(v) for v in verts]
+    near = tree.query(pts, predicate="dwithin", distance=tol)
+    for k, j in zip(*near):
+        if k not in segs[j]:
+            bad += 1
+    return bad
+
+
+# Constraint lines (pad outlines) closer than this to the copper edge are dropped: the
+# copper edge already bounds the pad there, and two nearly coincident lines leave hair-
+# thin slivers that Triangle's quality refinement can split essentially forever.
+CONSTRAINT_CLEARANCE_MM = 0.01
+
+
+def _clip_constraint(line: BaseGeometry, poly: Polygon) -> Optional[BaseGeometry]:
+    """The part of ``line`` inside ``poly``, kept clear of the polygon's edges.
+
+    Pieces within CONSTRAINT_CLEARANCE_MM of an edge are removed (they would run almost
+    on top of it), and each remaining end that stops near an edge is extended straight
+    to that edge, so a pad outline still meets the copper boundary exactly but always
+    crosses it rather than running alongside it.
+    """
+    from shapely.geometry import LineString as _LS
+    from shapely.ops import nearest_points
+
+    tol = CONSTRAINT_CLEARANCE_MM
+    edge = poly.boundary
+    inner = shapely.intersection(line, poly)
+    inner = shapely.difference(inner, edge.buffer(tol, quad_segs=2))
+    parts = []
+    for part in shapely.get_parts(inner):
+        if part.geom_type not in ("LineString", "LinearRing") or part.length < tol:
+            continue
+        coords = list(part.coords)
+        for end in (0, -1):
+            pt = shapely.Point(coords[end])
+            if edge.distance(pt) < 2.5 * tol:
+                on_edge = nearest_points(edge, pt)[0]
+                if end == 0:
+                    coords.insert(0, (on_edge.x, on_edge.y))
+                else:
+                    coords.append((on_edge.x, on_edge.y))
+        parts.append(_LS(coords))
+    return shapely.union_all(parts) if parts else None
+
+
+class MeshCapHit(RuntimeError):
+    """Triangle hit its Steiner-point cap: the input geometry is pathological."""
+
+
+def _steiner_cap(area_sum: float, n_input: int) -> int:
+    """A generous bound on the points Triangle may add, so it always terminates.
+
+    A healthy mesh needs about 2 points per unit of (area / max triangle area); allow
+    far more than that plus slack for boundary refinement.
+    """
+    return int(8 * area_sum + 50 * n_input + 20_000)
+
+
+def _triangulate(data: dict, switches: str, cap: int) -> dict:
+    n_in = len(data["vertices"])
+    out = triangle.triangulate(data, f"{switches}S{cap}")
+    if len(out.get("vertices", ())) - n_in >= cap:
+        raise MeshCapHit()
+    return out
+
+
 def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: float,
-                 min_angle: float, size_fn=None) -> Tuple[np.ndarray, np.ndarray]:
+                 min_angle: float, size_fn=None, warn=None) -> Tuple[np.ndarray, np.ndarray]:
     """Quality-mesh a polygon (with holes) honouring extra constraint lines inside it.
 
     ``size_fn(xy) -> h`` optionally gives the desired edge length at triangle centroids;
-    the mesh is then refined once more with per-triangle area limits.
+    the mesh is then refined once more with per-triangle area limits. ``warn(text)``
+    receives notes when the mesher has to fall back.
     """
-    lines: List[BaseGeometry] = [poly.exterior, *poly.interiors]
-    for c in constraints:
-        clipped = shapely.intersection(c, poly)
-        if not clipped.is_empty:
-            lines.append(clipped)
-    verts, segs = _linework(lines)
-    if len(segs) < 3:
-        return np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64)
-    data = {"vertices": verts, "segments": segs}
+    warn = warn or (lambda _t: None)
+    clipped_constraints = [g for g in (_clip_constraint(c, poly) for c in constraints)
+                           if g is not None]
     holes = [Polygon(r).representative_point() for r in poly.interiors if len(r.coords) >= 4]
-    if holes:
-        data["holes"] = np.array([[h.x, h.y] for h in holes])
-    out = triangle.triangulate(data, f"pq{min_angle:g}a{max_area:.6g}Q")
+
+    def first_pass(with_constraints: bool):
+        lines: List[BaseGeometry] = [poly.exterior, *poly.interiors]
+        if with_constraints:
+            lines += clipped_constraints
+        verts, segs = _linework(lines)
+        if len(segs) < 3:
+            return None
+        if pslg_problems(verts, segs):
+            raise MeshCapHit()      # treat malformed input like a non-converging mesh
+        data = {"vertices": verts, "segments": segs}
+        if holes:
+            data["holes"] = np.array([[h.x, h.y] for h in holes])
+        cap = _steiner_cap(poly.area / max_area, len(verts))
+        return _triangulate(data, f"pq{min_angle:g}a{max_area:.6g}Q", cap)
+
+    where = f"near ({poly.centroid.x:.2f}, {poly.centroid.y:.2f}) mm"
+    try:
+        out = first_pass(True)
+    except MeshCapHit:
+        if not clipped_constraints:
+            raise MeshError(f"Mesher could not converge on the copper {where}")
+        warn(f"Mesher struggled with pad outlines {where}; meshing without them "
+             "(pads are still found by position)")
+        try:
+            out = first_pass(False)
+        except MeshCapHit:
+            raise MeshError(f"Mesher could not converge on the copper {where}") from None
+    if out is None:
+        return np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64)
     tris = out.get("triangles")
     if tris is None or len(tris) == 0:
         return np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64)
@@ -119,12 +238,18 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
         h = size_fn(pts[tris].mean(axis=1))
         limit = np.minimum(math.sqrt(3) / 4 * h * h, max_area)
         if np.any(limit < max_area):
-            out = triangle.triangulate({"vertices": pts, "triangles": tris,
-                                        "segments": out["segments"],
-                                        "triangle_max_area": limit},
-                                       f"rpq{min_angle:g}aQ")
-            pts = np.asarray(out["vertices"], dtype=float)
-            tris = np.asarray(out["triangles"], dtype=np.int64)
+            x, y = pts[tris, 0], pts[tris, 1]
+            area = 0.5 * np.abs((x[:, 1] - x[:, 0]) * (y[:, 2] - y[:, 0])
+                                - (x[:, 2] - x[:, 0]) * (y[:, 1] - y[:, 0]))
+            cap = _steiner_cap(float((area / limit).sum()), len(pts))
+            try:
+                ref = _triangulate({"vertices": pts, "triangles": tris,
+                                    "segments": out["segments"], "triangle_max_area": limit},
+                                   f"rpq{min_angle:g}aQ", cap)
+                pts = np.asarray(ref["vertices"], dtype=float)
+                tris = np.asarray(ref["triangles"], dtype=np.int64)
+            except MeshCapHit:
+                warn(f"Via refinement {where} did not converge; using the unrefined mesh there")
     return pts, tris
 
 
@@ -239,7 +364,8 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
             if _is_dead_via_ring(poly, ring_centers, terminal_geoms):
                 skipped_rings += 1
                 continue
-            pts, tris = mesh_polygon(poly, constraints, max_area, min_angle_deg, size_fn)
+            pts, tris = mesh_polygon(poly, constraints, max_area, min_angle_deg, size_fn,
+                                     warn=progress.warn)
             if len(tris) == 0:
                 continue
             all_pts.append(pts)

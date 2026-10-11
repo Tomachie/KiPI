@@ -16,7 +16,10 @@ def main() -> int:
     from kipi.kicad_io.extract import ExtractionError, connect
     from kipi.progress import ProgressReporter
 
-    setup_logging()
+    setup_logging(console=False)
+    # KiCad captures plugin stdout/stderr through a pipe it does not always drain; a full
+    # pipe blocks the writer forever. Send everything to this session's log folder.
+    kipi_app.detach_std_streams()
     try:
         kicad, board = connect(progress=ProgressReporter())
     except ExtractionError as e:

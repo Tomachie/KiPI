@@ -95,3 +95,24 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
   the DSP board, skipping them removes 29% of the nodes with an identical answer.
 * **Performance.** On the DSP board, +3.3V meshes to 174k nodes on 3 layers. Smoothed-
   aggregation AMG-CG then converges in about 60 iterations, and the whole run takes 2–3 s.
+
+## Robustness findings (hangs and crashes seen in KiCad)
+
+* **KiCad's stdout/stderr pipe can block the plugin forever.** KiCad captures a plugin's
+  output through a pipe and doesn't always drain it. Once the few-KB buffer fills, the next
+  write blocks, freezing whichever thread was logging. A long solve logs CG progress, so the
+  first solve worked and a later one hung at "Solving…". Now logging echoes only to an
+  interactive terminal, and the plugin entry redirects fds 1 and 2 to a per-session
+  `.console.log`. `tests/test_app.py` reproduces the problem with an unread pipe.
+* **Triangle and nearly coincident constraints.** If a pad outline runs within a few µm of the
+  (simplified) copper edge, it creates hair-thin slivers, and quality refinement then splits
+  them essentially forever (+12Vin, J201). Pad outlines are now clipped 10 µm clear of copper
+  edges and extended straight to the edge. A Steiner-point cap (`S`) guarantees termination.
+* **Triangle segfaults on unnoded input.** Noding in floating point and rounding afterwards
+  can leave segments crossing without a shared vertex, and Triangle crashes the whole process
+  on that (+3.3VA_DSP). Noding now uses GEOS snap-rounding on the 1 nm KiCad grid, and every
+  input is checked (`pslg_problems`) before it reaches Triangle; a bad input falls back or
+  raises `MeshError`, never a segfault. Meshing all 237 nets of the DSP board, with every pad
+  as a terminal, now runs clean in 20 s.
+* **Stale task signals.** A task's `finished` can arrive after its `done()` has started the
+  next task. Handlers now ignore finishes from tasks that are no longer current.
