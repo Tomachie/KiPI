@@ -1,8 +1,10 @@
-"""What to solve: sources, loads and numerical settings for one net.
+"""What to solve: sources, loads, series parts and numerical settings.
 
-Terminals refer to pads by id. A terminal with several pads ties them to one
-condition: a source holds all of its pads at its voltage; a load draws its current
-split equally across its pads.
+A problem covers one *extended net*: one or more nets joined by series parts (sense
+resistors, ferrites, fuses). Terminals refer to pads by id. A terminal with several
+pads ties them to one condition: a source holds all of its pads at its voltage; a load
+draws its current split equally across its pads; each side of a series part is one
+node (its pads tied together).
 """
 
 from __future__ import annotations
@@ -29,6 +31,17 @@ class CurrentLoad:
 
 
 @dataclass
+class SeriesLink:
+    name: str
+    pads_a: List[str]
+    pads_b: List[str]
+    resistance: float       # ohms; at or below SHORT_OHMS the two sides are merged
+
+
+SHORT_OHMS = 1e-9
+
+
+@dataclass
 class SolveSettings:
     max_edge_mm: float = 0.5        # largest triangle edge; planes mesh at roughly this size
     min_angle_deg: float = 28.0     # triangle quality bound (Shewchuk's 'q' switch)
@@ -44,13 +57,22 @@ class SolveSettings:
 
 @dataclass
 class NetProblem:
-    net: str
+    net: str                                  # display name (the nets joined with " + ")
     sources: List[VoltageSource] = field(default_factory=list)
     loads: List[CurrentLoad] = field(default_factory=list)
     settings: SolveSettings = field(default_factory=SolveSettings)
+    series: List[SeriesLink] = field(default_factory=list)
+    nets: List[str] = field(default_factory=list)   # copper nets meshed; default [net]
+
+    def __post_init__(self):
+        if not self.nets:
+            self.nets = [self.net]
 
     def terminal_pad_ids(self) -> List[str]:
         ids: List[str] = []
         for t in [*self.sources, *self.loads]:
             ids.extend(t.pad_ids)
-        return ids
+        for s in self.series:
+            ids.extend(s.pads_a)
+            ids.extend(s.pads_b)
+        return list(dict.fromkeys(ids))
