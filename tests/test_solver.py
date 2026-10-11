@@ -1,0 +1,145 @@
+"""Solver validation against closed-form results."""
+
+import math
+
+import pytest
+from shapely.geometry import Point, box
+
+from kipi.model.board import (
+    BoardSnapshot, CopperLayer, DielectricLayer, Net, Pad, Poly, Stackup, Via, Zone,
+)
+from kipi.solver import CurrentLoad, NetProblem, SolveError, SolveSettings, VoltageSource, run
+from kipi.solver.setup import RHO_CU_OHM_MM as RHO
+
+F, B = 3, 34
+T_CU = 0.035
+DIEL = 1.5
+
+
+def poly(g):
+    return Poly(list(g.exterior.coords)[:-1], [list(r.coords)[:-1] for r in g.interiors])
+
+
+def two_layer(zones, pads, vias=()):
+    copper = [CopperLayer(F, "F.Cu", 0, T_CU, DIEL + T_CU),
+              CopperLayer(B, "B.Cu", 1, T_CU, 0.0)]
+    st = Stackup(copper, [DielectricLayer(DIEL, "FR4", 4.5, F, B)], DIEL + 2 * T_CU)
+    return BoardSnapshot("analytic", "", st, [Net(1, "N")], [], list(vias), pads, [],
+                         [Zone(f"z{i}", "N", "", 0, {l: [poly(g)]}) for i, (l, g) in
+                          enumerate(zones)], [])
+
+
+def pad(pid, ref, layer, g):
+    return Pad(pid, "N", ref, "1", (g.centroid.x, g.centroid.y), "smd", shapes={layer: [poly(g)]})
+
+
+def test_straight_strip_matches_rho_l_over_wt():
+    L, W = 20.0, 1.0
+    snap = two_layer([(F, box(0, -W / 2, L, W / 2))],
+                     [pad("src", "U1", F, box(0, -W / 2, 1, W / 2)),
+                      pad("ld", "U2", F, box(L - 1, -W / 2, L, W / 2))])
+    prob = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                      [CurrentLoad("LOAD", ["ld"], 2.0)], SolveSettings(max_edge_mm=0.3))
+    res = run(snap, prob)
+    expected = RHO * (L - 2) / (W * T_CU) * 2.0          # pads are equipotential
+    (src, load) = res.fields.terminals
+    assert 1.0 - load.v_mean == pytest.approx(expected, rel=1e-9)
+    assert src.current == pytest.approx(2.0, rel=1e-9)
+    assert res.fields.summary["energy_balance_error"] < 1e-7
+    # Uniform current density away from the pads: I / (W t)
+    assert res.fields.summary["j_max"] == pytest.approx(2.0 / (W * T_CU), rel=1e-6)
+
+
+def test_radial_disc_through_via_matches_log_and_barrel_formulas():
+    R_OUT, R_PAD, DRILL, TP = 10.0, 9.0, 0.3, 0.025
+    disc = Point(0, 0).buffer(R_OUT, quad_segs=64)
+    ring = disc.difference(Point(0, 0).buffer(R_PAD, quad_segs=64))
+    via = Via("v", "N", (0.0, 0.0), DRILL, 0.6, [F, B])
+    snap = two_layer([(F, disc), (B, disc)],
+                     [pad("src", "J1", F, ring), pad("ld", "J2", B, ring)], [via])
+    settings = SolveSettings(max_edge_mm=0.4, circle_quad_segs=16, plating_mm=TP)
+    prob = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                      [CurrentLoad("LOAD", ["ld"], 1.0)], settings)
+    res = run(snap, prob)
+
+    r_spread = RHO / (2 * math.pi * T_CU) * math.log(R_PAD / (DRILL / 2))
+    dz = DIEL + T_CU
+    r_barrel = RHO * dz / (math.pi * (DRILL * TP - TP * TP))
+    v_load = res.fields.terminals[1].v_mean
+    assert 1.0 - v_load == pytest.approx(2 * r_spread + r_barrel, rel=2e-3)
+
+    (el,) = res.solution.barrel_elements
+    v_top = res.solution.v_merged[el.node_a]
+    v_bot = res.solution.v_merged[el.node_b]
+    assert v_top - v_bot == pytest.approx(r_barrel, rel=1e-7)         # exact resistor
+    assert 1.0 - v_top == pytest.approx(r_spread, rel=2e-3)            # FEM spreading
+    assert res.fields.vias[0].current == pytest.approx(1.0, rel=1e-7)
+    assert res.fields.summary["energy_balance_error"] < 1e-7
+
+
+def test_floating_island_is_reported_and_load_on_it_is_an_error():
+    snap = two_layer([(F, box(0, 0, 10, 1)), (F, box(0, 5, 10, 6))],
+                     [pad("src", "U1", F, box(0, 0, 1, 1)),
+                      pad("ld", "U2", F, box(9, 0, 10, 1)),
+                      pad("iso", "U3", F, box(9, 5, 10, 6))])
+    ok = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)], [CurrentLoad("L", ["ld"], 1.0)])
+    res = run(snap, ok)
+    assert any("not connected to a source" in w for w in res.solution.warnings)
+    bad = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)], [CurrentLoad("L", ["iso"], 1.0)])
+    with pytest.raises(SolveError, match="not connected"):
+        run(snap, bad)
+
+
+def test_multi_pad_load_splits_current_and_amg_path_agrees(monkeypatch):
+    snap = two_layer([(F, box(0, 0, 30, 10))],
+                     [pad("src", "U1", F, box(0, 4, 1, 6)),
+                      pad("a", "U2", F, box(29, 0, 30, 1)), pad("b", "U2", F, box(29, 9, 30, 10))])
+    prob = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                      [CurrentLoad("L", ["a", "b"], 3.0)], SolveSettings(max_edge_mm=0.25))
+    direct = run(snap, prob)
+    va, vb = direct.fields.terminals[1].v_pads
+    assert va == pytest.approx(vb, rel=1e-6)            # mirror symmetry (mesh is not exactly)
+    import kipi.solver.fem as fem
+    monkeypatch.setattr(fem, "DIRECT_SOLVE_MAX_UNKNOWNS", 0)
+    amg = run(snap, prob)
+    assert amg.solution.stats["method"] == "amg-cg"
+    assert amg.fields.terminals[1].v_mean == pytest.approx(direct.fields.terminals[1].v_mean,
+                                                           abs=1e-9)
+    assert amg.fields.summary["energy_balance_error"] < 1e-6
+
+
+def test_plated_hole_shorts_its_ring_even_when_other_layers_are_dead_copper():
+    """Current flowing past a PTH hole: the barrel wall ties the hole edge together.
+
+    The pad's B.Cu ring is isolated (dead) copper and gets skipped; the F.Cu ring must
+    still be treated as equipotential, so the result must not depend on whether the
+    dead ring exists. Adding a stub on B.Cu (still a dead end) must not change anything.
+    """
+    from kipi.model.board import Track
+
+    hole = Point(5, 0).buffer(0.8, quad_segs=16)
+    pth = Pad("pth", "N", "J1", "1", (5.0, 0.0), "pth", drill_mm=(1.0, 1.0),
+              shapes={F: [poly(hole)], B: [poly(hole)]})
+
+    def solve(with_stub):
+        snap = two_layer([(F, box(0, -2, 10, 2))],
+                         [pad("src", "U1", F, box(0, -2, 1, 2)),
+                          pad("ld", "U2", F, box(9, -2, 10, 2)), pth])
+        if with_stub:
+            snap.tracks.append(Track("N", B, 0.3, (5.0, 0.0), (7.0, 0.0)))
+            snap.invalidate_index()
+        prob = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                          [CurrentLoad("L", ["ld"], 1.0)], SolveSettings(max_edge_mm=0.2))
+        return run(snap, prob)
+
+    plain, stub = solve(False), solve(True)
+    assert len(plain.mesh.barrels) == 1 and plain.mesh.barrels[0].layers == [F]
+    assert len(stub.mesh.barrels[0].layers) == 2
+    drop = lambda r: 1.0 - r.fields.terminals[1].v_mean
+    assert drop(plain) == pytest.approx(drop(stub), rel=1e-6)
+    # A shorted hole conducts better than an open one of the same size.
+    open_hole = two_layer([(F, box(0, -2, 10, 2).difference(Point(5, 0).buffer(0.5, quad_segs=16)))],
+                          [pad("src", "U1", F, box(0, -2, 1, 2)), pad("ld", "U2", F, box(9, -2, 10, 2))])
+    r_open = run(open_hole, NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                                       [CurrentLoad("L", ["ld"], 1.0)], SolveSettings(max_edge_mm=0.2)))
+    assert drop(plain) < drop(r_open)
