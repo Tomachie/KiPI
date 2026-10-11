@@ -88,17 +88,24 @@ class LayerMesh:
 
 
 @dataclass
-class SceneData:
-    """Everything the viewer needs for one display build."""
+class NetScene:
+    """Meshes for one net, so the viewer can add or remove nets independently."""
+    net: str
     copper: List[LayerMesh] = field(default_factory=list)
     vias: Optional[pv.PolyData] = None
     pads: Dict[int, pv.PolyData] = field(default_factory=dict)   # layer id -> pad tops
+
+
+@dataclass
+class SceneData:
+    """Board body plus any number of nets."""
+    nets: Dict[str, NetScene] = field(default_factory=dict)
     board: Optional[pv.PolyData] = None
     outline_lines: Optional[pv.PolyData] = None
 
 
 def via_tubes(snap: BoardSnapshot, nets: List[str], n_sides: int = 12) -> Optional[pv.PolyData]:
-    """Via barrels as one tube mesh, colour-ready (``net_index`` cell data)."""
+    """Via barrels of the given nets as one mesh."""
     vias = [v for v in snap.vias if v.net in nets]
     if not vias:
         return None
@@ -114,7 +121,6 @@ def via_tubes(snap: BoardSnapshot, nets: List[str], n_sides: int = 12) -> Option
         cyl = pv.Cylinder(center=(x, -y, 0.5 * (z_top + z_bot)), direction=(0, 0, 1),
                           radius=max(v.drill_mm, 0.05) / 2.0, height=max(z_top - z_bot, 1e-3),
                           resolution=n_sides, capping=True)
-        cyl.cell_data["net_index"] = np.full(cyl.n_cells, nets.index(v.net))
         blocks.append(cyl)
     if not blocks:
         return None
@@ -166,27 +172,34 @@ def board_body(snap: BoardSnapshot) -> Tuple[Optional[pv.PolyData], Optional[pv.
     return body, (pv.merge(lines) if lines else None)
 
 
-def build_scene(snap: BoardSnapshot, copper: Dict[str, Dict[int, BaseGeometry]],
-                progress=None) -> SceneData:
-    """Build every mesh for the given per-net copper (``net -> layer -> geometry``)."""
+def build_net_scene(snap: BoardSnapshot, net: str, layers: Dict[int, BaseGeometry],
+                    progress=None) -> NetScene:
+    """Build the meshes for one net from its per-layer copper geometry."""
     st = snap.stackup
     n = len(st.copper)
+    ns = NetScene(net=net)
+    for lid, geom in layers.items():
+        cu = st.layer(lid)
+        if cu is None:
+            continue
+        m = slab(geom, cu.z_bottom_mm, cu.thickness_mm)
+        if m is None:
+            continue
+        ns.copper.append(LayerMesh(net=net, layer_id=lid, mesh=m, color=layer_color(cu, n),
+                                   area_mm2=geom.area))
+        if progress is not None:
+            progress.info(f"  mesh {net} / {cu.name}: {m.n_cells} cells")
+            progress.check_cancel()
+    ns.vias = via_tubes(snap, [net])
+    ns.pads = pad_tops(snap, [net])
+    return ns
+
+
+def build_scene(snap: BoardSnapshot, copper: Dict[str, Dict[int, BaseGeometry]],
+                progress=None) -> SceneData:
+    """Build the board body and every net in ``copper`` (``net -> layer -> geometry``)."""
     scene = SceneData()
-    nets = list(copper.keys())
     for net, layers in copper.items():
-        for lid, geom in layers.items():
-            cu = st.layer(lid)
-            if cu is None:
-                continue
-            m = slab(geom, cu.z_bottom_mm, cu.thickness_mm)
-            if m is None:
-                continue
-            scene.copper.append(LayerMesh(net=net, layer_id=lid, mesh=m,
-                                          color=layer_color(cu, n), area_mm2=geom.area))
-            if progress is not None:
-                progress.info(f"  mesh {net} / {cu.name}: {m.n_cells} cells")
-                progress.check_cancel()
-    scene.vias = via_tubes(snap, nets)
-    scene.pads = pad_tops(snap, nets)
+        scene.nets[net] = build_net_scene(snap, net, layers, progress)
     scene.board, scene.outline_lines = board_body(snap)
     return scene

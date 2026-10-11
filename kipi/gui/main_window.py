@@ -40,6 +40,11 @@ class MainWindow(QMainWindow):
         self.snapshot: Optional[BoardSnapshot] = None
         self._copper_cache: Dict[str, Dict[int, object]] = {}
         self._task: Optional[Task] = None
+        self._resync_pending = False   # net checkboxes changed while a task was running
+        self._sync_timer = QTimer(self)  # coalesce rapid checkbox clicks into one build
+        self._sync_timer.setSingleShot(True)
+        self._sync_timer.setInterval(150)
+        self._sync_timer.timeout.connect(self.sync_nets)
         self._picked = None   # ("pad"|"via", id)
 
         self.viewer = Viewer3D(self)
@@ -101,12 +106,13 @@ class MainWindow(QMainWindow):
         self.net_list = QListWidget(g_nets)
         self.net_list.itemChanged.connect(self._on_net_item_changed)
         row = QHBoxLayout()
-        self.btn_show = QPushButton("Show checked nets", g_nets)
-        self.btn_show.clicked.connect(self.rebuild_scene)
+        btn_power = QPushButton("All power", g_nets)
+        btn_power.setToolTip("Show every power and ground net")
+        btn_power.clicked.connect(self._check_power_nets)
         btn_none = QPushButton("None", g_nets)
-        btn_none.clicked.connect(self._uncheck_all_nets)
-        row.addWidget(self.btn_show, 1)
-        row.addWidget(btn_none)
+        btn_none.clicked.connect(lambda: self._set_checked(lambda it: False))
+        row.addWidget(btn_power, 1)
+        row.addWidget(btn_none, 1)
         ln.addWidget(self.net_filter)
         ln.addWidget(self.chk_power_only)
         ln.addWidget(self.net_list, 1)
@@ -219,10 +225,13 @@ class MainWindow(QMainWindow):
             self.progress_bar.setValue(int(1000 * f))
 
     # ============================================================== tasks
+    def _busy(self) -> bool:
+        return self._task is not None and self._task.isRunning()
+
     def _run(self, fn, on_done, name: str):
-        if self._task is not None and self._task.isRunning():
+        if self._busy():
             QMessageBox.information(self, "KiPI", "Another operation is still running.")
-            return
+            return None
         prog = QtProgress()
         prog.sig_message.connect(self.log)
         prog.sig_stage.connect(self._on_stage)
@@ -234,17 +243,19 @@ class MainWindow(QMainWindow):
         self._task = task
         self.btn_cancel.setEnabled(True)
         self.act_reload.setEnabled(False)
-        self.btn_show.setEnabled(False)
         task.start()
+        return task
 
     def _on_task_finished(self):
         self.btn_cancel.setEnabled(False)
         self.act_reload.setEnabled(True)
-        self.btn_show.setEnabled(True)
         self.progress_bar.setRange(0, 1000)
         self.progress_bar.setValue(1000)
         self.lbl_stage.setText("Idle")
         self.statusBar().showMessage("Ready")
+        if self._resync_pending:
+            self._resync_pending = False
+            self._sync_timer.start()
 
     def _on_task_failed(self, name: str, tb: str):
         log.error(tb)
@@ -309,7 +320,9 @@ class MainWindow(QMainWindow):
         self._populate_layers()
         self._populate_nets()
         self._show_board_summary()
-        self.rebuild_scene()
+        from kipi.viz.meshes import board_body
+        self.viewer.set_board(*board_body(snap))
+        self.sync_nets()
 
     # ============================================================ lists
     def _populate_layers(self):
@@ -373,52 +386,79 @@ class MainWindow(QMainWindow):
         return [self.net_list.item(i).data(Qt.UserRole) for i in range(self.net_list.count())
                 if self.net_list.item(i).checkState() == Qt.Checked]
 
-    def _uncheck_all_nets(self):
+    def _set_checked(self, pred):
+        """Check exactly the net items for which ``pred(item)`` is true, then sync once."""
+        self.net_list.blockSignals(True)
         for i in range(self.net_list.count()):
-            self.net_list.item(i).setCheckState(Qt.Unchecked)
+            it = self.net_list.item(i)
+            it.setCheckState(Qt.Checked if pred(it) else Qt.Unchecked)
+        self.net_list.blockSignals(False)
+        self._apply_net_filter()
+        self._sync_timer.start()
+
+    def _check_power_nets(self):
+        self._set_checked(lambda it: it.checkState() == Qt.Checked
+                          or it.data(Qt.UserRole + 1) != "signal")
 
     def _on_net_item_changed(self, item):
-        pass  # nets are applied with the "Show checked nets" button
+        self._sync_timer.start()
 
     def _on_layer_item_changed(self, item):
         self.viewer.set_layer_visible(item.data(Qt.UserRole), item.checkState() == Qt.Checked)
 
     # ============================================================ scene
-    def rebuild_scene(self):
+    def sync_nets(self):
+        """Make the 3D view match the checked nets.
+
+        Unchecked nets are removed at once. Newly checked nets are built in the
+        background and added as they finish; the nets already shown are left alone.
+        """
         if self.snapshot is None:
             return
+        if self._busy():
+            self._resync_pending = True
+            return
+        wanted = self._checked_nets()
+        shown = set(self.viewer.nets())
+        for net in shown - set(wanted):
+            self.viewer.remove_net(net)
+        todo = [n for n in wanted if n not in shown]
+        if not todo:
+            return
+
         snap = self.snapshot
-        nets = self._checked_nets()
         cache = self._copper_cache
 
         def work(progress):
             from kipi.geometry.copper import net_copper
-            from kipi.viz.meshes import build_scene
-            copper = {}
-            with progress.timed(f"Building copper for {len(nets)} net(s)"):
-                for i, net in enumerate(nets):
+            from kipi.viz.meshes import build_net_scene
+            scenes = []
+            with progress.timed(f"Building {len(todo)} net(s)"):
+                for i, net in enumerate(todo):
                     progress.check_cancel()
                     if net not in cache:
                         cache[net] = net_copper(snap, net, progress)
-                    copper[net] = cache[net]
-                    progress.fraction((i + 1) / max(1, len(nets)))
-            with progress.timed("Building 3D meshes"):
-                scene = build_scene(snap, copper, progress)
-            return scene
+                    scenes.append(build_net_scene(snap, net, cache[net], progress))
+                    progress.fraction((i + 1) / len(todo))
+            return scenes
 
-        first = not getattr(self, "_shown_once", False)
+        def done(scenes):
+            still_wanted = set(self._checked_nets())
+            added = [ns for ns in scenes if ns.net in still_wanted]
+            for ns in added:
+                self.viewer.add_net(ns)
+            for ns in scenes:
+                if not ns.copper:
+                    self.log(f"{ns.net}: no copper on any layer", logging.WARNING)
+            n_cells = sum(lm.mesh.n_cells for ns in added for lm in ns.copper)
+            self.log(f"Added {len(added)} net(s), {n_cells} cells; "
+                     f"{len(self.viewer.nets())} net(s) shown")
 
-        def done(scene):
-            self.viewer.set_scene(scene, reset_camera=first)
-            self._shown_once = True
-            for i in range(self.layer_list.count()):
-                it = self.layer_list.item(i)
-                self.viewer.set_layer_visible(it.data(Qt.UserRole), it.checkState() == Qt.Checked)
-            n_cells = sum(lm.mesh.n_cells for lm in scene.copper)
-            self.log(f"Displaying {len(nets)} net(s), {len(scene.copper)} copper regions, "
-                     f"{n_cells} cells")
-
-        self._run(work, done, "Building view")
+        task = self._run(work, done, "Building view")
+        if task is not None:
+            # A cancelled build leaves its nets unchecked so the list matches the view.
+            task.cancelled.connect(lambda: self._set_checked(
+                lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
 
     # ============================================================ info
     def _show_board_summary(self):
@@ -451,7 +491,7 @@ class MainWindow(QMainWindow):
         x, y, z = pt
         s = self.snapshot
         cu = self._nearest_layer(z)
-        shown = set(self._checked_nets())
+        shown = set(self.viewer.nets())
 
         best_via, best_d = None, math.inf
         for v in s.vias:
