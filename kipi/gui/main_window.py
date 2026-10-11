@@ -5,6 +5,7 @@ from __future__ import annotations
 import html
 import logging
 import math
+import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -45,6 +46,12 @@ class MainWindow(QMainWindow):
         self._sync_timer.setSingleShot(True)
         self._sync_timer.setInterval(150)
         self._sync_timer.timeout.connect(self.sync_nets)
+        self._render_timer = QTimer(self)  # coalesce renders while nets stream in
+        self._render_timer.setSingleShot(True)
+        self._render_timer.setInterval(50)
+        self._render_timer.timeout.connect(self._timed_render)
+        self._checked_cache: Optional[frozenset] = None  # None = recompute from the list
+        self._last_fraction_t = 0.0
         self._picked = None   # ("pad"|"via", id)
 
         self.viewer = Viewer3D(self)
@@ -220,15 +227,27 @@ class MainWindow(QMainWindow):
     def _on_fraction(self, f: float):
         if f < 0:
             self.progress_bar.setRange(0, 0)   # busy indicator
-        else:
-            self.progress_bar.setRange(0, 1000)
-            self.progress_bar.setValue(int(1000 * f))
+            return
+        # Repainting the bar repaints the window, including the 3D view, so cap it at ~10 Hz.
+        now = time.perf_counter()
+        if f < 1.0 and now - self._last_fraction_t < 0.1:
+            return
+        self._last_fraction_t = now
+        self.progress_bar.setRange(0, 1000)
+        self.progress_bar.setValue(int(1000 * f))
+
+    def _timed_render(self):
+        """Render, then space the next streaming render by a few frame times."""
+        t0 = time.perf_counter()
+        self.viewer.render()
+        frame = time.perf_counter() - t0
+        self._render_timer.setInterval(int(min(1000, max(50, 4000 * frame))))
 
     # ============================================================== tasks
     def _busy(self) -> bool:
         return self._task is not None and self._task.isRunning()
 
-    def _run(self, fn, on_done, name: str):
+    def _run(self, fn, on_done, name: str, on_partial=None):
         if self._busy():
             QMessageBox.information(self, "KiPI", "Another operation is still running.")
             return None
@@ -236,6 +255,8 @@ class MainWindow(QMainWindow):
         prog.sig_message.connect(self.log)
         prog.sig_stage.connect(self._on_stage)
         prog.sig_fraction.connect(self._on_fraction)
+        if on_partial is not None:
+            prog.sig_partial.connect(on_partial)
         task = Task(fn, prog, self)
         task.done.connect(on_done)
         task.failed.connect(lambda tb: self._on_task_failed(name, tb))
@@ -369,6 +390,7 @@ class MainWindow(QMainWindow):
             it.setCheckState(Qt.Checked if name in auto else Qt.Unchecked)
             self.net_list.addItem(it)
         self.net_list.blockSignals(False)
+        self._checked_cache = None
         self._apply_net_filter()
 
     def _apply_net_filter(self):
@@ -386,6 +408,12 @@ class MainWindow(QMainWindow):
         return [self.net_list.item(i).data(Qt.UserRole) for i in range(self.net_list.count())
                 if self.net_list.item(i).checkState() == Qt.Checked]
 
+    def _checked_set(self) -> frozenset:
+        """Cached set of checked nets; cleared whenever a checkbox changes."""
+        if self._checked_cache is None:
+            self._checked_cache = frozenset(self._checked_nets())
+        return self._checked_cache
+
     def _set_checked(self, pred):
         """Check exactly the net items for which ``pred(item)`` is true, then sync once."""
         self.net_list.blockSignals(True)
@@ -393,6 +421,7 @@ class MainWindow(QMainWindow):
             it = self.net_list.item(i)
             it.setCheckState(Qt.Checked if pred(it) else Qt.Unchecked)
         self.net_list.blockSignals(False)
+        self._checked_cache = None
         self._apply_net_filter()
         self._sync_timer.start()
 
@@ -401,6 +430,7 @@ class MainWindow(QMainWindow):
                           or it.data(Qt.UserRole + 1) != "signal")
 
     def _on_net_item_changed(self, item):
+        self._checked_cache = None
         self._sync_timer.start()
 
     def _on_layer_item_changed(self, item):
@@ -432,29 +462,35 @@ class MainWindow(QMainWindow):
         def work(progress):
             from kipi.geometry.copper import net_copper
             from kipi.viz.meshes import build_net_scene
-            scenes = []
+            built = 0
             with progress.timed(f"Building {len(todo)} net(s)"):
                 for i, net in enumerate(todo):
                     progress.check_cancel()
                     if net not in cache:
                         cache[net] = net_copper(snap, net, progress)
-                    scenes.append(build_net_scene(snap, net, cache[net], progress))
+                    progress.partial(build_net_scene(snap, net, cache[net], progress))
+                    built += 1
                     progress.fraction((i + 1) / len(todo))
-            return scenes
+            return built
 
-        def done(scenes):
-            still_wanted = set(self._checked_nets())
-            added = [ns for ns in scenes if ns.net in still_wanted]
-            for ns in added:
-                self.viewer.add_net(ns)
-            for ns in scenes:
-                if not ns.copper:
-                    self.log(f"{ns.net}: no copper on any layer", logging.WARNING)
-            n_cells = sum(lm.mesh.n_cells for ns in added for lm in ns.copper)
-            self.log(f"Added {len(added)} net(s), {n_cells} cells; "
-                     f"{len(self.viewer.nets())} net(s) shown")
+        added: List[str] = []
 
-        task = self._run(work, done, "Building view")
+        def on_net(ns):
+            # Runs on the UI thread as each net finishes; skip nets unchecked meanwhile.
+            if ns.net not in self._checked_set():
+                return
+            if not ns.copper:
+                self.log(f"{ns.net}: no copper on any layer", logging.WARNING)
+            self.viewer.add_net(ns, render=False)
+            added.append(ns.net)
+            if not self._render_timer.isActive():
+                self._render_timer.start()
+
+        def done(built):
+            self.viewer.render()
+            self.log(f"Added {len(added)} net(s); {len(self.viewer.nets())} net(s) shown")
+
+        task = self._run(work, done, "Building view", on_partial=on_net)
         if task is not None:
             # A cancelled build leaves its nets unchecked so the list matches the view.
             task.cancelled.connect(lambda: self._set_checked(

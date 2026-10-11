@@ -160,9 +160,17 @@ class BoardSnapshot:
         return [n.name for n in self.nets if n.name]
 
     def items_on_net(self, net: str):
-        return (
-            [t for t in self.tracks if t.net == net],
-            [v for v in self.vias if v.net == net],
-            [p for p in self.pads if p.net == net],
-            [z for z in self.zones if z.net == net],
-        )
+        """``(tracks, vias, pads, zones)`` on ``net``, from an index built on first use."""
+        index = self.__dict__.get("_net_index")
+        if index is None:
+            index = {}
+            for kind, items in enumerate((self.tracks, self.vias, self.pads, self.zones)):
+                for item in items:
+                    index.setdefault(item.net, ([], [], [], []))[kind].append(item)
+            # Not a dataclass field, so snapshots never serialise it.
+            self.__dict__["_net_index"] = index
+        return index.get(net, ([], [], [], []))
+
+    def invalidate_index(self):
+        """Call after editing the item lists in place."""
+        self.__dict__.pop("_net_index", None)
