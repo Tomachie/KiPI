@@ -284,6 +284,7 @@ class MainWindow(QMainWindow):
 
     def _on_task_finished(self):
         self.solve_panel.set_busy(False)
+        pending, self._pending_solve = getattr(self, "_pending_solve", None), None
         self.btn_cancel.setEnabled(False)
         self.act_reload.setEnabled(True)
         self.progress_bar.setRange(0, 1000)
@@ -293,6 +294,8 @@ class MainWindow(QMainWindow):
         if self._resync_pending:
             self._resync_pending = False
             self._sync_timer.start()
+        if pending is not None:
+            QTimer.singleShot(0, lambda: self.run_solve(pending))
 
     def _on_task_failed(self, name: str, tb: str):
         log.error(tb)
@@ -463,6 +466,7 @@ class MainWindow(QMainWindow):
         """
         if self.snapshot is None:
             return
+        self.solve_panel.set_nets(list(self._checked_set()))
         if self._busy():
             self._resync_pending = True
             return
@@ -519,17 +523,32 @@ class MainWindow(QMainWindow):
         snap = self.snapshot
         if snap is None:
             return
+        if self._busy():
+            # A view update (e.g. after ticking nets) is still running: queue the solve
+            # instead of refusing it; it starts as soon as the current task finishes.
+            self._pending_solve = problem
+            self.solve_panel.set_busy(True, queued=True)
+            self.log("Solve queued until the current task finishes")
+            return
 
         def work(progress):
-            from kipi.solver import run
+            from kipi.mesh.mesher import MeshError
+            from kipi.solver import SolveError, run
             from kipi.viz.results import build_result_scene
-            result = run(snap, problem, progress)
+            try:
+                result = run(snap, problem, progress)
+            except (SolveError, MeshError) as e:
+                progress.warn(str(e))
+                return None, str(e)       # a setup problem, reported in the panel
             with progress.timed("Building result view"):
                 scene = build_result_scene(snap, result)
             return result, scene
 
         def done(out):
             result, scene = out
+            if result is None:
+                self.solve_panel.show_error(scene)
+                return
             self._result = result
             self.viewer.show_result(scene, self.solve_panel.current_field())
             self.solve_panel.show_results(result)

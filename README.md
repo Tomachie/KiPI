@@ -11,10 +11,11 @@ workflow:
    3D view, with live solver progress.
 
 **Status: Milestone 2.** Board extraction, the 3D copper viewer and a single-net DC solver
-work. In the **DC solve** panel, pick a net, the part that sources it and its voltage, and
-the loads with their currents, then press **Solve**. The view switches to voltage drop,
-current density or power density in 3D. Click anywhere to probe the values, and use
-**Show copper** to go back to the copper view. VRM models, DC series parts and the power
+work. Tick the nets you care about in the Board panel; they become the choices in the
+**DC solve** panel. There, pick the part that sources the net and its voltage, and the loads
+with their currents, then press **Solve**. The view switches to voltage, current density or
+power density in 3D. Click anywhere to probe the voltage and the drop, and use **Show copper**
+to go back to the copper view. VRM models, DC series parts and the power
 tree come in Milestone 3. See [docs/research.md](docs/research.md) for design notes.
 
 ## Install (development)
@@ -44,7 +45,8 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m pytest tests
 ```
 
-The log is written to `%TEMP%\kipi.log`.
+The log is written to `%TEMP%\kipi.log`, and the previous run's log is kept as
+`kipi.prev.log`. A hard crash also leaves a traceback in `%TEMP%\kipi_crash.log`.
 
 ## Layout
 

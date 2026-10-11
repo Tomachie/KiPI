@@ -22,7 +22,6 @@ from kipi.viz.meshes import slab_from_triangles
 
 # name -> (array, association, label, unit)
 FIELDS = {
-    "drop": ("drop_mV", "point", "Voltage drop", "mV"),
     "voltage": ("V", "point", "Voltage", "V"),
     "current_density": ("J", "cell", "Current density", "A/mm²"),
     "power_density": ("P", "cell", "Power density", "mW/mm²"),

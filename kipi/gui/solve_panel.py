@@ -14,7 +14,7 @@ from qtpy.QtWidgets import (
 )
 
 from kipi.model.board import BoardSnapshot
-from kipi.model.nets import classify_nets, guess_voltage, sorted_nets
+from kipi.model.nets import guess_voltage, sorted_nets
 from kipi.solver import NetProblem, SolveSettings
 from kipi.solver.fem import SolveError
 from kipi.solver.setup import CurrentLoad, VoltageSource
@@ -122,20 +122,31 @@ class SolvePanel(QWidget):
     def set_snapshot(self, snap: BoardSnapshot):
         self.snapshot = snap
         self._saved.clear()
-        kinds = classify_nets(snap)
+        self._net = None
+        self.txt_results.clear()
+        self.set_nets([])
+
+    def set_nets(self, nets: List[str]):
+        """Offer only ``nets`` (the nets ticked in the Board panel), keeping the current
+        choice when it is still available."""
+        if self.snapshot is None:
+            return
+        current = self.cmb_net.currentText()
+        order = {n: i for i, n in enumerate(sorted_nets(self.snapshot))}
+        nets = sorted(set(nets), key=lambda n: order.get(n, len(order)))
+        if nets == [self.cmb_net.itemText(i) for i in range(self.cmb_net.count())]:
+            return
         self.cmb_net.blockSignals(True)
         self.cmb_net.clear()
-        for n in sorted_nets(snap):
-            if kinds[n] != "signal":
-                self.cmb_net.addItem(n)
-        self.cmb_net.insertSeparator(self.cmb_net.count())
-        for n in sorted_nets(snap):
-            if kinds[n] == "signal":
-                self.cmb_net.addItem(n)
+        self.cmb_net.addItems(nets)
+        if current in nets:
+            self.cmb_net.setCurrentText(current)
         self.cmb_net.blockSignals(False)
-        self.setEnabled(True)
-        self.txt_results.clear()
-        self._on_net_changed(self.cmb_net.currentText())
+        self.setEnabled(bool(nets))
+        if not nets:
+            self.txt_results.setHtml("<i>Tick a net in the Board panel to set up a solve.</i>")
+        if self.cmb_net.currentText() != current or self._net is None:
+            self._on_net_changed(self.cmb_net.currentText())
 
     def current_net(self) -> str:
         return self.cmb_net.currentText()
@@ -158,6 +169,9 @@ class SolvePanel(QWidget):
 
     def _on_net_changed(self, net: str):
         if not net or self.snapshot is None:
+            if getattr(self, "_net", None):
+                self._saved[self._net] = self._capture()
+            self._net = None
             return
         prev = getattr(self, "_net", None)
         if prev:
@@ -174,8 +188,11 @@ class SolvePanel(QWidget):
         else:
             self.spin_v.setValue(guess_voltage(net))
             self.txt_src_pins.clear()
-            if len(self._parts) > 1:
-                self._add_load_row(self._parts[0][0])
+            # Default load: the busiest part that is not the default source.
+            src = self.cmb_src.currentData()
+            others = [ref for ref, _, _ in self._parts if ref != src]
+            if others:
+                self._add_load_row(others[0])
 
     def _update_src_pins_hint(self):
         i = self.cmb_src.currentIndex()
@@ -251,18 +268,22 @@ class SolvePanel(QWidget):
                                  plating_mm=self.spin_plating.value() / 1000)
         return NetProblem(net, sources, loads, settings)
 
+    def show_error(self, message: str):
+        self.txt_results.setHtml(f'<span style="color:#ff7070"><b>Cannot solve:</b> '
+                                 f'{html.escape(message)}</span>')
+
     def _emit_solve(self):
         try:
             problem = self.build_problem()
         except SolveError as e:
-            self.txt_results.setHtml(f'<span style="color:#ff7070">{html.escape(str(e))}</span>')
+            self.show_error(str(e))
             return
         self._saved[problem.net] = self._capture()
         self.solve_requested.emit(problem)
 
-    def set_busy(self, busy: bool):
+    def set_busy(self, busy: bool, queued: bool = False):
         self.btn_solve.setEnabled(not busy)
-        self.btn_solve.setText("Solving…" if busy else "Solve")
+        self.btn_solve.setText(("Queued…" if queued else "Solving…") if busy else "Solve")
 
     def current_field(self) -> str:
         return self.cmb_field.currentData()

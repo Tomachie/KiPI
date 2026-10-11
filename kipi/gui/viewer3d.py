@@ -25,6 +25,22 @@ _BOARD_COLOR = (0.15, 0.40, 0.20)
 _CATEGORY_LOOK = {"cu": (1.0, 0.4), "pad": (0.9, 0.0), "via": (1.0, 0.6)}
 
 
+def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
+    """Tick label format with enough decimals to tell the labels apart.
+
+    A 3.3 V rail that sags by 0.4 mV needs five decimals, or every tick reads "3.3".
+    """
+    if log_scale:
+        return "%.2g"
+    span = abs(hi - lo)
+    if span <= 0:
+        return "%.4g"
+    step_decimals = max(0, int(np.ceil(-np.log10(span / 5))) + 1)
+    if max(abs(lo), abs(hi)) >= 1e4 or step_decimals > 9:
+        return "%.4g"
+    return f"%.{step_decimals}f"
+
+
 def _chunk_actor(category) -> vtkActor:
     """A bare VTK actor coloured by the chunk's per-cell ``rgb`` array.
 
@@ -80,7 +96,7 @@ class Viewer3D(QWidget):
         self._zscale = 1.0
         self._pick_cb: Optional[Callable[[Tuple[float, float, float]], None]] = None
         self._result: Optional[ResultScene] = None
-        self._result_field = "drop"
+        self._result_field = "voltage"
         self._result_actors: Dict[int, object] = {}      # layer id -> actor
         self._result_via_actor = None
         self._scalar_bars: List[str] = []
@@ -292,8 +308,6 @@ class Viewer3D(QWidget):
                 for lr in scene.layers.values()])
             if len(vals):
                 hi = float(np.percentile(vals, 99.5))
-        if self._result_field == "drop" and lo < 0 and -lo < 1e-3 * max(hi, 1e-12):
-            lo = 0.0          # solver round-off at the source, not a real negative drop
         if hi <= lo:
             hi = lo + 1e-12
         title = f"{label} ({unit})"
@@ -302,7 +316,8 @@ class Viewer3D(QWidget):
         if log_scale:
             lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
         bar = dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
-                   height=0.5, width=0.05, fmt="%.3g", title_font_size=14,
+                   height=0.5, width=0.05, fmt=_bar_format(lo, hi, log_scale),
+                   title_font_size=14,
                    label_font_size=12, n_labels=6)
         first = True
         for lid, lr in scene.layers.items():

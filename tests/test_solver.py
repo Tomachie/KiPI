@@ -86,7 +86,7 @@ def test_floating_island_is_reported_and_load_on_it_is_an_error():
     res = run(snap, ok)
     assert any("not connected to a source" in w for w in res.solution.warnings)
     bad = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)], [CurrentLoad("L", ["iso"], 1.0)])
-    with pytest.raises(SolveError, match="not connected"):
+    with pytest.raises(SolveError, match="no copper path"):
         run(snap, bad)
 
 
@@ -163,4 +163,5 @@ def test_result_scene_carries_fields_and_probes():
     assert mid["drop_mV"] == pytest.approx(total / 2, rel=1e-6)
     assert mid["J"] == pytest.approx(2.0 / (W * T_CU), rel=1e-6)
     assert scene.probe(F, L / 2, 5.0) is None                      # off the copper
-    assert scene.ranges["drop"][1] == pytest.approx(total, rel=1e-6)
+    lo, hi = scene.ranges["voltage"]
+    assert hi == pytest.approx(1.0) and lo == pytest.approx(1.0 - total / 1e3, rel=1e-9)

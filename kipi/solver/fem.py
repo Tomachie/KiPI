@@ -234,8 +234,11 @@ def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,
     live = np.isin(comp, list(live_comps))
     for load in problem.loads:
         if not all(live[pad_unknown[pid]] for pid in load.pad_ids):
-            raise SolveError(f"Load {load.name} is not connected to any source through "
-                             f"net {problem.net}'s copper")
+            srcs = ", ".join(s.name for s in problem.sources)
+            raise SolveError(f"Load {load.name} has no copper path to the source ({srcs}) on "
+                             f"net {problem.net}. If KiCad shows them connected, the link is "
+                             "probably still unrouted (ratsnest) or goes through an unfilled "
+                             "zone; refill zones and reload.")
     n_float = int((~live).sum())
     if n_float:
         floating_nodes = int((~live[merged_of]).sum())
