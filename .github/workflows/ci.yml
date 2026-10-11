@@ -45,7 +45,7 @@ jobs:
         run: python -m kipy.packaging validate .
 
       - name: Import GUI modules
-        run: python -c "import kipi.gui.main_window, kipi.gui.viewer3d, kipi_entry"
+        run: python -c "import kipi.gui.main_window, kipi.gui.viewer3d, kipi.gui.solve_panel, kipi_entry"
 
       - name: Run tests
         run: python -m pytest -v

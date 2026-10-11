@@ -1,0 +1,135 @@
+"""Derived quantities from a :class:`~kipi.solver.fem.Solution`.
+
+Units: volts, amps, watts, millimetres. Current density is reported per unit
+cross-section (A/mm^2) and is uniform through the copper thickness in this 2.5D
+model.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List
+
+import numpy as np
+
+from kipi.solver.fem import Solution, triangle_geometry
+
+
+@dataclass
+class TerminalResult:
+    name: str
+    kind: str                     # "source" or "load"
+    current: float                # A (source: delivered, load: drawn)
+    v_pads: List[float]           # V at each of its pads
+    v_min: float
+    v_max: float
+
+    @property
+    def v_mean(self) -> float:
+        return float(np.mean(self.v_pads))
+
+
+@dataclass
+class ViaResult:
+    owner_id: str
+    kind: str                     # "via" or "pth"
+    position: tuple
+    drill_mm: float
+    current: float                # largest |I| through any of its barrel segments, A
+    power: float                  # W dissipated in the barrel
+
+
+@dataclass
+class Fields:
+    """Per-triangle and per-via results plus a summary."""
+    grad: np.ndarray              # (M, 2) dV/dx, dV/dy in V/mm (KiCad axes, y down)
+    j_density: np.ndarray         # (M,) |J| in A/mm^2
+    power_density: np.ndarray     # (M,) W/mm^2 of board area
+    tri_power: np.ndarray         # (M,) W per triangle
+    tri_area: np.ndarray          # (M,) mm^2
+    vias: List[ViaResult]
+    terminals: List[TerminalResult]
+    v_ref: float                  # highest source voltage, the reference for "drop"
+    summary: Dict[str, float] = field(default_factory=dict)
+
+    def drop(self, v: np.ndarray) -> np.ndarray:
+        return self.v_ref - v
+
+
+def compute_fields(sol: Solution) -> Fields:
+    mesh, prob = sol.mesh, sol.problem
+    rho = prob.settings.rho_ohm_mm
+    b, c, two_a = triangle_geometry(mesh.points, mesh.tris)
+    v = np.nan_to_num(sol.node_v[mesh.tris])          # floating copper -> zero field
+    gx = (b * v).sum(axis=1) / two_a
+    gy = (c * v).sum(axis=1) / two_a
+    grad = np.column_stack([gx, gy])
+    g2 = gx * gx + gy * gy
+    gs = np.array([sol.sheet_g[l] for l in mesh.tri_layer])
+    area = np.abs(two_a) / 2
+    j = np.sqrt(g2) / rho                             # A/mm^2
+    pd = gs * g2                                      # W/mm^2
+    tri_power = pd * area
+
+    # Barrels.
+    per_barrel: Dict[int, List[float]] = {}
+    barrel_power: Dict[int, float] = {}
+    total_barrel_power = 0.0
+    for e in sol.barrel_elements:
+        dv = sol.v_merged[e.node_a] - sol.v_merged[e.node_b]
+        if np.isnan(dv):
+            continue
+        i = e.g * dv
+        per_barrel.setdefault(e.barrel, []).append(abs(i))
+        p = e.g * dv * dv
+        barrel_power[e.barrel] = barrel_power.get(e.barrel, 0.0) + p
+        total_barrel_power += p
+    vias = []
+    for bi, bar in enumerate(mesh.barrels):
+        currents = per_barrel.get(bi, [0.0])
+        vias.append(ViaResult(bar.owner_id, bar.kind, bar.position, bar.drill_mm,
+                              max(currents), barrel_power.get(bi, 0.0)))
+
+    # Terminals.
+    def pad_v(pid):
+        nodes = next(iter(mesh.pad_nodes[pid].values()))
+        return float(sol.node_v[nodes[0]])
+
+    terminals = []
+    for src in prob.sources:
+        vs = [pad_v(p) for p in src.pad_ids]
+        terminals.append(TerminalResult(src.name, "source", sol.source_current[src.name],
+                                        vs, min(vs), max(vs)))
+    for load in prob.loads:
+        vs = [pad_v(p) for p in load.pad_ids]
+        terminals.append(TerminalResult(load.name, "load", load.current, vs, min(vs), max(vs)))
+
+    v_ref = max(s.voltage for s in prob.sources)
+    copper_power = float(tri_power.sum())
+    # Power delivered into the copper, measured relative to v_ref so it is not the small
+    # difference of two large products (sum(I_src) == sum(I_load) is checked separately).
+    delivered = sum(t.current * (v_ref - t.v_mean) for t in terminals if t.kind == "load") - \
+        sum(t.current * (v_ref - t.v_mean) for t in terminals if t.kind == "source")
+    i_src = sum(t.current for t in terminals if t.kind == "source")
+    i_load = sum(t.current for t in terminals if t.kind == "load")
+    loss = copper_power + total_barrel_power
+    live = ~np.isnan(sol.node_v)
+    summary = {
+        "v_ref": v_ref,
+        "v_min": float(np.nanmin(sol.node_v)),
+        "v_max": float(np.nanmax(sol.node_v)),
+        "max_drop": float(v_ref - np.nanmin(sol.node_v)),
+        "j_max": float(j.max()) if len(j) else 0.0,
+        "power_copper": copper_power,
+        "power_barrels": total_barrel_power,
+        "power_loss": loss,
+        "power_delivered": delivered,
+        "energy_balance_error": abs(loss - delivered) / max(abs(delivered), 1e-30),
+        "kcl_error": abs(i_src - i_load) / max(abs(i_load), 1e-30),
+        "via_current_max": max((x.current for x in vias), default=0.0),
+        "source_current_total": i_src,
+        "load_current_total": i_load,
+        "live_fraction": float(live.mean()),
+    }
+    return Fields(grad=grad, j_density=j, power_density=pd, tri_power=tri_power,
+                  tri_area=area, vias=vias, terminals=terminals, v_ref=v_ref, summary=summary)

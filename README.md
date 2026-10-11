@@ -10,8 +10,13 @@ workflow:
 3. Inspect voltage, current density, via currents and copper power dissipation in a rotatable
    3D view, with live solver progress.
 
-**Status: Milestone 1.** Board extraction, offline snapshots and the interactive 3D copper viewer
-work. The solver is next. See [docs/research.md](docs/research.md) for design notes.
+**Status: Milestone 2.** Board extraction, the 3D copper viewer and a single-net DC solver
+work. Tick the nets you care about in the Board panel; they become the choices in the
+**DC solve** panel. There, pick the part that sources the net and its voltage, and the loads
+with their currents, then press **Solve**. The view switches to voltage, current density or
+power density in 3D. Click anywhere to probe the voltage and the drop, and use **Show copper**
+to go back to the copper view. VRM models, DC series parts and the power
+tree come in Milestone 3. See [docs/research.md](docs/research.md) for design notes.
 
 ## Install (development)
 
@@ -40,7 +45,9 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m pytest tests
 ```
 
-The log is written to `%TEMP%\kipi.log`.
+Each session writes its own log to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last 15
+sessions are kept. A matching `.crash.log` collects native crash tracebacks, plus stack dumps
+of every thread if a background task runs longer than a minute (useful when something hangs).
 
 ## Layout
 
@@ -50,6 +57,8 @@ The log is written to `%TEMP%\kipi.log`.
 | `kipi/kicad_io/` | kipy → `BoardSnapshot` extraction, JSON snapshot save/load |
 | `kipi/model/` | Toolkit-independent board model, power-net heuristics |
 | `kipi/geometry/` | Per-net, per-layer copper union (shapely) |
-| `kipi/viz/` | PyVista mesh building (no Qt) |
+| `kipi/mesh/` | Conforming per-layer triangle mesh (Triangle), graded around plated holes |
+| `kipi/solver/` | 2.5D FEM: sheet conductance, via/PTH barrels, sources, loads; AMG-CG |
+| `kipi/viz/` | PyVista mesh building and batching, result meshes (no Qt) |
 | `kipi/gui/` | PySide6 main window, embedded 3D viewer, worker threads |
 | `kipi/progress.py` | Progress/log reporting used by every pipeline stage |

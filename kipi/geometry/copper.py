@@ -53,7 +53,9 @@ def _only_polygons(g: BaseGeometry) -> BaseGeometry:
 
 
 def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
-                     cut_drills: bool = True) -> BaseGeometry:
+                     cut_drills: bool = True, quad_segs: int = CIRCLE_QUAD_SEGS) -> BaseGeometry:
+    """Copper of ``net`` on ``layer``. ``quad_segs`` sets circle resolution (segments per
+    quarter circle) for track caps, via rings and drill holes."""
     tracks, vias, pads, zones = snap.items_on_net(net)
     parts: List[BaseGeometry] = []
 
@@ -61,11 +63,11 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
     if straight:
         lines = shapely.linestrings([[t.start, t.end] for t in straight])
         widths = np.array([t.width_mm for t in straight])
-        parts.extend(shapely.buffer(lines, widths / 2.0, quad_segs=CIRCLE_QUAD_SEGS))
+        parts.extend(shapely.buffer(lines, widths / 2.0, quad_segs=quad_segs))
     for t in tracks:
         if t.layer == layer and t.is_arc:
             pts = [t.start] + _arc_points(t.start, t.mid, t.end)
-            parts.append(LineString(pts).buffer(t.width_mm / 2.0, quad_segs=CIRCLE_QUAD_SEGS))
+            parts.append(LineString(pts).buffer(t.width_mm / 2.0, quad_segs=quad_segs))
 
     for p in pads:
         parts.extend(_polys(p.shapes.get(layer, [])))
@@ -74,7 +76,7 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
     if span_vias:
         centers = shapely.points([v.position for v in span_vias])
         radii = np.array([v.diameter_mm / 2.0 for v in span_vias])
-        parts.extend(shapely.buffer(centers, radii, quad_segs=CIRCLE_QUAD_SEGS))
+        parts.extend(shapely.buffer(centers, radii, quad_segs=quad_segs))
 
     for z in zones:
         parts.extend(_polys(z.filled.get(layer, [])))
@@ -84,20 +86,21 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
     geom = shapely.union_all(parts)
 
     if cut_drills:
-        holes = drill_holes(snap, net, layer)
+        holes = drill_holes(snap, net, layer, quad_segs)
         if holes is not None:
             geom = geom.difference(holes)
     return _only_polygons(geom)
 
 
-def drill_holes(snap: BoardSnapshot, net: str, layer: int) -> Optional[BaseGeometry]:
+def drill_holes(snap: BoardSnapshot, net: str, layer: int,
+                quad_segs: int = CIRCLE_QUAD_SEGS) -> Optional[BaseGeometry]:
     """Drill holes of the net's vias and through-hole pads that pass through ``layer``."""
     holes = []
     _, vias, pads, _ = snap.items_on_net(net)
     for v in vias:
         if layer in v.layers and v.drill_mm > 0:
             holes.append(shapely.Point(v.position).buffer(v.drill_mm / 2.0,
-                                                          quad_segs=CIRCLE_QUAD_SEGS))
+                                                          quad_segs=quad_segs))
     for p in pads:
         if p.pad_type == "pth" and layer in p.shapes:
             dx, dy = p.drill_mm
@@ -105,14 +108,14 @@ def drill_holes(snap: BoardSnapshot, net: str, layer: int) -> Optional[BaseGeome
                 continue
             if abs(dx - dy) < 1e-6:
                 holes.append(shapely.Point(p.position).buffer(dx / 2.0,
-                                                              quad_segs=CIRCLE_QUAD_SEGS))
+                                                              quad_segs=quad_segs))
             else:  # oblong slot; orientation is not in the snapshot, assume long axis on x/y
                 r = min(dx, dy) / 2.0
                 half = (max(dx, dy) - min(dx, dy)) / 2.0
                 x, y = p.position
                 seg = ([(x - half, y), (x + half, y)] if dx > dy
                        else [(x, y - half), (x, y + half)])
-                holes.append(LineString(seg).buffer(r, quad_segs=CIRCLE_QUAD_SEGS))
+                holes.append(LineString(seg).buffer(r, quad_segs=quad_segs))
     return shapely.union_all(holes) if holes else None
 
 

@@ -7,10 +7,11 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+from vtkmodules.vtkRenderingCore import vtkActor, vtkCellPicker, vtkPolyDataMapper
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.viz.batch import Chunk, MeshBatcher
+from kipi.viz.results import FIELDS, ResultScene
 from kipi.viz.meshes import NetScene
 
 _NET_COLORS = [(0.90, 0.35, 0.25), (0.25, 0.60, 0.90), (0.95, 0.75, 0.20), (0.40, 0.80, 0.45),
@@ -22,6 +23,22 @@ _BOARD_COLOR = (0.15, 0.40, 0.20)
 
 # Surface properties per mesh category: (opacity, specular)
 _CATEGORY_LOOK = {"cu": (1.0, 0.4), "pad": (0.9, 0.0), "via": (1.0, 0.6)}
+
+
+def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
+    """Tick label format with enough decimals to tell the labels apart.
+
+    A 3.3 V rail that sags by 0.4 mV needs five decimals, or every tick reads "3.3".
+    """
+    if log_scale:
+        return "%.2g"
+    span = abs(hi - lo)
+    if span <= 0:
+        return "%.4g"
+    step_decimals = max(0, int(np.ceil(-np.log10(span / 5))) + 1)
+    if max(abs(lo), abs(hi)) >= 1e4 or step_decimals > 9:
+        return "%.4g"
+    return f"%.{step_decimals}f"
 
 
 def _chunk_actor(category) -> vtkActor:
@@ -78,9 +95,19 @@ class Viewer3D(QWidget):
         self._color_mode = "layer"
         self._zscale = 1.0
         self._pick_cb: Optional[Callable[[Tuple[float, float, float]], None]] = None
-        self.plotter.enable_surface_point_picking(
-            callback=self._on_pick, show_message=False, left_clicking=True,
-            show_point=True, point_size=12, color="white", clear_on_no_selection=True)
+        self._result: Optional[ResultScene] = None
+        self._result_field = "voltage"
+        self._result_actors: Dict[int, object] = {}      # layer id -> actor
+        self._result_via_actor = None
+        self._scalar_bars: List[str] = []
+        # Clicks are handled here rather than with pyvista's point picking, so a click can
+        # also select a via by its on-screen distance (vias are only a few pixels wide).
+        self._picker = vtkCellPicker()
+        self._picker.SetTolerance(0.0005)
+        self._press_pos = None
+        iren = self.plotter.iren
+        iren.add_observer("LeftButtonPressEvent", self._on_left_press)
+        iren.add_observer("LeftButtonReleaseEvent", self._on_left_release)
 
     # ------------------------------------------------------------------ scene
     def set_board(self, body: Optional[pv.PolyData], outline: Optional[pv.PolyData]):
@@ -93,6 +120,8 @@ class Viewer3D(QWidget):
         self._batch = MeshBatcher()
         self._net_color.clear()
         self._layer_color.clear()
+        self._clear_result_actors()
+        self._result = None
         p.clear_actors()
         self._board_actors.clear()
         self._hidden_layers.clear()
@@ -201,8 +230,18 @@ class Viewer3D(QWidget):
         actor.SetVisibility(visible)
 
     def _apply_visibility(self):
+        showing_result = self._result is not None
         for chunk, actor in self._chunk_actors.items():
-            self._apply_actor_visibility(chunk.category, actor)
+            if showing_result:
+                actor.SetVisibility(False)
+            else:
+                self._apply_actor_visibility(chunk.category, actor)
+        for lid, actor in self._result_actors.items():
+            actor.SetVisibility(lid not in self._hidden_layers)
+        if self._result_via_actor is not None:
+            # In the via-current view the vias are the result, so always show them.
+            self._result_via_actor.SetVisibility(self._show_vias
+                                                 or self._result_field == "via_current")
         for a in self._board_actors:
             a.SetVisibility(self._show_board)
         self.plotter.render()
@@ -213,12 +252,126 @@ class Viewer3D(QWidget):
             a.SetScale(1.0, 1.0, self._zscale)
         for a in self._chunk_actors.values():
             a.SetScale(1.0, 1.0, self._zscale)
+        for a in self._result_actors.values():
+            a.SetScale(1.0, 1.0, self._zscale)
+        if self._result_via_actor is not None:
+            self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         self.plotter.reset_camera_clipping_range()
         self.plotter.render()
 
     @property
     def zscale(self) -> float:
         return self._zscale
+
+    # ---------------------------------------------------------------- results
+    @property
+    def result(self) -> Optional[ResultScene]:
+        return self._result
+
+    def show_result(self, scene: ResultScene, field: Optional[str] = None):
+        """Replace the copper view with solver results coloured by ``field``."""
+        self._clear_result_actors()
+        self._result = scene
+        if field is not None:
+            self._result_field = field
+        self._draw_result()
+
+    def set_result_field(self, field: str):
+        self._result_field = field
+        if self._result is not None:
+            self._clear_result_actors()
+            self._draw_result()
+
+    def clear_result(self):
+        self._clear_result_actors()
+        self._result = None
+        self._apply_visibility()
+
+    def _clear_result_actors(self):
+        p = self.plotter
+        for a in self._result_actors.values():
+            p.remove_actor(a, render=False)
+        if self._result_via_actor is not None:
+            p.remove_actor(self._result_via_actor, render=False)
+        for title in self._scalar_bars:
+            try:
+                p.remove_scalar_bar(title, render=False)
+            except (KeyError, ValueError, StopIteration):
+                pass
+        self._result_actors.clear()
+        self._result_via_actor = None
+        self._scalar_bars.clear()
+
+    def _draw_result(self):
+        scene = self._result
+        arr, assoc, label, unit = FIELDS[self._result_field]
+        if assoc == "via":
+            self._draw_via_result(scene, arr, f"{label} ({unit})")
+        else:
+            self._draw_copper_result(scene, arr, assoc, f"{label} ({unit})")
+        self._apply_visibility()
+
+    def _draw_copper_result(self, scene, arr, assoc, title):
+        """Copper coloured by a field; vias drawn plain for context."""
+        p = self.plotter
+        lo, hi = scene.ranges[self._result_field]
+        if self._result_field in ("current_density", "power_density"):
+            # Hot spots at pad corners dwarf everything else; clip the scale at the
+            # 99.5th percentile (the probe still reports true values).
+            vals = np.concatenate([
+                lr.mesh.cell_data[arr][np.isfinite(lr.mesh.cell_data[arr])]
+                for lr in scene.layers.values()])
+            if len(vals):
+                hi = float(np.percentile(vals, 99.5))
+        if hi <= lo:
+            hi = lo + 1e-12
+        cmap = "turbo" if assoc == "point" else "inferno"
+        log_scale = self._result_field == "power_density"
+        if log_scale:
+            lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
+        bar = dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
+                   height=0.5, width=0.05, fmt=_bar_format(lo, hi, log_scale),
+                   title_font_size=14,
+                   label_font_size=12, n_labels=6)
+        first = True
+        for lid, lr in scene.layers.items():
+            actor = p.add_mesh(lr.mesh, scalars=arr, preference=assoc, cmap=cmap,
+                               clim=(lo, hi), log_scale=log_scale, nan_color="#555555",
+                               smooth_shading=False,
+                               show_scalar_bar=first, scalar_bar_args=bar,
+                               name=f"result:{lid}", reset_camera=False, render=False)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            self._result_actors[lid] = actor
+            first = False
+        self._scalar_bars.append(title)
+        if scene.vias is not None:
+            self._result_via_actor = p.add_mesh(
+                scene.vias, color=_VIA_COLOR, specular=0.6, name="result:vias",
+                reset_camera=False, render=False)
+            self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+
+    def _draw_via_result(self, scene, arr, title):
+        """Vias coloured by current; copper drawn as muted grey for context."""
+        p = self.plotter
+        for lid, lr in scene.layers.items():
+            actor = p.add_mesh(lr.mesh, color="#7a7f88", opacity=0.35, smooth_shading=False,
+                               name=f"result:{lid}", reset_camera=False, render=False,
+                               pickable=True)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            self._result_actors[lid] = actor
+        if scene.vias is None:
+            return
+        lo, hi = scene.ranges["via_current"]
+        if hi <= lo:
+            hi = lo + 1e-9
+        self._result_via_actor = p.add_mesh(
+            scene.vias, scalars=arr, cmap="viridis", clim=(lo, hi), specular=0.4,
+            show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
+            scalar_bar_args=dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
+                                 height=0.5, width=0.05, fmt=_bar_format(lo, hi, False),
+                                 title_font_size=14, label_font_size=12, n_labels=6))
+        self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+        self._scalar_bars.append(title)
 
     # ------------------------------------------------------------------ views
     def _fit(self, zoom: float = 1.0):
@@ -243,15 +396,66 @@ class Viewer3D(QWidget):
         self.plotter.screenshot(path, transparent_background=False)
 
     # ---------------------------------------------------------------- picking
-    def on_pick(self, cb: Callable[[Tuple[float, float, float]], None]):
-        """Register ``cb(x_mm, y_mm_kicad, z_mm)`` for left-click picks."""
+    def on_click(self, cb):
+        """Register ``cb(point, screen_xy)`` for left clicks (not drags).
+
+        ``point`` is the clicked copper surface point as (x_mm, y_mm_kicad, z_mm), or None
+        if the click hit no copper; ``screen_xy`` is the click in display pixels, for use
+        with :meth:`screen_distance_to_segments`.
+        """
         self._pick_cb = cb
 
-    def _on_pick(self, point):
-        if self._pick_cb is None or point is None:
+    def _event_pos(self):
+        return tuple(self.plotter.iren.interactor.GetEventPosition())
+
+    def _on_left_press(self, *_):
+        self._press_pos = self._event_pos()
+
+    def _on_left_release(self, *_):
+        start, self._press_pos = self._press_pos, None
+        if start is None or self._pick_cb is None:
             return
-        x, y, z = np.asarray(point, dtype=float)
-        self._pick_cb((x, -y, z / self._zscale))
+        x, y = self._event_pos()
+        if abs(x - start[0]) + abs(y - start[1]) > 4:     # a drag (rotate/pan), not a click
+            return
+        point = None
+        if self._picker.Pick(x, y, 0, self.plotter.renderer) and self._picker.GetCellId() >= 0:
+            wx, wy, wz = self._picker.GetPickPosition()
+            point = (wx, -wy, wz / self._zscale)
+            self._show_marker((wx, wy, wz))
+        self._pick_cb(point, (x, y))
+
+    def _show_marker(self, world_xyz):
+        self.plotter.add_points(np.array([world_xyz]), color="white", point_size=12,
+                                render_points_as_spheres=True, name="pick_marker",
+                                pickable=False, reset_camera=False, render=False)
+        self.plotter.render()
+
+    def screen_distance_to_segments(self, segments: np.ndarray, screen_xy) -> np.ndarray:
+        """Pixel distance from ``screen_xy`` to each 3D segment (N, 2, 3), KiCad coords."""
+        if len(segments) == 0:
+            return np.zeros(0)
+        ren = self.plotter.renderer
+        m = ren.GetActiveCamera().GetCompositeProjectionTransformMatrix(
+            ren.GetTiledAspectRatio(), -1, 1)
+        M = np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)])
+        P = segments.reshape(-1, 3).astype(float).copy()
+        P[:, 1] *= -1.0                       # KiCad y down -> view y up
+        P[:, 2] *= self._zscale
+        H = np.column_stack([P, np.ones(len(P))]) @ M.T
+        behind = H[:, 3] <= 0
+        ndc = H[:, :2] / np.where(behind, 1.0, H[:, 3])[:, None]
+        w, h = ren.GetSize()
+        ox, oy = ren.GetOrigin()
+        xy = np.column_stack([(ndc[:, 0] + 1) / 2 * w + ox,
+                              (ndc[:, 1] + 1) / 2 * h + oy]).reshape(-1, 2, 2)
+        a, b = xy[:, 0], xy[:, 1]
+        ab = b - a
+        p = np.asarray(screen_xy, dtype=float)
+        t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+        d = np.linalg.norm(p - (a + t[:, None] * ab), axis=1)
+        d[behind.reshape(-1, 2).any(axis=1)] = np.inf
+        return d
 
     def close(self):
         self.plotter.close()

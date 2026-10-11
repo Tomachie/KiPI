@@ -70,3 +70,49 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
   KiCad-Parasitics) already install PySide6/PyQt6/pyvista into their KiCad venvs.
 * Copper is drawn as slabs at true stackup Z with a Z-exaggeration scale. Vias are drawn as barrels.
 * Later additions: scalar fields (V, ΔV, |J|, P), J arrow glyphs, clipping planes, `.vtu` export.
+
+## Solver validation and accuracy findings (Milestone 2)
+
+* **Straight trace.** Matches rho*L/(W*t) to 1e-9. P1 elements are exact for a linear field.
+* **Radial spreading into a via.** With a uniform mesh the error was -1.7% at h = 0.4 mm. A
+  P1 model with equipotential ends over-estimates conductance, so the error was in the
+  expected direction, but it converged only as O(h). The cause is the 1/r field near the
+  drill. A size field that grows linearly with distance from each plated hole,
+  h = clamp(h_min + k*d, h_min, h_max), brings it to -0.02% for about the same node count.
+  The defaults are k = 0.2 and h_min = 0.02 mm.
+* **Drill polygons.** Approximating a drill as an 8-gon makes it look about 0.8% more
+  resistive than a circle, because an octagon's effective radius is smaller. The default
+  is 16 segments.
+* **Solve for the offset from the source voltage.** A rail drop is about 1e-4 of the rail
+  voltage. Solving in absolute volts lets the source term dominate the right-hand side, so a
+  relative residual of 1e-10 said little about the drop: AMG and direct solves disagreed by
+  0.4%, and the energy balance error was about 1e-6. Solving for u = V - V_ref gives energy
+  balance and KCL errors of about 1e-10, with AMG matching direct to five digits.
+* **Plated holes.** A plated hole ties its ring together even when it has copper on only one
+  layer, because the barrel wall shorts the hole edge. Dropping single-layer barrels left
+  1 mm PTH holes in a plane acting as insulating cut-outs and shifted load drops by 0.4%.
+* **Dead rings.** Annular rings that touch nothing but their own barrel carry no current. On
+  the DSP board, skipping them removes 29% of the nodes with an identical answer.
+* **Performance.** On the DSP board, +3.3V meshes to 174k nodes on 3 layers. Smoothed-
+  aggregation AMG-CG then converges in about 60 iterations, and the whole run takes 2–3 s.
+
+## Robustness findings (hangs and crashes seen in KiCad)
+
+* **KiCad's stdout/stderr pipe can block the plugin forever.** KiCad captures a plugin's
+  output through a pipe and doesn't always drain it. Once the few-KB buffer fills, the next
+  write blocks, freezing whichever thread was logging. A long solve logs CG progress, so the
+  first solve worked and a later one hung at "Solving…". Now logging echoes only to an
+  interactive terminal, and the plugin entry redirects fds 1 and 2 to a per-session
+  `.console.log`. `tests/test_app.py` reproduces the problem with an unread pipe.
+* **Triangle and nearly coincident constraints.** If a pad outline runs within a few µm of the
+  (simplified) copper edge, it creates hair-thin slivers, and quality refinement then splits
+  them essentially forever (+12Vin, J201). Pad outlines are now clipped 10 µm clear of copper
+  edges and extended straight to the edge. A Steiner-point cap (`S`) guarantees termination.
+* **Triangle segfaults on unnoded input.** Noding in floating point and rounding afterwards
+  can leave segments crossing without a shared vertex, and Triangle crashes the whole process
+  on that (+3.3VA_DSP). Noding now uses GEOS snap-rounding on the 1 nm KiCad grid, and every
+  input is checked (`pslg_problems`) before it reaches Triangle; a bad input falls back or
+  raises `MeshError`, never a segfault. Meshing all 237 nets of the DSP board, with every pad
+  as a terminal, now runs clean in 20 s.
+* **Stale task signals.** A task's `finished` can arrive after its `done()` has started the
+  next task. Handlers now ignore finishes from tasks that are no longer current.
