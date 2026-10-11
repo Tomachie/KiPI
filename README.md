@@ -1,5 +1,7 @@
 # KiPI — DC power integrity for KiCad 10
 
+[![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
+
 KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin. The planned
 workflow:
 
@@ -31,7 +33,7 @@ work. The solver is next. See [docs/research.md](docs/research.md) for design no
 
 ```powershell
 python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
-.venv\Scripts\pip install -r requirements.txt pytest
+.venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
 .venv\Scripts\python -m kipi                         # connect to the running PCB editor
 .venv\Scripts\python -m kipi --dump board.kipi.json.gz   # extract only
 .venv\Scripts\python -m kipi --snapshot tests\data\synthetic.kipi.json
