@@ -45,8 +45,9 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m pytest tests
 ```
 
-The log is written to `%TEMP%\kipi.log`, and the previous run's log is kept as
-`kipi.prev.log`. A hard crash also leaves a traceback in `%TEMP%\kipi_crash.log`.
+Each session writes its own log to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last 15
+sessions are kept. A matching `.crash.log` collects native crash tracebacks, plus stack dumps
+of every thread if a background task runs longer than a minute (useful when something hangs).
 
 ## Layout
 

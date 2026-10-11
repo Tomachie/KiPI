@@ -5,46 +5,77 @@ from __future__ import annotations
 import faulthandler
 import logging
 import os
-import shutil
 import sys
 import tempfile
 import threading
+import time
 import traceback
 from pathlib import Path
 
-LOG_DIR = Path(tempfile.gettempdir())
-LOG_PATH = LOG_DIR / "kipi.log"
-PREV_LOG_PATH = LOG_DIR / "kipi.prev.log"
-CRASH_PATH = LOG_DIR / "kipi_crash.log"
+LOG_DIR = Path(tempfile.gettempdir()) / "kipi"
+LOG_PATH = LOG_DIR / "kipi.log"          # replaced per session by setup_logging()
+KEEP_SESSIONS = 15
 
 log = logging.getLogger("kipi")
 _crash_file = None   # kept open for faulthandler for the life of the process
 
 
 def setup_logging(level=logging.INFO) -> Path:
-    """Log to %TEMP%/kipi.log (the previous run is kept as kipi.prev.log).
+    """Write this session's log to %TEMP%/kipi/kipi-<time>-<pid>.log.
 
-    Inside KiCad the plugin has no console, so this file, and kipi_crash.log for hard
-    crashes, are the only record of what went wrong.
+    Inside KiCad the plugin has no console, so these files are the only record of
+    what went wrong. Each session gets its own log and its own crash/hang file
+    (``*.crash.log``), so one run never overwrites another; the newest
+    KEEP_SESSIONS sessions are kept.
     """
-    global _crash_file
-    try:
-        if LOG_PATH.exists() and LOG_PATH.stat().st_size:
-            shutil.copyfile(LOG_PATH, PREV_LOG_PATH)
-    except OSError:
-        pass
+    global _crash_file, LOG_PATH
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    LOG_PATH = LOG_DIR / f"kipi-{stamp}-{os.getpid()}.log"
+    crash_path = LOG_PATH.with_suffix(".crash.log")
+    _prune_old_logs()
     handlers = [logging.FileHandler(LOG_PATH, mode="w", encoding="utf-8")]
     if sys.stderr:
         handlers.append(logging.StreamHandler(sys.stderr))
-    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-                        handlers=handlers, force=True)
+    logging.basicConfig(level=level, format="%(asctime)s %(levelname)s %(threadName)s: "
+                        "%(message)s", handlers=handlers, force=True)
     try:
-        _crash_file = open(CRASH_PATH, "w", encoding="utf-8")
+        _crash_file = open(crash_path, "w", encoding="utf-8")
+        _crash_file.write("# KiPI native crash / hang stack dumps for this session.\n"
+                          "# 'Windows fatal exception: code 0x8001010d' entries are harmless COM\n"
+                          "# notices that Windows raises and Python reports; they are not crashes.\n")
+        _crash_file.flush()
         faulthandler.enable(file=_crash_file, all_threads=True)
     except OSError:
         pass
     _install_excepthooks()
+    log.info("KiPI session log %s (Python %s)", LOG_PATH, sys.version.split()[0])
     return LOG_PATH
+
+
+def _prune_old_logs():
+    try:
+        logs = sorted(LOG_DIR.glob("kipi-*.log"), key=lambda p: p.stat().st_mtime, reverse=True)
+        sessions = [p for p in logs if not p.name.endswith(".crash.log")]
+        for old in sessions[KEEP_SESSIONS:]:
+            old.unlink(missing_ok=True)
+            old.with_suffix(".crash.log").unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def watchdog_start(seconds: float = 60.0):
+    """Dump every thread's stack to the crash log every ``seconds`` until stopped.
+
+    Called when a background task starts, so a task that never finishes leaves a
+    record of exactly where it is stuck.
+    """
+    if _crash_file is not None:
+        faulthandler.dump_traceback_later(seconds, repeat=True, file=_crash_file)
+
+
+def watchdog_stop():
+    faulthandler.cancel_dump_traceback_later()
 
 
 def _install_excepthooks():

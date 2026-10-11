@@ -11,7 +11,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 def main() -> int:
-    from kipi.gui.app import LOG_PATH, run, setup_logging
+    from kipi.gui import app as kipi_app
+    from kipi.gui.app import run, setup_logging
     from kipi.kicad_io.extract import ExtractionError, connect
     from kipi.progress import ProgressReporter
 
@@ -22,7 +23,7 @@ def main() -> int:
         os.environ.setdefault("QT_API", "pyside6")
         from qtpy.QtWidgets import QApplication, QMessageBox
         app = QApplication.instance() or QApplication(sys.argv)
-        QMessageBox.critical(None, "KiPI", f"{e}\n\nLog: {LOG_PATH}")
+        QMessageBox.critical(None, "KiPI", f"{e}\n\nLog: {kipi_app.LOG_PATH}")
         return 1
     return run(kicad=kicad, board=board)
 

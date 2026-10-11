@@ -275,14 +275,26 @@ class MainWindow(QMainWindow):
         task = Task(fn, prog, self)
         task.done.connect(on_done)
         task.failed.connect(lambda tb: self._on_task_failed(name, tb))
-        task.finished.connect(self._on_task_finished)
+        task.finished.connect(lambda t=task: self._on_task_finished(t))
         self._task = task
         self.btn_cancel.setEnabled(True)
         self.act_reload.setEnabled(False)
+        from kipi.gui import app as kipi_app
+        kipi_app.watchdog_start()
+        log.info("Task started: %s", name)
         task.start()
         return task
 
-    def _on_task_finished(self):
+    def _on_task_finished(self, task=None):
+        # A task's done() may already have started the next task (loading a board
+        # starts the net build). Its "finished" arrives after that, and must not reset
+        # the UI or stop the watchdog for the task that is now running.
+        if task is not None and task is not self._task:
+            log.info("Earlier task finished (another task is already running)")
+            return
+        from kipi.gui import app as kipi_app
+        kipi_app.watchdog_stop()
+        log.info("Task finished")
         self.solve_panel.set_busy(False)
         pending, self._pending_solve = getattr(self, "_pending_solve", None), None
         self.btn_cancel.setEnabled(False)

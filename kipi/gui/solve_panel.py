@@ -9,7 +9,8 @@ from typing import Dict, List, Optional
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtWidgets import (
     QAbstractItemView, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget, QTextBrowser, QVBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QPushButton, QTableWidget, QTextBrowser, QToolButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -64,21 +65,19 @@ class SolvePanel(QWidget):
 
         g_ld = QGroupBox("Loads", self)
         ll = QVBoxLayout(g_ld)
-        self.tbl = QTableWidget(0, 3, g_ld)
-        self.tbl.setHorizontalHeaderLabels(["Part", "Pins", "Current"])
-        self.tbl.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.tbl.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        self.tbl = QTableWidget(0, 4, g_ld)
+        self.tbl.setHorizontalHeaderLabels(["Part", "Pins", "Current", ""])
+        hdr = self.tbl.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.tbl.setColumnWidth(3, 28)
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSelectionBehavior(QAbstractItemView.SelectRows)
-        row = QHBoxLayout()
         b_add = QPushButton("Add load", g_ld)
         b_add.clicked.connect(lambda: self._add_load_row())
-        b_del = QPushButton("Remove", g_ld)
-        b_del.clicked.connect(self._remove_load_rows)
-        row.addWidget(b_add)
-        row.addWidget(b_del)
         ll.addWidget(self.tbl)
-        ll.addLayout(row)
+        ll.addWidget(b_add)
         lay.addWidget(g_ld, 1)
 
         g_set = QGroupBox("Mesh && material", self)
@@ -214,13 +213,19 @@ class SolvePanel(QWidget):
         pins_edit.setPlaceholderText("all")
         self.tbl.setCellWidget(r, 1, pins_edit)
         self.tbl.setCellWidget(r, 2, _spin(-1000, 1000, current, 4, " A", 0.01))
+        btn = QToolButton()
+        btn.setText("✕")
+        btn.setToolTip("Remove this load")
+        btn.setAutoRaise(True)
+        btn.clicked.connect(lambda _=False, b=btn: self._remove_row_of(b))
+        self.tbl.setCellWidget(r, 3, btn)
 
-    def _remove_load_rows(self):
-        rows = sorted({i.row() for i in self.tbl.selectedIndexes()}, reverse=True) or \
-            [self.tbl.rowCount() - 1]
-        for r in rows:
-            if r >= 0:
+    def _remove_row_of(self, widget):
+        """Remove the row holding ``widget`` (rows shift, so look it up at click time)."""
+        for r in range(self.tbl.rowCount()):
+            if self.tbl.cellWidget(r, 3) is widget:
                 self.tbl.removeRow(r)
+                return
 
     def _capture(self) -> dict:
         loads = []
