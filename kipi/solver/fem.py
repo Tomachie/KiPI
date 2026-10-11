@@ -27,7 +27,7 @@ from scipy.sparse.csgraph import connected_components
 from kipi.mesh.mesher import NetMesh
 from kipi.model.board import BoardSnapshot
 from kipi.progress import NULL, ProgressReporter
-from kipi.solver.setup import NetProblem
+from kipi.solver.setup import SHORT_OHMS, NetProblem
 
 DIRECT_SOLVE_MAX_UNKNOWNS = 30_000
 
@@ -47,6 +47,15 @@ class BarrelElement:
 
 
 @dataclass
+class SeriesElement:
+    link: int          # index into problem.series
+    name: str
+    node_a: int        # merged unknowns of side A and side B
+    node_b: int
+    g: Optional[float]  # siemens; None when the part is a short (sides merged)
+
+
+@dataclass
 class Solution:
     problem: NetProblem
     mesh: NetMesh
@@ -57,6 +66,8 @@ class Solution:
     barrel_elements: List[BarrelElement]
     source_current: Dict[str, float]    # A delivered by each source
     stats: Dict[str, float] = field(default_factory=dict)
+    series_elements: List[SeriesElement] = field(default_factory=list)
+    series_current: Dict[str, float] = field(default_factory=dict)   # A from side A to B
     warnings: List[str] = field(default_factory=list)
 
 
@@ -100,6 +111,20 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     pad_groups = {pid: np.concatenate(list(per_layer.values()))
                   for pid, per_layer in mesh.pad_nodes.items()}
     groups.extend(pad_groups.values())
+
+    # Series parts: each side's pads are one node (the part's lead/body ties them); a
+    # short (R at or below SHORT_OHMS) merges both sides into one node.
+    def side_nodes(pads):
+        missing = [p for p in pads if p not in pad_groups]
+        if missing:
+            raise SolveError(f"Series part pads have no meshed copper: {missing}")
+        return np.concatenate([pad_groups[p] for p in pads])
+    for link in problem.series:
+        a, b = side_nodes(link.pads_a), side_nodes(link.pads_b)
+        if link.resistance <= SHORT_OHMS:
+            groups.append(np.concatenate([a, b]))
+        else:
+            groups.extend([a, b])
     merged_of, nm = _merge_groups(mesh.n_nodes, groups)
 
     b, c, two_a = triangle_geometry(mesh.points, mesh.tris)
@@ -139,32 +164,66 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         cols = np.concatenate([cols, ea, eb, eb, ea])
         data = np.concatenate([data, eg, eg, -eg, -eg])
 
+    series: List[SeriesElement] = []
+    for i, link in enumerate(problem.series):
+        na = int(merged_of[pad_groups[link.pads_a[0]][0]])
+        nb = int(merged_of[pad_groups[link.pads_b[0]][0]])
+        if link.resistance <= SHORT_OHMS or na == nb:
+            series.append(SeriesElement(i, link.name, na, nb, None))
+            continue
+        g = 1.0 / link.resistance
+        series.append(SeriesElement(i, link.name, na, nb, g))
+        rows = np.concatenate([rows, [na, nb, na, nb]])
+        cols = np.concatenate([cols, [na, nb, nb, na]])
+        data = np.concatenate([data, [g, g, -g, -g]])
+
     K = sp.coo_matrix((data, (rows, cols)), shape=(nm, nm)).tocsr()
     K.sum_duplicates()
     pad_unknown = {pid: int(merged_of[nodes[0]]) for pid, nodes in pad_groups.items()}
-    return K, merged_of, nm, sheet_g, elements, pad_unknown
+    return K, merged_of, nm, sheet_g, elements, pad_unknown, series
 
 
 # ---------------------------------------------------------------------------
 # Solve
 # ---------------------------------------------------------------------------
 
-def _solve_spd(A: sp.csr_matrix, rhs: np.ndarray, s, progress: ProgressReporter, stats: dict):
-    n = A.shape[0]
-    if n <= DIRECT_SOLVE_MAX_UNKNOWNS:
-        from scipy.sparse.linalg import spsolve
-        progress.info(f"Direct solve ({n} unknowns)")
-        progress.fraction(None)
-        x = spsolve(A.tocsc(), rhs)
-        stats["method"] = "direct"
-        stats["iterations"] = 0
-    else:
-        import pyamg
-        t = time.perf_counter()
-        progress.info(f"AMG setup ({n} unknowns, {A.nnz} non-zeros)...")
-        ml = pyamg.smoothed_aggregation_solver(A, symmetry="hermitian", max_coarse=500)
-        progress.info(f"AMG hierarchy: {len(ml.levels)} levels, operator complexity "
-                      f"{ml.operator_complexity():.2f} ({time.perf_counter() - t:.2f} s)")
+class _Factor:
+    """Solver for the fixed reduced matrix, reused for every right-hand side.
+
+    Small systems are LU-factorized once; large ones keep their AMG hierarchy and warm
+    start CG from the previous solution (power-tree iterations change only the
+    right-hand side, and only slightly)."""
+
+    def __init__(self, A: sp.csr_matrix, settings, progress: ProgressReporter, stats: dict):
+        self.A = A
+        self.s = settings
+        self.stats = stats
+        self.x_prev = None
+        self.lu = None
+        self.ml = None
+        n = A.shape[0]
+        if n <= DIRECT_SOLVE_MAX_UNKNOWNS:
+            from scipy.sparse.linalg import factorized
+            progress.info(f"Direct solve ({n} unknowns)")
+            progress.fraction(None)
+            self.lu = factorized(A.tocsc()) if n else None
+            stats["method"] = "direct"
+            stats["iterations"] = 0
+        else:
+            import pyamg
+            t = time.perf_counter()
+            progress.info(f"AMG setup ({n} unknowns, {A.nnz} non-zeros)...")
+            self.ml = pyamg.smoothed_aggregation_solver(A, symmetry="hermitian", max_coarse=500)
+            progress.info(f"AMG hierarchy: {len(self.ml.levels)} levels, operator complexity "
+                          f"{self.ml.operator_complexity():.2f} ({time.perf_counter() - t:.2f} s)")
+            stats["method"] = "amg-cg"
+
+    def solve(self, rhs: np.ndarray, progress: ProgressReporter) -> np.ndarray:
+        if self.A.shape[0] == 0:
+            return np.zeros(0)
+        if self.lu is not None:
+            return np.asarray(self.lu(rhs))
+        s = self.s
         residuals: List[float] = []
         state = {"last": 0.0}
         log_target = math.log10(max(s.tol, 1e-16))
@@ -180,106 +239,145 @@ def _solve_spd(A: sp.csr_matrix, rhs: np.ndarray, s, progress: ProgressReporter,
                 progress.info(f"  CG iteration {len(residuals) - 1}: relative residual {r:.2e}")
                 progress.fraction(min(1.0, math.log10(max(r, 1e-300)) / log_target))
 
-        x = ml.solve(rhs, tol=s.tol, maxiter=s.max_iter, accel="cg", callback=cb,
-                     residuals=residuals)
+        x = self.ml.solve(rhs, x0=self.x_prev, tol=s.tol, maxiter=s.max_iter, accel="cg",
+                          callback=cb, residuals=residuals)
         rel = residuals[-1] / max(residuals[0], 1e-300) if residuals else 0.0
-        stats["method"] = "amg-cg"
-        stats["iterations"] = len(residuals) - 1
-        stats["relative_residual"] = rel
+        self.stats["iterations"] = len(residuals) - 1
+        self.stats["relative_residual"] = rel
         progress.info(f"CG converged in {len(residuals) - 1} iterations, "
                       f"relative residual {rel:.2e}")
-        if rel > s.tol * 100:
+        if rel > s.tol * 100 and np.linalg.norm(rhs) > 0:
             from scipy.sparse.linalg import spsolve
             progress.warn("Iterative solve did not converge; falling back to a direct solve")
-            x = spsolve(A.tocsc(), rhs)
-            stats["method"] = "direct (fallback)"
-    return np.asarray(x)
+            x = spsolve(self.A.tocsc(), rhs)
+            self.stats["method"] = "direct (fallback)"
+        self.x_prev = np.asarray(x)
+        return self.x_prev
+
+
+class LinearSystem:
+    """Assembled, factorized system for one problem's copper and terminals.
+
+    Construction does the expensive work (assembly, connectivity checks,
+    factorization). :meth:`solve` then takes source voltages and load currents, which
+    may change between calls (VRM sense correction, VRM input currents in a power
+    tree), and returns a :class:`Solution`.
+    """
+
+    def __init__(self, snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,
+                 progress: ProgressReporter = NULL):
+        if not problem.sources:
+            raise SolveError(f"{problem.net} needs a voltage source (a VRM output)")
+        t0 = time.perf_counter()
+        self.snap, self.mesh, self.problem = snap, mesh, problem
+        self.stats: Dict[str, float] = {}
+        self.warnings: List[str] = []
+        with progress.timed("Assembling"):
+            (self.K, self.merged_of, nm, self.sheet_g, self.elements, self.pad_unknown,
+             self.series) = assemble(snap, mesh, problem)
+            progress.info(f"{nm} unknowns after merging pads and drill rings, "
+                          f"{self.K.nnz} non-zeros, {len(self.elements)} barrel segments, "
+                          f"{len(self.series)} series part(s)")
+        self.nm = nm
+        self.stats.update(n_nodes=mesh.n_nodes, n_tris=mesh.n_tris, n_unknowns=nm,
+                          nnz=self.K.nnz)
+
+        # Which unknowns are held by which source (structure only; voltages come later).
+        self.source_unknowns: Dict[str, List[int]] = {}
+        owner: Dict[int, str] = {}
+        for src in problem.sources:
+            us = sorted({self.pad_unknown[pid] for pid in src.pad_ids})
+            for u in us:
+                if u in owner and owner[u] != src.name:
+                    raise SolveError(f"Sources {owner[u]} and {src.name} are connected "
+                                     "directly (same copper node)")
+                owner[u] = src.name
+            self.source_unknowns[src.name] = us
+
+        # Copper not connected to any source cannot be solved (and carries no current).
+        ncomp, comp = connected_components(self.K, directed=False)
+        live_comps = {comp[u] for u in owner}
+        live = np.isin(comp, list(live_comps))
+        for load in problem.loads:
+            if not all(live[self.pad_unknown[pid]] for pid in load.pad_ids):
+                srcs = ", ".join(s.name for s in problem.sources)
+                raise SolveError(f"Load {load.name} has no copper path to the source ({srcs}) "
+                                 f"on {problem.net}. If KiCad shows them connected, the link "
+                                 "is probably still unrouted (ratsnest) or goes through an "
+                                 "unfilled zone; refill zones and reload. Parts that join "
+                                 "nets must be added as DC connections.")
+        if int((~live).sum()):
+            floating_nodes = int((~live[self.merged_of]).sum())
+            self.warnings.append(f"{ncomp - len(live_comps)} copper island(s) "
+                                 f"({floating_nodes} mesh nodes) are not connected to a "
+                                 "source and were left out")
+        self.live = live
+        self.is_fixed = np.zeros(nm, dtype=bool)
+        self.is_fixed[list(owner)] = True
+        self.free = np.flatnonzero(live & ~self.is_fixed)
+        self.fixed_idx = np.flatnonzero(self.is_fixed)
+        A = self.K[self.free][:, self.free].tocsr()
+        self.K_fd = self.K[self.free][:, self.fixed_idx].tocsr()
+        with progress.timed("Factorizing"):
+            self.factor = _Factor(A, problem.settings, progress, self.stats)
+        self.setup_s = time.perf_counter() - t0
+        for w in self.warnings:
+            progress.warn(w)
+
+    def solve(self, voltages: Optional[Dict[str, float]] = None,
+              currents: Optional[Dict[str, float]] = None,
+              progress: ProgressReporter = NULL) -> Solution:
+        """Solve with per-source voltages and per-load currents (defaults: the problem's)."""
+        t0 = time.perf_counter()
+        prob = self.problem
+        volts = {s.name: s.voltage for s in prob.sources}
+        volts.update(voltages or {})
+        amps = {l.name: l.current for l in prob.loads}
+        amps.update(currents or {})
+
+        f = np.zeros(self.nm)
+        for load in prob.loads:
+            share = amps[load.name] / len(load.pad_ids)
+            for pid in load.pad_ids:
+                f[self.pad_unknown[pid]] -= share
+
+        # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail
+        # voltage, so with absolute volts the source term would dominate the right-hand
+        # side and a relative residual tolerance would say little about the drop.
+        v_ref = max(volts.values())
+        u_fixed = np.zeros(self.nm)
+        for name, us in self.source_unknowns.items():
+            u_fixed[us] = volts[name] - v_ref
+        rhs = f[self.free] - self.K_fd @ u_fixed[self.fixed_idx]
+        with progress.timed("Solving"):
+            x = self.factor.solve(rhs, progress)
+
+        u_all = np.full(self.nm, np.nan)
+        u_all[self.fixed_idx] = u_fixed[self.fixed_idx]
+        u_all[self.free] = x
+        v = u_all + v_ref
+
+        # Current each source delivers = net current flowing out of its fixed unknowns.
+        # K annihilates constants on each connected piece, so using u avoids cancellation.
+        flow = self.K @ np.nan_to_num(u_all) - f
+        source_current = {name: float(flow[us].sum())
+                          for name, us in self.source_unknowns.items()}
+        series_current = {}
+        for e in self.series:
+            if e.g is None:
+                series_current[e.name] = float("nan")   # a short: current not resolved
+            else:
+                series_current[e.name] = float(e.g * (u_all[e.node_a] - u_all[e.node_b]))
+        stats = dict(self.stats)
+        stats["solve_s"] = self.setup_s + time.perf_counter() - t0
+        return Solution(problem=prob, mesh=self.mesh, node_v=v[self.merged_of],
+                        merged_of=self.merged_of, v_merged=v, sheet_g=self.sheet_g,
+                        barrel_elements=self.elements, source_current=source_current,
+                        stats=stats, warnings=list(self.warnings),
+                        series_elements=self.series, series_current=series_current)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,
           progress: ProgressReporter = NULL) -> Solution:
-    if not problem.sources:
-        raise SolveError(f"Net {problem.net} needs at least one voltage source")
-    t0 = time.perf_counter()
-    stats: Dict[str, float] = {}
-    warnings: List[str] = []
-
-    with progress.timed("Assembling"):
-        K, merged_of, nm, sheet_g, elements, pad_unknown = assemble(snap, mesh, problem)
-        progress.info(f"{nm} unknowns after merging pads and drill rings, {K.nnz} non-zeros, "
-                      f"{len(elements)} barrel segments")
-    stats.update(n_nodes=mesh.n_nodes, n_tris=mesh.n_tris, n_unknowns=nm, nnz=K.nnz)
-
-    # Boundary conditions.
-    fixed: Dict[int, float] = {}
-    for src in problem.sources:
-        for pid in src.pad_ids:
-            u = pad_unknown[pid]
-            if u in fixed and abs(fixed[u] - src.voltage) > 1e-12:
-                raise SolveError(f"Pad of source {src.name} is shorted to another source "
-                                 "at a different voltage")
-            fixed[u] = src.voltage
-    f = np.zeros(nm)
-    for load in problem.loads:
-        share = load.current / len(load.pad_ids)
-        for pid in load.pad_ids:
-            u = pad_unknown[pid]
-            if u in fixed:
-                warnings.append(f"Load {load.name} sits on a source pad; it draws no copper current")
-            f[u] -= share
-
-    # Copper not connected to any source cannot be solved (and carries no current).
-    ncomp, comp = connected_components(K, directed=False)
-    live_comps = {comp[u] for u in fixed}
-    live = np.isin(comp, list(live_comps))
-    for load in problem.loads:
-        if not all(live[pad_unknown[pid]] for pid in load.pad_ids):
-            srcs = ", ".join(s.name for s in problem.sources)
-            raise SolveError(f"Load {load.name} has no copper path to the source ({srcs}) on "
-                             f"net {problem.net}. If KiCad shows them connected, the link is "
-                             "probably still unrouted (ratsnest) or goes through an unfilled "
-                             "zone; refill zones and reload.")
-    n_float = int((~live).sum())
-    if n_float:
-        floating_nodes = int((~live[merged_of]).sum())
-        warnings.append(f"{ncomp - len(live_comps)} copper island(s) ({floating_nodes} mesh "
-                        "nodes) are not connected to a source and were left out")
-
-    # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail voltage,
-    # so with absolute volts the source term would dominate the right-hand side and a
-    # relative residual tolerance would say little about the drop. With the offset the
-    # right-hand side is the load currents (plus any source-to-source differences).
-    v_ref = max(fixed.values())
-    is_fixed = np.zeros(nm, dtype=bool)
-    u_fixed = np.zeros(nm)
-    for u, v in fixed.items():
-        is_fixed[u] = True
-        u_fixed[u] = v - v_ref
-    free = np.flatnonzero(live & ~is_fixed)
-    fixed_idx = np.flatnonzero(is_fixed)
-    A = K[free][:, free].tocsr()
-    rhs = f[free] - K[free][:, fixed_idx] @ u_fixed[fixed_idx]
-
-    with progress.timed("Solving"):
-        x = _solve_spd(A, rhs, problem.settings, progress, stats) if len(free) else np.zeros(0)
-
-    u_all = np.full(nm, np.nan)
-    u_all[fixed_idx] = u_fixed[fixed_idx]
-    u_all[free] = x
-    v = u_all + v_ref
-    node_v = v[merged_of]
-
-    # Current each source delivers = net current flowing out of its fixed unknowns.
-    # K annihilates constants on each connected piece, so using u avoids cancellation.
-    flow = K @ np.nan_to_num(u_all) - f
-    source_current = {}
-    for src in problem.sources:
-        us = {pad_unknown[pid] for pid in src.pad_ids}
-        source_current[src.name] = float(sum(flow[u] for u in us))
-
-    stats["solve_s"] = time.perf_counter() - t0
-    for w in warnings:
-        progress.warn(w)
-    return Solution(problem=problem, mesh=mesh, node_v=node_v, merged_of=merged_of,
-                    v_merged=v, sheet_g=sheet_g, barrel_elements=elements,
-                    source_current=source_current, stats=stats, warnings=warnings)
+    """One-shot solve with the problem's own source voltages and load currents."""
+    return LinearSystem(snap, mesh, problem, progress).solve(progress=progress)

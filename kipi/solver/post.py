@@ -40,6 +40,16 @@ class ViaResult:
 
 
 @dataclass
+class SeriesResult:
+    name: str
+    resistance: float             # ohms (0 for a short)
+    current: float                # A from side A to side B (NaN for a short)
+    v_a: float
+    v_b: float
+    power: float                  # W dissipated in the part
+
+
+@dataclass
 class Fields:
     """Per-triangle and per-via results plus a summary."""
     grad: np.ndarray              # (M, 2) dV/dx, dV/dy in V/mm (KiCad axes, y down)
@@ -51,6 +61,7 @@ class Fields:
     terminals: List[TerminalResult]
     v_ref: float                  # highest source voltage, the reference for "drop"
     summary: Dict[str, float] = field(default_factory=dict)
+    series: List[SeriesResult] = field(default_factory=list)
 
     def drop(self, v: np.ndarray) -> np.ndarray:
         return self.v_ref - v
@@ -112,7 +123,16 @@ def compute_fields(sol: Solution) -> Fields:
         sum(t.current * (v_ref - t.v_mean) for t in terminals if t.kind == "source")
     i_src = sum(t.current for t in terminals if t.kind == "source")
     i_load = sum(t.current for t in terminals if t.kind == "load")
-    loss = copper_power + total_barrel_power
+    series = []
+    series_power = 0.0
+    for e in sol.series_elements:
+        link = prob.series[e.link]
+        va, vb = float(sol.v_merged[e.node_a]), float(sol.v_merged[e.node_b])
+        i = sol.series_current.get(e.name, float("nan"))
+        pw = 0.0 if e.g is None else e.g * (va - vb) ** 2
+        series_power += pw
+        series.append(SeriesResult(e.name, 0.0 if e.g is None else link.resistance, i, va, vb, pw))
+    loss = copper_power + total_barrel_power + series_power
     live = ~np.isnan(sol.node_v)
     summary = {
         "v_ref": v_ref,
@@ -123,6 +143,7 @@ def compute_fields(sol: Solution) -> Fields:
         "power_copper": copper_power,
         "power_barrels": total_barrel_power,
         "power_loss": loss,
+        "power_series": series_power,
         "power_delivered": delivered,
         "energy_balance_error": abs(loss - delivered) / max(abs(delivered), 1e-30),
         "kcl_error": abs(i_src - i_load) / max(abs(i_load), 1e-30),
@@ -132,4 +153,4 @@ def compute_fields(sol: Solution) -> Fields:
         "live_fraction": float(live.mean()),
     }
     return Fields(grad=grad, j_density=j, power_density=pd, tri_power=tri_power,
-                  tri_area=area, vias=vias, terminals=terminals, v_ref=v_ref, summary=summary)
+                  tri_area=area, vias=vias, terminals=terminals, v_ref=v_ref, summary=summary, series=series)

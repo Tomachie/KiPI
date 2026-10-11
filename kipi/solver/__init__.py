@@ -5,15 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, List, Optional
 
-from kipi.mesh.mesher import NetMesh, mesh_net
+from kipi.mesh.mesher import NetMesh, mesh_nets
 from kipi.model.board import BoardSnapshot, Pad
 from kipi.progress import NULL, ProgressReporter
 from kipi.solver.fem import Solution, SolveError, solve
 from kipi.solver.post import Fields, compute_fields
-from kipi.solver.setup import CurrentLoad, NetProblem, SolveSettings, VoltageSource
+from kipi.solver.setup import CurrentLoad, NetProblem, SeriesLink, SolveSettings, VoltageSource
 
 __all__ = ["NetResult", "run", "pads_for", "NetProblem", "VoltageSource", "CurrentLoad",
-           "SolveSettings", "SolveError"]
+           "SeriesLink", "SolveSettings", "SolveError"]
 
 
 @dataclass
@@ -27,7 +27,8 @@ def run(snap: BoardSnapshot, problem: NetProblem,
         progress: ProgressReporter = NULL) -> NetResult:
     s = problem.settings
     with progress.timed(f"Meshing {problem.net}"):
-        mesh = mesh_net(snap, problem.net, problem.terminal_pad_ids(), max_edge_mm=s.max_edge_mm,
+        mesh = mesh_nets(snap, problem.nets, problem.terminal_pad_ids(), name=problem.net,
+                         max_edge_mm=s.max_edge_mm,
                         min_angle_deg=s.min_angle_deg, simplify_mm=s.simplify_mm,
                         circle_quad_segs=s.circle_quad_segs, min_edge_mm=s.min_edge_mm,
                         grading=s.grading, progress=progress)
