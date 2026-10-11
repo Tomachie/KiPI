@@ -5,7 +5,7 @@ import pytest
 from kipi.geometry.copper import net_copper, net_layer_copper
 from kipi.kicad_io import snapshot
 from kipi.kicad_io.extract import _arc_points
-from kipi.model.nets import classify_nets, is_ground_name, is_power_name
+from kipi.model.nets import classify_nets, guess_voltage, is_ground_name, is_power_name
 from synthetic import B, F, IN1, IN2, make_board
 
 # The copper module approximates circles with 32-gon polygons.
@@ -75,3 +75,11 @@ def test_signal_names(name):
 def test_classify():
     kinds = classify_nets(make_board())
     assert kinds == {"+3V3": "power", "GND": "ground", "Net-(U1-Pad3)": "signal"}
+
+
+@pytest.mark.parametrize("name,volts", [("+3.3V", 3.3), ("3V3", 3.3), ("V3P3", 3.3), ("1V8", 1.8),
+                                        ("+12V", 12.0), ("+1.2V_VCORE", 1.2), ("+5V_USB", 5.0),
+                                        ("GND", 0.0), ("GNDA_DSP", 0.0), ("VBUS", 5.0),
+                                        ("POWER_BUTTON", 1.0)])
+def test_guess_voltage(name, volts):
+    assert guess_voltage(name) == pytest.approx(volts)

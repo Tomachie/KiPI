@@ -70,3 +70,28 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
   KiCad-Parasitics) already install PySide6/PyQt6/pyvista into their KiCad venvs.
 * Copper is drawn as slabs at true stackup Z with a Z-exaggeration scale. Vias are drawn as barrels.
 * Later additions: scalar fields (V, ΔV, |J|, P), J arrow glyphs, clipping planes, `.vtu` export.
+
+## Solver validation and accuracy findings (Milestone 2)
+
+* **Straight trace.** Matches rho*L/(W*t) to 1e-9. P1 elements are exact for a linear field.
+* **Radial spreading into a via.** With a uniform mesh the error was -1.7% at h = 0.4 mm. A
+  P1 model with equipotential ends over-estimates conductance, so the error was in the
+  expected direction, but it converged only as O(h). The cause is the 1/r field near the
+  drill. A size field that grows linearly with distance from each plated hole,
+  h = clamp(h_min + k*d, h_min, h_max), brings it to -0.02% for about the same node count.
+  The defaults are k = 0.2 and h_min = 0.02 mm.
+* **Drill polygons.** Approximating a drill as an 8-gon makes it look about 0.8% more
+  resistive than a circle, because an octagon's effective radius is smaller. The default
+  is 16 segments.
+* **Solve for the offset from the source voltage.** A rail drop is about 1e-4 of the rail
+  voltage. Solving in absolute volts lets the source term dominate the right-hand side, so a
+  relative residual of 1e-10 said little about the drop: AMG and direct solves disagreed by
+  0.4%, and the energy balance error was about 1e-6. Solving for u = V - V_ref gives energy
+  balance and KCL errors of about 1e-10, with AMG matching direct to five digits.
+* **Plated holes.** A plated hole ties its ring together even when it has copper on only one
+  layer, because the barrel wall shorts the hole edge. Dropping single-layer barrels left
+  1 mm PTH holes in a plane acting as insulating cut-outs and shifted load drops by 0.4%.
+* **Dead rings.** Annular rings that touch nothing but their own barrel carry no current. On
+  the DSP board, skipping them removes 29% of the nodes with an identical answer.
+* **Performance.** On the DSP board, +3.3V meshes to 174k nodes on 3 layers. Smoothed-
+  aggregation AMG-CG then converges in about 60 iterations, and the whole run takes 2–3 s.

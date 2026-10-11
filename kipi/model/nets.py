@@ -60,3 +60,21 @@ def sorted_nets(snap: BoardSnapshot) -> List[str]:
     kinds = classify_nets(snap)
     order = {"power": 0, "ground": 1, "signal": 2}
     return sorted(kinds, key=lambda n: (order[kinds[n]], n.lower()))
+
+
+_RAIL_RE = re.compile(r"(\d+)([vV.,pP])(\d*)")
+
+
+def guess_voltage(net: str) -> float:
+    """Best guess at a rail's voltage from its name, for pre-filling a source.
+
+    '+3.3V' -> 3.3, '3V3' -> 3.3, 'V3P3' -> 3.3, '1V8' -> 1.8, '+12V' -> 12,
+    'VBUS' -> 5, ground nets -> 0, anything else -> 1.
+    """
+    if is_ground_name(net):
+        return 0.0
+    m = _RAIL_RE.search(net)
+    if not m:
+        return 5.0 if "vbus" in net.lower() else 1.0
+    whole, frac = m.group(1), m.group(3)
+    return float(f"{whole}.{frac}") if frac else float(whole)

@@ -143,3 +143,24 @@ def test_plated_hole_shorts_its_ring_even_when_other_layers_are_dead_copper():
     r_open = run(open_hole, NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
                                        [CurrentLoad("L", ["ld"], 1.0)], SolveSettings(max_edge_mm=0.2)))
     assert drop(plain) < drop(r_open)
+
+
+def test_result_scene_carries_fields_and_probes():
+    from kipi.viz.results import build_result_scene
+
+    L, W = 20.0, 1.0
+    snap = two_layer([(F, box(0, -W / 2, L, W / 2))],
+                     [pad("src", "U1", F, box(0, -W / 2, 1, W / 2)),
+                      pad("ld", "U2", F, box(L - 1, -W / 2, L, W / 2))])
+    res = run(snap, NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                               [CurrentLoad("LOAD", ["ld"], 2.0)], SolveSettings(max_edge_mm=0.3)))
+    scene = build_result_scene(snap, res)
+    lr = scene.layers[F]
+    assert lr.mesh.n_cells > 0 and lr.mesh.point_data["drop_mV"].max() > 0
+    # Linear drop along the strip: halfway between the pads is half the total drop.
+    total = (1.0 - res.fields.terminals[1].v_mean) * 1e3
+    mid = scene.probe(F, L / 2, 0.1)
+    assert mid["drop_mV"] == pytest.approx(total / 2, rel=1e-6)
+    assert mid["J"] == pytest.approx(2.0 / (W * T_CU), rel=1e-6)
+    assert scene.probe(F, L / 2, 5.0) is None                      # off the copper
+    assert scene.ranges["drop"][1] == pytest.approx(total, rel=1e-6)

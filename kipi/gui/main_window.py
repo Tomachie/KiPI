@@ -20,6 +20,7 @@ from qtpy.QtWidgets import (
 
 from kipi import __version__
 from kipi.gui.viewer3d import Viewer3D
+from kipi.gui.solve_panel import SolvePanel
 from kipi.gui.worker import QtProgress, Task
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import classify_nets, sorted_nets
@@ -61,6 +62,7 @@ class MainWindow(QMainWindow):
         self._build_toolbar()
         self._build_left_panel()
         self._build_log_dock()
+        self._build_solve_dock()
         self.statusBar().showMessage("Ready")
 
         if snapshot is not None:
@@ -181,6 +183,19 @@ class MainWindow(QMainWindow):
         dock.setMinimumWidth(300)
         self.addDockWidget(Qt.LeftDockWidgetArea, dock)
 
+    def _build_solve_dock(self):
+        self.solve_panel = SolvePanel(self)
+        self.solve_panel.solve_requested.connect(self.run_solve)
+        self.solve_panel.field_changed.connect(self.viewer.set_result_field)
+        self.solve_panel.show_geometry.connect(self._show_geometry)
+        dock = QDockWidget("DC solve", self)
+        dock.setObjectName("solve_dock")
+        dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
+        dock.setWidget(self.solve_panel)
+        dock.setMinimumWidth(360)
+        self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self._result = None
+
     def _build_log_dock(self):
         w = QWidget(self)
         lay = QVBoxLayout(w)
@@ -268,6 +283,7 @@ class MainWindow(QMainWindow):
         return task
 
     def _on_task_finished(self):
+        self.solve_panel.set_busy(False)
         self.btn_cancel.setEnabled(False)
         self.act_reload.setEnabled(True)
         self.progress_bar.setRange(0, 1000)
@@ -341,6 +357,8 @@ class MainWindow(QMainWindow):
         self._populate_layers()
         self._populate_nets()
         self._show_board_summary()
+        self._result = None
+        self.solve_panel.set_snapshot(snap)
         from kipi.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
         self.sync_nets()
@@ -496,6 +514,37 @@ class MainWindow(QMainWindow):
             task.cancelled.connect(lambda: self._set_checked(
                 lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
 
+    # ============================================================ solve
+    def run_solve(self, problem):
+        snap = self.snapshot
+        if snap is None:
+            return
+
+        def work(progress):
+            from kipi.solver import run
+            from kipi.viz.results import build_result_scene
+            result = run(snap, problem, progress)
+            with progress.timed("Building result view"):
+                scene = build_result_scene(snap, result)
+            return result, scene
+
+        def done(out):
+            result, scene = out
+            self._result = result
+            self.viewer.show_result(scene, self.solve_panel.current_field())
+            self.solve_panel.show_results(result)
+            f = result.fields
+            for t in f.terminals:
+                if t.kind == "load":
+                    self.log(f"  {t.name}: {(f.v_ref - t.v_mean) * 1e3:.3f} mV drop "
+                             f"at {t.current * 1e3:.1f} mA")
+
+        if self._run(work, done, f"Solving {problem.net}") is not None:
+            self.solve_panel.set_busy(True)
+
+    def _show_geometry(self):
+        self.viewer.clear_result()
+
     # ============================================================ info
     def _show_board_summary(self):
         s = self.snapshot
@@ -528,6 +577,21 @@ class MainWindow(QMainWindow):
         s = self.snapshot
         cu = self._nearest_layer(z)
         shown = set(self.viewer.nets())
+        probe_html = ""
+        scene = self.viewer.result
+        if scene is not None:
+            shown = {scene.net}
+            # Results only exist on layers with this net's copper; pick the nearest of those.
+            layers = [s.stackup.layer(l) for l in scene.layers]
+            cu = min(layers, key=lambda c: abs(c.z_mid_mm - z))
+            val = scene.probe(cu.id, x, y)
+            if val is not None:
+                probe_html = (f"<b>V = {val['V']:.6f} V</b> &nbsp; drop "
+                              f"<b>{val['drop_mV']:.4f} mV</b><br>"
+                              f"|J| = {val['J']:.3f} A/mm² &nbsp; P = {val['P']:.4g} mW/mm²")
+                self.statusBar().showMessage(
+                    f"{cu.name}  x={x:.3f} y={y:.3f}  V={val['V']:.6f}  "
+                    f"drop={val['drop_mV']:.4f} mV  |J|={val['J']:.3f} A/mm²")
 
         best_via, best_d = None, math.inf
         for v in s.vias:
@@ -554,6 +618,8 @@ class MainWindow(QMainWindow):
                 break
 
         lines = [f"<b>Picked</b> x={x:.3f} y={y:.3f} mm on <b>{html.escape(cu.name)}</b>"]
+        if probe_html:
+            lines.append(probe_html)
         self._picked = None
         if pad_hit is not None:
             p = pad_hit
@@ -579,7 +645,8 @@ class MainWindow(QMainWindow):
                     break
         self.info.setHtml("<br>".join(lines))
         self.btn_select_kicad.setEnabled(self._picked is not None and self._board is not None)
-        self.statusBar().showMessage(f"x={x:.3f} y={y:.3f} mm  {cu.name}")
+        if not probe_html:
+            self.statusBar().showMessage(f"x={x:.3f} y={y:.3f} mm  {cu.name}")
 
     def _select_in_kicad(self):
         if self._picked is None or self._board is None:

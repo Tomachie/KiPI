@@ -11,6 +11,7 @@ from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.viz.batch import Chunk, MeshBatcher
+from kipi.viz.results import FIELDS, ResultScene
 from kipi.viz.meshes import NetScene
 
 _NET_COLORS = [(0.90, 0.35, 0.25), (0.25, 0.60, 0.90), (0.95, 0.75, 0.20), (0.40, 0.80, 0.45),
@@ -78,6 +79,11 @@ class Viewer3D(QWidget):
         self._color_mode = "layer"
         self._zscale = 1.0
         self._pick_cb: Optional[Callable[[Tuple[float, float, float]], None]] = None
+        self._result: Optional[ResultScene] = None
+        self._result_field = "drop"
+        self._result_actors: Dict[int, object] = {}      # layer id -> actor
+        self._result_via_actor = None
+        self._scalar_bars: List[str] = []
         self.plotter.enable_surface_point_picking(
             callback=self._on_pick, show_message=False, left_clicking=True,
             show_point=True, point_size=12, color="white", clear_on_no_selection=True)
@@ -93,6 +99,8 @@ class Viewer3D(QWidget):
         self._batch = MeshBatcher()
         self._net_color.clear()
         self._layer_color.clear()
+        self._clear_result_actors()
+        self._result = None
         p.clear_actors()
         self._board_actors.clear()
         self._hidden_layers.clear()
@@ -201,8 +209,16 @@ class Viewer3D(QWidget):
         actor.SetVisibility(visible)
 
     def _apply_visibility(self):
+        showing_result = self._result is not None
         for chunk, actor in self._chunk_actors.items():
-            self._apply_actor_visibility(chunk.category, actor)
+            if showing_result:
+                actor.SetVisibility(False)
+            else:
+                self._apply_actor_visibility(chunk.category, actor)
+        for lid, actor in self._result_actors.items():
+            actor.SetVisibility(lid not in self._hidden_layers)
+        if self._result_via_actor is not None:
+            self._result_via_actor.SetVisibility(self._show_vias)
         for a in self._board_actors:
             a.SetVisibility(self._show_board)
         self.plotter.render()
@@ -213,12 +229,104 @@ class Viewer3D(QWidget):
             a.SetScale(1.0, 1.0, self._zscale)
         for a in self._chunk_actors.values():
             a.SetScale(1.0, 1.0, self._zscale)
+        for a in self._result_actors.values():
+            a.SetScale(1.0, 1.0, self._zscale)
+        if self._result_via_actor is not None:
+            self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         self.plotter.reset_camera_clipping_range()
         self.plotter.render()
 
     @property
     def zscale(self) -> float:
         return self._zscale
+
+    # ---------------------------------------------------------------- results
+    @property
+    def result(self) -> Optional[ResultScene]:
+        return self._result
+
+    def show_result(self, scene: ResultScene, field: Optional[str] = None):
+        """Replace the copper view with solver results coloured by ``field``."""
+        self._clear_result_actors()
+        self._result = scene
+        if field is not None:
+            self._result_field = field
+        self._draw_result()
+
+    def set_result_field(self, field: str):
+        self._result_field = field
+        if self._result is not None:
+            self._clear_result_actors()
+            self._draw_result()
+
+    def clear_result(self):
+        self._clear_result_actors()
+        self._result = None
+        self._apply_visibility()
+
+    def _clear_result_actors(self):
+        p = self.plotter
+        for a in self._result_actors.values():
+            p.remove_actor(a, render=False)
+        if self._result_via_actor is not None:
+            p.remove_actor(self._result_via_actor, render=False)
+        for title in self._scalar_bars:
+            try:
+                p.remove_scalar_bar(title, render=False)
+            except (KeyError, ValueError, StopIteration):
+                pass
+        self._result_actors.clear()
+        self._result_via_actor = None
+        self._scalar_bars.clear()
+
+    def _draw_result(self):
+        scene = self._result
+        p = self.plotter
+        arr, assoc, label, unit = FIELDS[self._result_field]
+        lo, hi = scene.ranges[self._result_field]
+        if self._result_field in ("current_density", "power_density"):
+            # Hot spots at pad corners dwarf everything else; clip the scale at the
+            # 99.5th percentile (the probe still reports true values).
+            vals = np.concatenate([
+                lr.mesh.cell_data[arr][np.isfinite(lr.mesh.cell_data[arr])]
+                for lr in scene.layers.values()])
+            if len(vals):
+                hi = float(np.percentile(vals, 99.5))
+        if self._result_field == "drop" and lo < 0 and -lo < 1e-3 * max(hi, 1e-12):
+            lo = 0.0          # solver round-off at the source, not a real negative drop
+        if hi <= lo:
+            hi = lo + 1e-12
+        title = f"{label} ({unit})"
+        cmap = "turbo" if assoc == "point" else "inferno"
+        log_scale = self._result_field == "power_density"
+        if log_scale:
+            lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
+        bar = dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
+                   height=0.5, width=0.05, fmt="%.3g", title_font_size=14,
+                   label_font_size=12, n_labels=6)
+        first = True
+        for lid, lr in scene.layers.items():
+            actor = p.add_mesh(lr.mesh, scalars=arr, preference=assoc, cmap=cmap,
+                               clim=(lo, hi), log_scale=log_scale, nan_color="#555555",
+                               smooth_shading=False,
+                               show_scalar_bar=first, scalar_bar_args=bar,
+                               name=f"result:{lid}", reset_camera=False, render=False)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            self._result_actors[lid] = actor
+            first = False
+        self._scalar_bars.append(title)
+        if scene.vias is not None:
+            vt = "Via I (mA)"
+            vlo, vhi = scene.via_range
+            self._result_via_actor = p.add_mesh(
+                scene.vias, scalars="I_mA", cmap="viridis", clim=(vlo, max(vhi, vlo + 1e-9)),
+                show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
+                scalar_bar_args=dict(title=vt, vertical=True, position_x=0.07, position_y=0.25,
+                                     height=0.5, width=0.05, fmt="%.3g", title_font_size=14,
+                                     label_font_size=12, n_labels=5))
+            self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+            self._scalar_bars.append(vt)
+        self._apply_visibility()
 
     # ------------------------------------------------------------------ views
     def _fit(self, zoom: float = 1.0):

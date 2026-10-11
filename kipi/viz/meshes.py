@@ -65,18 +65,18 @@ def sheet(geom: BaseGeometry, z: float) -> Optional[pv.PolyData]:
     return pv.PolyData(pts, faces)
 
 
-def slab(geom: BaseGeometry, z_bottom: float, thickness: float) -> Optional[pv.PolyData]:
-    """Closed copper slab built directly from the 2D triangulation.
+def slab_from_triangles(pts2: np.ndarray, tris: np.ndarray, z_bottom: float,
+                        thickness: float) -> Tuple[pv.PolyData, np.ndarray]:
+    """Closed slab from a 2D triangulation in KiCad coordinates (y is flipped here).
 
     Bottom and top faces reuse the triangles; side walls are quads on the boundary
     edges (edges used by exactly one triangle). Winding is made consistent so all
     normals point outward, which keeps shading and volume correct.
+
+    Returns the mesh and, for each output face, the index of the source triangle, so
+    per-triangle data can be carried onto the slab. Points are the 2D points twice
+    (bottom copy then top copy), so per-point data maps with ``np.tile(data, 2)``.
     """
-    pts2, tris = triangulate(geom)
-    if len(tris) == 0:
-        return None
-    if thickness <= 0:
-        return sheet(geom, z_bottom)
     # Mesh coordinates flip y, so make triangles counter-clockwise in (x, -y).
     xy = np.column_stack([pts2[:, 0], -pts2[:, 1]])
     a, b, c = xy[tris[:, 0]], xy[tris[:, 1]], xy[tris[:, 2]]
@@ -85,21 +85,36 @@ def slab(geom: BaseGeometry, z_bottom: float, thickness: float) -> Optional[pv.P
     cw = cross < 0
     tris[cw] = tris[cw][:, ::-1]
     n = len(xy)
+    m = len(tris)
     pts = np.vstack([np.column_stack([xy, np.full(n, z_bottom)]),
                      np.column_stack([xy, np.full(n, z_bottom + thickness)])])
     bottom = tris[:, ::-1]                       # faces down
     top = tris + n                               # faces up
     # Directed edges of CCW triangles; boundary edges have no reversed twin.
     e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    e_tri = np.tile(np.arange(m), 3)
     key = e[:, 0].astype(np.int64) * n + e[:, 1]
     rkey = e[:, 1].astype(np.int64) * n + e[:, 0]
-    boundary = e[~np.isin(key, rkey)]
+    is_boundary = ~np.isin(key, rkey)
+    boundary = e[is_boundary]
+    wall_tri = e_tri[is_boundary]
     i, j = boundary[:, 0], boundary[:, 1]
     # Outward wall for a CCW boundary edge i->j: (i, j, j+n) and (i, j+n, i+n).
     walls = np.concatenate([np.column_stack([i, j, j + n]), np.column_stack([i, j + n, i + n])])
     allf = np.concatenate([bottom, top, walls])
     faces = np.column_stack([np.full(len(allf), 3), allf]).ravel()
-    return pv.PolyData(pts, faces)
+    source = np.concatenate([np.arange(m), np.arange(m), wall_tri, wall_tri])
+    return pv.PolyData(pts, faces), source
+
+
+def slab(geom: BaseGeometry, z_bottom: float, thickness: float) -> Optional[pv.PolyData]:
+    """Closed copper slab for a shapely (multi)polygon."""
+    pts2, tris = triangulate(geom)
+    if len(tris) == 0:
+        return None
+    if thickness <= 0:
+        return sheet(geom, z_bottom)
+    return slab_from_triangles(pts2, tris, z_bottom, thickness)[0]
 
 
 @dataclass
