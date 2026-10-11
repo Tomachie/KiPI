@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import numpy as np
+
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QAction, QColor, QIcon, QPixmap, QTextCursor
 from qtpy.QtWidgets import (
@@ -30,6 +32,7 @@ log = logging.getLogger("kipi")
 _KIND_TAG = {"power": "PWR", "ground": "GND", "signal": ""}
 _KIND_COLOR = {"power": "#e07050", "ground": "#70a0e0", "signal": "#a0a0a0"}
 MAX_AUTO_NETS = 4
+VIA_PICK_PX = 10      # a click this close to a via barrel on screen selects it
 
 
 class MainWindow(QMainWindow):
@@ -57,7 +60,7 @@ class MainWindow(QMainWindow):
 
         self.viewer = Viewer3D(self)
         self.setCentralWidget(self.viewer)
-        self.viewer.on_pick(self._on_pick)
+        self.viewer.on_click(self._on_click)
 
         self._build_toolbar()
         self._build_left_panel()
@@ -601,11 +604,52 @@ class MainWindow(QMainWindow):
         st = self.snapshot.stackup
         return min(st.copper, key=lambda c: abs(c.z_mid_mm - z))
 
-    def _on_pick(self, pt):
+    def _via_candidates(self):
+        """Plated holes that a click can select: (segments (N,2,3) KiCad coords, ids)."""
+        scene = self.viewer.result
+        if scene is not None:
+            return scene.via_segments, scene.via_ids
+        st = self.snapshot.stackup
+        shown = set(self.viewer.nets())
+        segs, ids = [], []
+        for v in self.snapshot.vias:
+            if v.net not in shown:
+                continue
+            layers = [st.layer(l) for l in v.layers if st.layer(l) is not None]
+            if layers:
+                x, y = v.position
+                segs.append([(x, y, max(l.z_top_mm for l in layers)),
+                             (x, y, min(l.z_bottom_mm for l in layers))])
+                ids.append(v.id)
+        return np.asarray(segs, dtype=float).reshape(-1, 2, 3), ids
+
+    def _on_click(self, pt, screen_xy):
         if self.snapshot is None:
             return
-        x, y, z = pt
+        segs, ids = self._via_candidates()
+        via_id = None
+        if ids:
+            d = self.viewer.screen_distance_to_segments(segs, screen_xy)
+            i = int(np.argmin(d))
+            if d[i] <= VIA_PICK_PX:
+                via_id = ids[i]
+        if pt is None and via_id is None:
+            return
+        self._on_pick(pt, via_id)
+
+    def _on_pick(self, pt, via_id=None):
+        """Show what was clicked: the copper point ``pt`` (may be None) and/or the plated
+        hole ``via_id`` (a via id, or a PTH pad id in result views)."""
+        if self.snapshot is None:
+            return
         s = self.snapshot
+        via_obj = next((v for v in s.vias if v.id == via_id), None) if via_id else None
+        pth_obj = next((p for p in s.pads if p.id == via_id), None) if via_id and not via_obj             else None
+        if pt is None:
+            hole = via_obj or pth_obj
+            layer_id = (hole.layers if via_obj else hole.layers)[0]
+            pt = (hole.position[0], hole.position[1], s.stackup.layer(layer_id).z_top_mm)
+        x, y, z = pt
         cu = self._nearest_layer(z)
         shown = set(self.viewer.nets())
         probe_html = ""
@@ -624,18 +668,13 @@ class MainWindow(QMainWindow):
                     f"{cu.name}  x={x:.3f} y={y:.3f}  V={val['V']:.6f}  "
                     f"drop={val['drop_mV']:.4f} mV  |J|={val['J']:.3f} A/mm²")
 
-        best_via, best_d = None, math.inf
-        for v in s.vias:
-            if v.net in shown:
-                d = math.hypot(v.position[0] - x, v.position[1] - y)
-                if d < best_d and d <= v.diameter_mm / 2 + 0.05:
-                    best_via, best_d = v, d
+        best_via = via_obj      # chosen by on-screen distance in _on_click
 
-        pad_hit = None
+        pad_hit = pth_obj
         from shapely.geometry import Point
         from kipi.geometry.copper import poly_to_shapely
         p0 = Point(x, y)
-        for p in s.pads:
+        for p in ([] if pad_hit is not None or best_via is not None else s.pads):
             if p.net not in shown or cu.id not in p.shapes:
                 continue
             if math.hypot(p.position[0] - x, p.position[1] - y) > 10:
@@ -648,6 +687,7 @@ class MainWindow(QMainWindow):
             if pad_hit:
                 break
 
+        self._barrel_status = ""
         lines = [f"<b>Picked</b> x={x:.3f} y={y:.3f} mm on <b>{html.escape(cu.name)}</b>"]
         if probe_html:
             lines.append(probe_html)
@@ -660,6 +700,7 @@ class MainWindow(QMainWindow):
                          f"Layers: {', '.join(html.escape(s.stackup.layer(l).name) for l in p.layers)}")
             if p.drill_mm[0] > 0:
                 lines.append(f"Drill: {p.drill_mm[0]:.3f} × {p.drill_mm[1]:.3f} mm")
+            lines.extend(self._barrel_current_lines(p.id))
         elif best_via is not None:
             v = best_via
             self._picked = ("via", v.id)
@@ -667,11 +708,7 @@ class MainWindow(QMainWindow):
             lines.append(f"<b>Via</b> ({v.via_type})<br>Net: {html.escape(v.net)}<br>"
                          f"Drill {v.drill_mm:.3f} mm / pad {v.diameter_mm:.3f} mm<br>"
                          f"Span: {html.escape(names[0])} → {html.escape(names[-1])}")
-            if self._result is not None and scene is not None:
-                vr = next((r for r in self._result.fields.vias if r.owner_id == v.id), None)
-                if vr is not None:
-                    lines.append(f"<b>Via current: {vr.current * 1e3:.2f} mA</b>"
-                                 f" &nbsp; ({vr.power * 1e3:.3f} mW in the barrel)")
+            lines.extend(self._barrel_current_lines(v.id))
         else:
             # Which net's copper was hit on this layer?
             for net in shown:
@@ -681,8 +718,21 @@ class MainWindow(QMainWindow):
                     break
         self.info.setHtml("<br>".join(lines))
         self.btn_select_kicad.setEnabled(self._picked is not None and self._board is not None)
-        if not probe_html:
+        if self._barrel_status:
+            self.statusBar().showMessage(self._barrel_status)
+        elif not probe_html:
             self.statusBar().showMessage(f"x={x:.3f} y={y:.3f} mm  {cu.name}")
+
+    def _barrel_current_lines(self, owner_id: str):
+        if self._result is None or self.viewer.result is None:
+            return []
+        vr = next((r for r in self._result.fields.vias if r.owner_id == owner_id), None)
+        if vr is None:
+            return []
+        self._barrel_status = (f"{'Via' if vr.kind == 'via' else 'PTH barrel'} current "
+                               f"{vr.current * 1e3:.2f} mA")
+        return [f"<b>{'Via' if vr.kind == 'via' else 'Barrel'} current: "
+                f"{vr.current * 1e3:.2f} mA</b> &nbsp; ({vr.power * 1e3:.3f} mW in the barrel)"]
 
     def _select_in_kicad(self):
         if self._picked is None or self._board is None:

@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from vtkmodules.vtkRenderingCore import vtkActor, vtkPolyDataMapper
+from vtkmodules.vtkRenderingCore import vtkActor, vtkCellPicker, vtkPolyDataMapper
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.viz.batch import Chunk, MeshBatcher
@@ -100,9 +100,14 @@ class Viewer3D(QWidget):
         self._result_actors: Dict[int, object] = {}      # layer id -> actor
         self._result_via_actor = None
         self._scalar_bars: List[str] = []
-        self.plotter.enable_surface_point_picking(
-            callback=self._on_pick, show_message=False, left_clicking=True,
-            show_point=True, point_size=12, color="white", clear_on_no_selection=True)
+        # Clicks are handled here rather than with pyvista's point picking, so a click can
+        # also select a via by its on-screen distance (vias are only a few pixels wide).
+        self._picker = vtkCellPicker()
+        self._picker.SetTolerance(0.0005)
+        self._press_pos = None
+        iren = self.plotter.iren
+        iren.add_observer("LeftButtonPressEvent", self._on_left_press)
+        iren.add_observer("LeftButtonReleaseEvent", self._on_left_release)
 
     # ------------------------------------------------------------------ scene
     def set_board(self, body: Optional[pv.PolyData], outline: Optional[pv.PolyData]):
@@ -391,15 +396,66 @@ class Viewer3D(QWidget):
         self.plotter.screenshot(path, transparent_background=False)
 
     # ---------------------------------------------------------------- picking
-    def on_pick(self, cb: Callable[[Tuple[float, float, float]], None]):
-        """Register ``cb(x_mm, y_mm_kicad, z_mm)`` for left-click picks."""
+    def on_click(self, cb):
+        """Register ``cb(point, screen_xy)`` for left clicks (not drags).
+
+        ``point`` is the clicked copper surface point as (x_mm, y_mm_kicad, z_mm), or None
+        if the click hit no copper; ``screen_xy`` is the click in display pixels, for use
+        with :meth:`screen_distance_to_segments`.
+        """
         self._pick_cb = cb
 
-    def _on_pick(self, point):
-        if self._pick_cb is None or point is None:
+    def _event_pos(self):
+        return tuple(self.plotter.iren.interactor.GetEventPosition())
+
+    def _on_left_press(self, *_):
+        self._press_pos = self._event_pos()
+
+    def _on_left_release(self, *_):
+        start, self._press_pos = self._press_pos, None
+        if start is None or self._pick_cb is None:
             return
-        x, y, z = np.asarray(point, dtype=float)
-        self._pick_cb((x, -y, z / self._zscale))
+        x, y = self._event_pos()
+        if abs(x - start[0]) + abs(y - start[1]) > 4:     # a drag (rotate/pan), not a click
+            return
+        point = None
+        if self._picker.Pick(x, y, 0, self.plotter.renderer) and self._picker.GetCellId() >= 0:
+            wx, wy, wz = self._picker.GetPickPosition()
+            point = (wx, -wy, wz / self._zscale)
+            self._show_marker((wx, wy, wz))
+        self._pick_cb(point, (x, y))
+
+    def _show_marker(self, world_xyz):
+        self.plotter.add_points(np.array([world_xyz]), color="white", point_size=12,
+                                render_points_as_spheres=True, name="pick_marker",
+                                pickable=False, reset_camera=False, render=False)
+        self.plotter.render()
+
+    def screen_distance_to_segments(self, segments: np.ndarray, screen_xy) -> np.ndarray:
+        """Pixel distance from ``screen_xy`` to each 3D segment (N, 2, 3), KiCad coords."""
+        if len(segments) == 0:
+            return np.zeros(0)
+        ren = self.plotter.renderer
+        m = ren.GetActiveCamera().GetCompositeProjectionTransformMatrix(
+            ren.GetTiledAspectRatio(), -1, 1)
+        M = np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)])
+        P = segments.reshape(-1, 3).astype(float).copy()
+        P[:, 1] *= -1.0                       # KiCad y down -> view y up
+        P[:, 2] *= self._zscale
+        H = np.column_stack([P, np.ones(len(P))]) @ M.T
+        behind = H[:, 3] <= 0
+        ndc = H[:, :2] / np.where(behind, 1.0, H[:, 3])[:, None]
+        w, h = ren.GetSize()
+        ox, oy = ren.GetOrigin()
+        xy = np.column_stack([(ndc[:, 0] + 1) / 2 * w + ox,
+                              (ndc[:, 1] + 1) / 2 * h + oy]).reshape(-1, 2, 2)
+        a, b = xy[:, 0], xy[:, 1]
+        ab = b - a
+        p = np.asarray(screen_xy, dtype=float)
+        t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+        d = np.linalg.norm(p - (a + t[:, None] * ab), axis=1)
+        d[behind.reshape(-1, 2).any(axis=1)] = np.inf
+        return d
 
     def close(self):
         self.plotter.close()

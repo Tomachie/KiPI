@@ -51,6 +51,10 @@ class ResultScene:
     vias: Optional[pv.PolyData]
     ranges: Dict[str, Tuple[float, float]]   # field -> (min, max) over all layers
     via_range: Tuple[float, float] = (0.0, 0.0)
+    # Plated holes for click selection: (N, 2, 3) top/bottom centre points in KiCad
+    # coordinates (x, y down, z up) and the owning via/pad id of each.
+    via_segments: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 3)))
+    via_ids: List[str] = field(default_factory=list)
 
     def probe(self, layer_id: int, x: float, y: float) -> Optional[Dict[str, float]]:
         """Values at (x, y) KiCad mm on a layer, or None if not on this net's copper."""
@@ -125,10 +129,10 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16) -> Result
                 for lr in layers.values()]
         ranges[key] = _range(data)
 
-    vias, via_range = _via_barrels(snap, result, n_sides)
+    vias, via_range, via_segments, via_ids = _via_barrels(snap, result, n_sides)
     ranges["via_current"] = via_range
     return ResultScene(net=mesh.net, v_ref=v_ref, layers=layers, vias=vias, ranges=ranges,
-                       via_range=via_range)
+                       via_range=via_range, via_segments=via_segments, via_ids=via_ids)
 
 
 def _via_barrels(snap: BoardSnapshot, result, n_sides: int):
@@ -136,6 +140,7 @@ def _via_barrels(snap: BoardSnapshot, result, n_sides: int):
     fields = result.fields
     blocks = []
     currents = []
+    segments, ids = [], []
     for bar, vr in zip(result.mesh.barrels, fields.vias):
         layers = [st.layer(l) for l in bar.layers]
         if not layers:
@@ -151,6 +156,8 @@ def _via_barrels(snap: BoardSnapshot, result, n_sides: int):
         cyl.cell_data["I_mA"] = np.full(cyl.n_cells, vr.current * 1e3)
         blocks.append(cyl)
         currents.append(vr.current * 1e3)
+        segments.append([(x, y, z_top), (x, y, z_bot)])
+        ids.append(bar.owner_id)
     if not blocks:
-        return None, (0.0, 0.0)
-    return pv.merge(blocks), (0.0, max(currents))
+        return None, (0.0, 0.0), np.zeros((0, 2, 3)), []
+    return pv.merge(blocks), (0.0, max(currents)), np.asarray(segments, dtype=float), ids
