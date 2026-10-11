@@ -17,6 +17,7 @@ class QtProgress(QObject, ProgressReporter):
     sig_message = Signal(str, int)
     sig_stage = Signal(str)
     sig_fraction = Signal(float)   # < 0 means indeterminate
+    sig_partial = Signal(object)
 
     def __init__(self):
         QObject.__init__(self)
@@ -24,7 +25,8 @@ class QtProgress(QObject, ProgressReporter):
 
     def message(self, text: str, level: int = logging.INFO):
         logging.getLogger("kipi").log(level, text)
-        self.sig_message.emit(text, level)
+        if level > logging.DEBUG:   # per-item detail goes to the log file only
+            self.sig_message.emit(text, level)
 
     def stage(self, name: str):
         self.sig_stage.emit(name)
@@ -32,6 +34,9 @@ class QtProgress(QObject, ProgressReporter):
 
     def fraction(self, value):
         self.sig_fraction.emit(-1.0 if value is None else float(value))
+
+    def partial(self, result):
+        self.sig_partial.emit(result)
 
 
 class Task(QThread):

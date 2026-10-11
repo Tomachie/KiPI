@@ -51,6 +51,13 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
   result with the input list. KiPI sends `GetPadShapeAsPolygon` directly and matches by pad id.
 * `check_padstack_presence_on_layers` handles unconnected-layer removal on inner layers.
 * `Zone.filled_polygons` gives `{layer: [PolygonWithHoles]}`. `Zone.is_rule_area()` is a method.
+* Zone fills come back **fractured**. Every antipad or clearance hole is joined to the outer ring
+  by a zero-width slit, so `holes` is empty and shapely reports a "Ring Self-intersection".
+  `shapely.make_valid` restores real interiors (647 on the Audio_Visualiser_DSP board) and
+  leaves the slits as `LineString`s, which `geometry/copper.py` drops. The solver mesher must
+  run on the repaired polygons, not the raw rings.
+* Footprints can contain unnumbered, net-less pads with no copper (paste or mask apertures,
+  e.g. 12 on an INA231 WCSP). KiCad reports no copper shape for them, which is correct.
 * `get_stackup()` gives copper and dielectric thicknesses. Dielectric layers can have sub-layers.
 * Requests go through KiCad's UI thread, so expect `AS_BUSY` and retry. Use one connection per process.
 * From 10.0.1, plugin stdout/stderr shows in the KiCad status bar.

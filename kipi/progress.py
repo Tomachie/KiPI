@@ -35,7 +35,14 @@ class ProgressReporter:
     def fraction(self, value: Optional[float]):
         """Progress through the current stage, 0..1, or None if unknown."""
 
+    def partial(self, result):
+        """Hand over one piece of a result before the whole stage finishes."""
+
     # --- helpers -----------------------------------------------------------
+    def debug(self, text: str):
+        """Detail for the log file; the GUI does not display it."""
+        self.message(text, logging.DEBUG)
+
     def info(self, text: str):
         self.message(text, logging.INFO)
 

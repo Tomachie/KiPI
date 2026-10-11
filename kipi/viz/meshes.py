@@ -66,16 +66,40 @@ def sheet(geom: BaseGeometry, z: float) -> Optional[pv.PolyData]:
 
 
 def slab(geom: BaseGeometry, z_bottom: float, thickness: float) -> Optional[pv.PolyData]:
-    """Copper slab: triangulated bottom face extruded up by ``thickness``."""
-    base = sheet(geom, z_bottom)
-    if base is None:
+    """Closed copper slab built directly from the 2D triangulation.
+
+    Bottom and top faces reuse the triangles; side walls are quads on the boundary
+    edges (edges used by exactly one triangle). Winding is made consistent so all
+    normals point outward, which keeps shading and volume correct.
+    """
+    pts2, tris = triangulate(geom)
+    if len(tris) == 0:
         return None
     if thickness <= 0:
-        return base
-    s = base.extrude((0, 0, thickness), capping=True).clean().triangulate()
-    # Extrusion leaves one cap facing inward; fix winding so shading and volume are right.
-    return s.compute_normals(cell_normals=True, point_normals=False, consistent_normals=True,
-                             auto_orient_normals=True, split_vertices=False)
+        return sheet(geom, z_bottom)
+    # Mesh coordinates flip y, so make triangles counter-clockwise in (x, -y).
+    xy = np.column_stack([pts2[:, 0], -pts2[:, 1]])
+    a, b, c = xy[tris[:, 0]], xy[tris[:, 1]], xy[tris[:, 2]]
+    cross = (b[:, 0] - a[:, 0]) * (c[:, 1] - a[:, 1]) - (c[:, 0] - a[:, 0]) * (b[:, 1] - a[:, 1])
+    tris = tris.copy()
+    cw = cross < 0
+    tris[cw] = tris[cw][:, ::-1]
+    n = len(xy)
+    pts = np.vstack([np.column_stack([xy, np.full(n, z_bottom)]),
+                     np.column_stack([xy, np.full(n, z_bottom + thickness)])])
+    bottom = tris[:, ::-1]                       # faces down
+    top = tris + n                               # faces up
+    # Directed edges of CCW triangles; boundary edges have no reversed twin.
+    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    key = e[:, 0].astype(np.int64) * n + e[:, 1]
+    rkey = e[:, 1].astype(np.int64) * n + e[:, 0]
+    boundary = e[~np.isin(key, rkey)]
+    i, j = boundary[:, 0], boundary[:, 1]
+    # Outward wall for a CCW boundary edge i->j: (i, j, j+n) and (i, j+n, i+n).
+    walls = np.concatenate([np.column_stack([i, j, j + n]), np.column_stack([i, j + n, i + n])])
+    allf = np.concatenate([bottom, top, walls])
+    faces = np.column_stack([np.full(len(allf), 3), allf]).ravel()
+    return pv.PolyData(pts, faces)
 
 
 @dataclass
@@ -88,37 +112,53 @@ class LayerMesh:
 
 
 @dataclass
-class SceneData:
-    """Everything the viewer needs for one display build."""
+class NetScene:
+    """Meshes for one net, so the viewer can add or remove nets independently."""
+    net: str
     copper: List[LayerMesh] = field(default_factory=list)
     vias: Optional[pv.PolyData] = None
     pads: Dict[int, pv.PolyData] = field(default_factory=dict)   # layer id -> pad tops
+
+
+@dataclass
+class SceneData:
+    """Board body plus any number of nets."""
+    nets: Dict[str, NetScene] = field(default_factory=dict)
     board: Optional[pv.PolyData] = None
     outline_lines: Optional[pv.PolyData] = None
 
 
 def via_tubes(snap: BoardSnapshot, nets: List[str], n_sides: int = 12) -> Optional[pv.PolyData]:
-    """Via barrels as one tube mesh, colour-ready (``net_index`` cell data)."""
-    vias = [v for v in snap.vias if v.net in nets]
-    if not vias:
-        return None
+    """Via barrels of the given nets as one mesh.
+
+    A unit cylinder is scaled and translated per via with numpy, which is much
+    faster than building and merging one cylinder per via.
+    """
     st = snap.stackup
-    blocks = []
-    for v in vias:
+    rows = []   # x, y, z_bottom, z_top, radius
+    for v in (v for n in nets for v in snap.items_on_net(n)[1]):
         layers = [st.layer(l) for l in v.layers if st.layer(l) is not None]
         if not layers:
             continue
         z_top = max(l.z_top_mm for l in layers)
         z_bot = min(l.z_bottom_mm for l in layers)
-        x, y = v.position
-        cyl = pv.Cylinder(center=(x, -y, 0.5 * (z_top + z_bot)), direction=(0, 0, 1),
-                          radius=max(v.drill_mm, 0.05) / 2.0, height=max(z_top - z_bot, 1e-3),
-                          resolution=n_sides, capping=True)
-        cyl.cell_data["net_index"] = np.full(cyl.n_cells, nets.index(v.net))
-        blocks.append(cyl)
-    if not blocks:
+        rows.append((v.position[0], -v.position[1], z_bot, max(z_top, z_bot + 1e-3),
+                     max(v.drill_mm, 0.05) / 2.0))
+    if not rows:
         return None
-    return pv.merge(blocks)
+    a = np.asarray(rows)
+    unit = pv.Cylinder(center=(0, 0, 0.5), direction=(0, 0, 1), radius=1.0, height=1.0,
+                       resolution=n_sides, capping=True).triangulate()
+    up = np.asarray(unit.points)                                   # (P, 3)
+    uf = unit.faces.reshape(-1, 4)[:, 1:]                          # (F, 3) triangles
+    n, P = len(a), len(up)
+    pts = np.empty((n, P, 3))
+    pts[:, :, 0] = a[:, None, 0] + up[None, :, 0] * a[:, None, 4]
+    pts[:, :, 1] = a[:, None, 1] + up[None, :, 1] * a[:, None, 4]
+    pts[:, :, 2] = a[:, None, 2] + up[None, :, 2] * (a[:, None, 3] - a[:, None, 2])
+    tris = uf[None, :, :] + (np.arange(n) * P)[:, None, None]      # (n, F, 3)
+    faces = np.column_stack([np.full(n * len(uf), 3), tris.reshape(-1, 3)]).ravel()
+    return pv.PolyData(pts.reshape(-1, 3), faces)
 
 
 def pad_tops(snap: BoardSnapshot, nets: List[str]) -> Dict[int, pv.PolyData]:
@@ -127,12 +167,11 @@ def pad_tops(snap: BoardSnapshot, nets: List[str]) -> Dict[int, pv.PolyData]:
     out: Dict[int, pv.PolyData] = {}
     for cu in st.copper:
         polys = []
-        for p in snap.pads:
-            if p.net in nets:
-                for poly in p.shapes.get(cu.id, []):
-                    g = poly_to_shapely(poly)
-                    if g is not None and not g.is_empty:
-                        polys.append(g)
+        for p in (p for n in nets for p in snap.items_on_net(n)[2]):
+            for poly in p.shapes.get(cu.id, []):
+                g = poly_to_shapely(poly)
+                if g is not None and not g.is_empty:
+                    polys.append(g)
         if not polys:
             continue
         geom = shapely.union_all(polys)
@@ -166,27 +205,34 @@ def board_body(snap: BoardSnapshot) -> Tuple[Optional[pv.PolyData], Optional[pv.
     return body, (pv.merge(lines) if lines else None)
 
 
-def build_scene(snap: BoardSnapshot, copper: Dict[str, Dict[int, BaseGeometry]],
-                progress=None) -> SceneData:
-    """Build every mesh for the given per-net copper (``net -> layer -> geometry``)."""
+def build_net_scene(snap: BoardSnapshot, net: str, layers: Dict[int, BaseGeometry],
+                    progress=None) -> NetScene:
+    """Build the meshes for one net from its per-layer copper geometry."""
     st = snap.stackup
     n = len(st.copper)
+    ns = NetScene(net=net)
+    for lid, geom in layers.items():
+        cu = st.layer(lid)
+        if cu is None:
+            continue
+        m = slab(geom, cu.z_bottom_mm, cu.thickness_mm)
+        if m is None:
+            continue
+        ns.copper.append(LayerMesh(net=net, layer_id=lid, mesh=m, color=layer_color(cu, n),
+                                   area_mm2=geom.area))
+        if progress is not None:
+            progress.debug(f"  mesh {net} / {cu.name}: {m.n_cells} cells")
+            progress.check_cancel()
+    ns.vias = via_tubes(snap, [net])
+    ns.pads = pad_tops(snap, [net])
+    return ns
+
+
+def build_scene(snap: BoardSnapshot, copper: Dict[str, Dict[int, BaseGeometry]],
+                progress=None) -> SceneData:
+    """Build the board body and every net in ``copper`` (``net -> layer -> geometry``)."""
     scene = SceneData()
-    nets = list(copper.keys())
     for net, layers in copper.items():
-        for lid, geom in layers.items():
-            cu = st.layer(lid)
-            if cu is None:
-                continue
-            m = slab(geom, cu.z_bottom_mm, cu.thickness_mm)
-            if m is None:
-                continue
-            scene.copper.append(LayerMesh(net=net, layer_id=lid, mesh=m,
-                                          color=layer_color(cu, n), area_mm2=geom.area))
-            if progress is not None:
-                progress.info(f"  mesh {net} / {cu.name}: {m.n_cells} cells")
-                progress.check_cancel()
-    scene.vias = via_tubes(snap, nets)
-    scene.pads = pad_tops(snap, nets)
+        scene.nets[net] = build_net_scene(snap, net, layers, progress)
     scene.board, scene.outline_lines = board_body(snap)
     return scene

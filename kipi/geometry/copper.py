@@ -93,12 +93,13 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
 def drill_holes(snap: BoardSnapshot, net: str, layer: int) -> Optional[BaseGeometry]:
     """Drill holes of the net's vias and through-hole pads that pass through ``layer``."""
     holes = []
-    for v in snap.vias:
-        if v.net == net and layer in v.layers and v.drill_mm > 0:
+    _, vias, pads, _ = snap.items_on_net(net)
+    for v in vias:
+        if layer in v.layers and v.drill_mm > 0:
             holes.append(shapely.Point(v.position).buffer(v.drill_mm / 2.0,
                                                           quad_segs=CIRCLE_QUAD_SEGS))
-    for p in snap.pads:
-        if p.net == net and p.pad_type == "pth" and layer in p.shapes:
+    for p in pads:
+        if p.pad_type == "pth" and layer in p.shapes:
             dx, dy = p.drill_mm
             if dx <= 0:
                 continue
@@ -123,7 +124,7 @@ def net_copper(snap: BoardSnapshot, net: str,
         g = net_layer_copper(snap, net, cu.id)
         if not g.is_empty:
             out[cu.id] = g
-            progress.info(f"  {net} / {cu.name}: {g.area:.2f} mm^2")
+            progress.debug(f"  {net} / {cu.name}: {g.area:.2f} mm^2")
     return out
 
 
