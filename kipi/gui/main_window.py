@@ -667,6 +667,11 @@ class MainWindow(QMainWindow):
             lines.append(f"<b>Via</b> ({v.via_type})<br>Net: {html.escape(v.net)}<br>"
                          f"Drill {v.drill_mm:.3f} mm / pad {v.diameter_mm:.3f} mm<br>"
                          f"Span: {html.escape(names[0])} → {html.escape(names[-1])}")
+            if self._result is not None and scene is not None:
+                vr = next((r for r in self._result.fields.vias if r.owner_id == v.id), None)
+                if vr is not None:
+                    lines.append(f"<b>Via current: {vr.current * 1e3:.2f} mA</b>"
+                                 f" &nbsp; ({vr.power * 1e3:.3f} mW in the barrel)")
         else:
             # Which net's copper was hit on this layer?
             for net in shown:

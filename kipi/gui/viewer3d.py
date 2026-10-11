@@ -234,7 +234,9 @@ class Viewer3D(QWidget):
         for lid, actor in self._result_actors.items():
             actor.SetVisibility(lid not in self._hidden_layers)
         if self._result_via_actor is not None:
-            self._result_via_actor.SetVisibility(self._show_vias)
+            # In the via-current view the vias are the result, so always show them.
+            self._result_via_actor.SetVisibility(self._show_vias
+                                                 or self._result_field == "via_current")
         for a in self._board_actors:
             a.SetVisibility(self._show_board)
         self.plotter.render()
@@ -297,8 +299,16 @@ class Viewer3D(QWidget):
 
     def _draw_result(self):
         scene = self._result
-        p = self.plotter
         arr, assoc, label, unit = FIELDS[self._result_field]
+        if assoc == "via":
+            self._draw_via_result(scene, arr, f"{label} ({unit})")
+        else:
+            self._draw_copper_result(scene, arr, assoc, f"{label} ({unit})")
+        self._apply_visibility()
+
+    def _draw_copper_result(self, scene, arr, assoc, title):
+        """Copper coloured by a field; vias drawn plain for context."""
+        p = self.plotter
         lo, hi = scene.ranges[self._result_field]
         if self._result_field in ("current_density", "power_density"):
             # Hot spots at pad corners dwarf everything else; clip the scale at the
@@ -310,7 +320,6 @@ class Viewer3D(QWidget):
                 hi = float(np.percentile(vals, 99.5))
         if hi <= lo:
             hi = lo + 1e-12
-        title = f"{label} ({unit})"
         cmap = "turbo" if assoc == "point" else "inferno"
         log_scale = self._result_field == "power_density"
         if log_scale:
@@ -331,17 +340,33 @@ class Viewer3D(QWidget):
             first = False
         self._scalar_bars.append(title)
         if scene.vias is not None:
-            vt = "Via I (mA)"
-            vlo, vhi = scene.via_range
             self._result_via_actor = p.add_mesh(
-                scene.vias, scalars="I_mA", cmap="viridis", clim=(vlo, max(vhi, vlo + 1e-9)),
-                show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
-                scalar_bar_args=dict(title=vt, vertical=True, position_x=0.07, position_y=0.25,
-                                     height=0.5, width=0.05, fmt="%.3g", title_font_size=14,
-                                     label_font_size=12, n_labels=5))
+                scene.vias, color=_VIA_COLOR, specular=0.6, name="result:vias",
+                reset_camera=False, render=False)
             self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
-            self._scalar_bars.append(vt)
-        self._apply_visibility()
+
+    def _draw_via_result(self, scene, arr, title):
+        """Vias coloured by current; copper drawn as muted grey for context."""
+        p = self.plotter
+        for lid, lr in scene.layers.items():
+            actor = p.add_mesh(lr.mesh, color="#7a7f88", opacity=0.35, smooth_shading=False,
+                               name=f"result:{lid}", reset_camera=False, render=False,
+                               pickable=True)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            self._result_actors[lid] = actor
+        if scene.vias is None:
+            return
+        lo, hi = scene.ranges["via_current"]
+        if hi <= lo:
+            hi = lo + 1e-9
+        self._result_via_actor = p.add_mesh(
+            scene.vias, scalars=arr, cmap="viridis", clim=(lo, hi), specular=0.4,
+            show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
+            scalar_bar_args=dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
+                                 height=0.5, width=0.05, fmt=_bar_format(lo, hi, False),
+                                 title_font_size=14, label_font_size=12, n_labels=6))
+        self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+        self._scalar_bars.append(title)
 
     # ------------------------------------------------------------------ views
     def _fit(self, zoom: float = 1.0):

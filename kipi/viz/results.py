@@ -20,11 +20,13 @@ from scipy.spatial import cKDTree
 from kipi.model.board import BoardSnapshot
 from kipi.viz.meshes import slab_from_triangles
 
-# name -> (array, association, label, unit)
+# name -> (array, association, label, unit). Association "via" means the field lives
+# on the via barrels rather than the copper layers.
 FIELDS = {
     "voltage": ("V", "point", "Voltage", "V"),
     "current_density": ("J", "cell", "Current density", "A/mm²"),
     "power_density": ("P", "cell", "Power density", "mW/mm²"),
+    "via_current": ("I_mA", "via", "Via current", "mA"),
 }
 
 
@@ -117,11 +119,14 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16) -> Result
 
     ranges = {}
     for key, (arr, assoc, _, _) in FIELDS.items():
+        if assoc == "via":
+            continue
         data = [(lr.mesh.point_data if assoc == "point" else lr.mesh.cell_data)[arr]
                 for lr in layers.values()]
         ranges[key] = _range(data)
 
     vias, via_range = _via_barrels(snap, result, n_sides)
+    ranges["via_current"] = via_range
     return ResultScene(net=mesh.net, v_ref=v_ref, layers=layers, vias=vias, ranges=ranges,
                        via_range=via_range)
 
