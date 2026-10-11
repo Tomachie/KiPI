@@ -1,0 +1,22 @@
+{
+    "$schema": "https://go.kicad.org/api/schemas/v1",
+    "identifier": "com.github.drewsum.kipi",
+    "name": "KiPI",
+    "description": "DC power integrity: IR drop, current density and via currents in 3D",
+    "runtime": {
+        "type": "python",
+        "min_version": "3.10"
+    },
+    "actions": [
+        {
+            "identifier": "kipi.open",
+            "name": "KiPI Power Integrity",
+            "description": "Open the KiPI DC power integrity analyzer",
+            "show-button": true,
+            "scopes": ["pcb"],
+            "entrypoint": "kipi_entry.py",
+            "icons-light": ["resources/kipi_24.png", "resources/kipi_48.png"],
+            "icons-dark": ["resources/kipi_24.png", "resources/kipi_48.png"]
+        }
+    ]
+}
