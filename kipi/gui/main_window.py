@@ -16,7 +16,7 @@ from qtpy.QtGui import QAction, QColor, QIcon, QPixmap, QTextCursor
 from qtpy.QtWidgets import (
     QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSplitter, QTextBrowser, QToolBar,
+    QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSplitter, QTextBrowser, QToolBar,
     QVBoxLayout, QWidget,
 )
 
@@ -100,6 +100,8 @@ class MainWindow(QMainWindow):
         act("Bottom", self.viewer.view_bottom)
         act("Iso", self.viewer.view_iso)
         act("Screenshot…", self.save_screenshot)
+        tb.addSeparator()
+        act("Open results…", self.open_results, "Reopen a saved power-tree solve")
 
     def _build_left_panel(self):
         panel = QWidget(self)
@@ -161,6 +163,20 @@ class MainWindow(QMainWindow):
         fv.addRow("Colour", self.cmb_color)
         fv.addRow("Z scale", self.spin_z)
         fv.addRow(feats)
+        cut = QHBoxLayout()
+        self.cmb_cut = QComboBox(g_view)
+        self.cmb_cut.addItems(["Off", "X", "Y", "Z"])
+        self.cmb_cut.setToolTip("Cut the view with a plane across this axis")
+        self.sld_cut = QSlider(Qt.Horizontal, g_view)
+        self.sld_cut.setRange(0, 1000)
+        self.sld_cut.setValue(500)
+        self.chk_cut_flip = QCheckBox("Flip", g_view)
+        for w in (self.cmb_cut, self.sld_cut, self.chk_cut_flip):
+            cut.addWidget(w, 1 if w is self.sld_cut else 0)
+        self.cmb_cut.currentIndexChanged.connect(self._cut_changed)
+        self.sld_cut.valueChanged.connect(self._cut_changed)
+        self.chk_cut_flip.toggled.connect(self._cut_changed)
+        fv.addRow("Cut", cut)
 
         # --- info
         g_info = QGroupBox("Info", panel)
@@ -193,6 +209,9 @@ class MainWindow(QMainWindow):
         self.solve_panel.group_changed.connect(self._show_group)
         self.solve_panel.show_geometry.connect(self._show_geometry)
         self.solve_panel.save_requested.connect(self._save_setup)
+        self.solve_panel.arrows_toggled.connect(self.viewer.set_arrows_visible)
+        self.solve_panel.via_selected.connect(self._show_via)
+        self.solve_panel.export_requested.connect(self._export)
         self._tree = None
         self._scenes = {}
         self._setup_path = None
@@ -619,6 +638,77 @@ class MainWindow(QMainWindow):
 
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
+
+    def _cut_changed(self, *_):
+        axis = self.cmb_cut.currentText().lower()
+        self.sld_cut.setEnabled(axis != "off")
+        self.chk_cut_flip.setEnabled(axis != "off")
+        self.viewer.set_clip(None if axis == "off" else axis, self.sld_cut.value() / 1000,
+                             self.chk_cut_flip.isChecked())
+
+    def _show_via(self, group: str, owner_id: str):
+        """Jump to a via from the results table: show its group, centre and select it."""
+        if self.solve_panel.cmb_group.currentText() != group:
+            self.solve_panel.cmb_group.setCurrentText(group)
+        scene = self.viewer.result
+        if scene is None or owner_id not in scene.via_ids:
+            return
+        top = scene.via_segments[scene.via_ids.index(owner_id)][0]
+        self.viewer.plotter.set_focus((top[0], -top[1], top[2] * self.viewer.zscale))
+        self.viewer.plotter.render()
+        self._on_pick(None, owner_id)
+
+    def _results_stem(self) -> str:
+        return Path(self.snapshot.board_name).stem if self.snapshot else "kipi"
+
+    def _export(self, kind: str):
+        if not self._tree:
+            return
+        from kipi.pi import report
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        try:
+            if kind == "results":
+                path, _ = QFileDialog.getSaveFileName(
+                    self, "Save results", str(Path(start) / f"{self._results_stem()}.kipi-results"),
+                    "KiPI results (*.kipi-results)")
+                if path:
+                    report.save_results(path, self._tree, self._scenes, self.snapshot,
+                                        self.solve_panel.setup)
+                    self.log(f"Saved results to {path}")
+                return
+            folder = QFileDialog.getExistingDirectory(self, "Export to folder", start)
+            if not folder:
+                return
+            if kind == "csv":
+                paths = report.export_csv(self._tree, self.snapshot, folder, self._results_stem(),
+                                          self.solve_panel.setup.via_current_limit_a)
+            else:
+                paths = report.export_vtk(self._tree, self._scenes, self.snapshot, folder,
+                                          self._results_stem())
+            self.log(f"Exported {len(paths)} file(s) to {folder}")
+        except OSError as e:
+            QMessageBox.warning(self, "KiPI", f"Export failed: {e}")
+
+    def open_results(self):
+        from kipi.pi import report
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open results", start,
+                                              "KiPI results (*.kipi-results)")
+        if not path:
+            return
+        try:
+            data = report.load_results(path)
+        except Exception as e:  # noqa: BLE001 - any unreadable file
+            QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{e}")
+            return
+        if self.snapshot is not None and data["board"] != self.snapshot.board_name:
+            self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
+                     logging.WARNING)
+        self._tree, self._scenes = data["tree"], data["scenes"]
+        first = self._tree.loads[0].group if self._tree.loads else next(iter(self._tree.groups))
+        self.solve_panel.show_results(self._tree, first)
+        self._show_group(first)
+        self.log(f"Opened results saved {data['saved']} from {path}")
 
     def _show_group(self, name: str):
         if not self._tree or name not in self._scenes:

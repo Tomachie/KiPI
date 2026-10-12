@@ -165,3 +165,20 @@ def test_result_scene_carries_fields_and_probes():
     assert scene.probe(F, L / 2, 5.0) is None                      # off the copper
     lo, hi = scene.ranges["voltage"]
     assert hi == pytest.approx(1.0) and lo == pytest.approx(1.0 - total / 1e3, rel=1e-9)
+
+
+def test_current_arrows_follow_the_current():
+    from kipi.viz.results import build_result_scene
+    L, W = 20.0, 1.0
+    snap = two_layer([(F, box(0, -W / 2, L, W / 2))],
+                     [pad("src", "U1", F, box(0, -W / 2, 1, W / 2)),
+                      pad("ld", "U2", F, box(L - 1, -W / 2, L, W / 2))])
+    res = run(snap, NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                               [CurrentLoad("LOAD", ["ld"], 2.0)], SolveSettings(max_edge_mm=0.3)))
+    lr = build_result_scene(snap, res).layers[F]
+    assert len(lr.arrow_pts) > 10
+    # Current flows from the source (x=0) to the load (x=20): +x in KiCad and display.
+    assert (lr.arrow_dir[:, 0] > 0.99).all()
+    # Away from the pads |J| is I / (W t).
+    mid = (lr.arrow_pts[:, 0] > 5) & (lr.arrow_pts[:, 0] < 15)
+    assert lr.arrow_mag[mid] == pytest.approx(2.0 / (W * T_CU), rel=1e-6)

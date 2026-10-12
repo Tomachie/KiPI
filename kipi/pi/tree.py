@@ -57,11 +57,21 @@ class LoadReport:
     v_effective: float        # supply - ground
     drop: float               # nominal - effective, volts
     tolerance_pct: Optional[float]
-    passed: Optional[bool]
+    passed: Optional[bool]               # judged on the worst pin
+    v_worst: float = 0.0                 # lowest supply pin minus highest ground pin
+    pin_groups: List[tuple] = field(default_factory=list)  # (name, A, V mean, V min)
 
     @property
     def drop_pct(self) -> float:
         return 100.0 * self.drop / self.nominal if self.nominal else 0.0
+
+    @property
+    def drop_worst(self) -> float:
+        return self.nominal - self.v_worst
+
+    @property
+    def drop_worst_pct(self) -> float:
+        return 100.0 * self.drop_worst / self.nominal if self.nominal else 0.0
 
 
 @dataclass
@@ -108,6 +118,16 @@ def _mean_v(sol, pad_ids: List[str]) -> float:
 def _min_v(sol, pad_ids: List[str]) -> float:
     return float(min(sol.node_v[next(iter(sol.mesh.pad_nodes[p].values()))[0]]
                      for p in pad_ids))
+
+
+def _max_v(sol, pad_ids: List[str]) -> float:
+    return float(max(sol.node_v[next(iter(sol.mesh.pad_nodes[p].values()))[0]]
+                     for p in pad_ids))
+
+
+def _group_load_name(load, index: int) -> str:
+    g = load.groups[index]
+    return f"{load.name} [{g.name or ','.join(g.pins)}]"
 
 
 def _input_current(v: Vrm, v_out: float, i_out: float, v_in: float) -> float:
@@ -186,8 +206,16 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         vrm = driver[g]
         label = label_of(g)
         progress.stage(f"Rail {gi + 1}/{len(order)}: {label} (from {vrm.name})")
-        loads = [CurrentLoad(l.name, pads(l.supply), l.current)
-                 for l in setup.loads if l.supply.net in g]
+        loads = []
+        for l in setup.loads:
+            if l.supply.net not in g:
+                continue
+            if not l.groups:
+                loads.append(CurrentLoad(l.name, pads(l.supply), l.current))
+                continue
+            for gi, grp in enumerate(l.groups):
+                ref = PinRef(l.supply.ref, l.supply.net, list(grp.pins))
+                loads.append(CurrentLoad(_group_load_name(l, gi), pads(ref), grp.current))
         children = fed_by.get(g, [])
         child_load = {c.name: f"{c.name} (input)" for c in children}
         for c in children:
@@ -254,7 +282,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         progress.stage(f"Ground: {label}")
         refs = [v for v in setup.vrms if v.kind == "source" and v.ground and v.ground.net in g]
         sources = [VoltageSource(f"{v.name} (gnd)", pads(v.ground), 0.0) for v in refs]
-        loads = [CurrentLoad(f"{l.name} (return)", pads(l.ground), -l.current)
+        loads = [CurrentLoad(f"{l.name} (return)", pads(l.ground), -l.total_current())
                  for l in setup.loads if l.ground and l.ground.net in g]
         for v in setup.vrms:
             if v.ground and v.ground.net in g and v.kind != "source":
@@ -273,17 +301,31 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
     for l in setup.loads:
         g = groups[l.supply.net]
         sol = rail_solutions[g]
-        sp = pads(l.supply)
+        if l.groups:
+            sp = [pid for grp in l.groups
+                  for pid in pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))]
+        else:
+            sp = pads(l.supply)
         vs, vmin = _mean_v(sol, sp), _min_v(sol, sp)
-        vg = _mean_v(ground_solutions[groups[l.ground.net]], pads(l.ground)) if l.ground else None
+        vg = vg_max = None
+        if l.ground:
+            gsol = ground_solutions[groups[l.ground.net]]
+            gp = pads(l.ground)
+            vg, vg_max = _mean_v(gsol, gp), _max_v(gsol, gp)
         eff = vs - (vg or 0.0)
+        worst = vmin - (vg_max or 0.0)
         nominal = driver[g].voltage
         drop = nominal - eff
         passed = None
         if l.tolerance_pct is not None and nominal:
-            passed = 100.0 * drop / nominal <= l.tolerance_pct
-        out.loads.append(LoadReport(l.name, label_of(g), l.current, nominal, vs, vmin, vg,
-                                    eff, drop, l.tolerance_pct, passed))
+            passed = 100.0 * (nominal - worst) / nominal <= l.tolerance_pct
+        pin_groups = []
+        for gi, grp in enumerate(l.groups):
+            gp_ids = pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))
+            pin_groups.append((grp.name or ",".join(grp.pins), grp.current,
+                               _mean_v(sol, gp_ids), _min_v(sol, gp_ids)))
+        out.loads.append(LoadReport(l.name, label_of(g), l.total_current(), nominal, vs, vmin,
+                                    vg, eff, drop, l.tolerance_pct, passed, worst, pin_groups))
     for v in setup.vrms:
         p_out = v_out[v.name] * i_out[v.name]
         vi, ii = v_in.get(v.name), i_in.get(v.name)
