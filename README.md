@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/kipi_256.png" alt="KiPI logo" width="128">
+</p>
+
 # KiPI — DC power integrity for KiCad 10
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
