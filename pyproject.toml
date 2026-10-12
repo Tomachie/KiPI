@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=69", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,6 +8,8 @@ dynamic = ["version"]
 description = "DC power-integrity analysis for KiCad: IR drop, current density, via currents and electro-thermal co-simulation in 3D"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 authors = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
 maintainers = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
 keywords = [

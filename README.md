@@ -1,80 +1,24 @@
 # KiPI — DC power integrity for KiCad 10
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin. The planned
-workflow:
+KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin:
 
 1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements.
-2. Simulate voltage drop net by net, across every copper layer.
-3. Inspect voltage, current density, via currents and copper power dissipation in a rotatable
-   3D view, with live solver progress.
+2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
+3. Inspect voltage, current density, via currents, copper power dissipation and (optionally)
+   board temperature in a rotatable 3D view, and write an interactive HTML report.
 
-**Status: Milestone 3.** Board extraction, the 3D copper viewer and a DC power-tree solver
-work. Tick the nets you care about in the Board panel, then describe the power system in the
-**PI setup** panel. Nothing is inferred from the board; every entry is yours:
-
-* **VRMs:** an ideal *source*, an *LDO* (I_in = I_out + I_q) or a *switcher*
-  (P_in = P_out / efficiency), with output pins and set voltage. LDOs and switchers also need
-  input pins, which is how the power tree is defined. Sense pins (regulate the voltage there)
-  and ground pins are optional.
-* **Loads:** supply pins, current, optional ground pins and an optional maximum drop (%)
-  for PASS/FAIL.
-* **DC connections:** parts that pass DC between nets (sense resistors, ferrites, fuses,
-  load switches), with their resistance. Nets joined this way are simulated as one group,
-  and each group may have only one VRM.
-
-**Solve all** solves every group, loads first and then back toward the source,
-including ground return if ground pins are set. It lists each load's drop and PASS/FAIL,
-each VRM's input and output, and each DC connection's current and loss. Pick a group to
-see its voltage, current density, power density or via current in 3D, and click to probe.
-The setup is saved as `<board>.kipi-setup.json` next to the board.
-
-**Results (Milestone 4):**
-
-* **Current arrows:** shown with the current-density view, showing where and which way
-  current flows.
-* **Cut plane:** a cut along X, Y or Z (Display panel) to look into the stackup.
-* **Vias tab:** every via and PTH barrel ranked by current, with an optional current limit
-  for PASS/FAIL; double-click a row to jump to it.
-* **Losses tab:** copper loss per group and layer, vias, DC connections and VRM conversion
-  loss.
-* **Export:** the tables as CSV and the 3D results as ParaView `.vtm`. **Save results** writes
-  a `.kipi-results` file that **Open results…** reloads without solving. Results files are
-  Python pickles, so only open ones you created.
-* **Loads:** a load can split its current across pin groups. PASS/FAIL uses the worst
-  pin.
-
-**Milestone 5:**
-
-* **Electro-thermal co-simulation** (Thermal tab; off by default). You set the ambient
-  temperature, the number of iterations, the airflow (m/s) and optionally the grid size.
-  * Each iteration solves the power tree with copper resistivity at the current
-    temperature: ρ(T) = ρ₂₀·(1 + 0.00393·(T − 20)).
-  * All heat goes onto one board-level map: copper and via loss from every group,
-    DC-connection parts, and VRM conversion loss.
-  * Heat spreads through every layer's copper and the laminate, and leaves both faces by
-    convection at h = 10 + 3.8·v W/m²K per face, so neighbouring planes heat each other.
-  * The laminate's in-plane conductivity comes from each dielectric's material in the
-    KiCad stackup. Recognised names include FR4 cores and prepregs (e.g. "2116 RC54%"),
-    polyimide, Kapton, polyolefin, PTFE, Rogers RO4000/RO3000/RT-duroid, ceramics
-    and aluminium. Unrecognised names fall back to FR4 with a warning, and
-    "Laminate k" in the Thermal tab overrides the value.
-  * The results gain a Temperature view and the peak temperature with its iteration
-    history.
-* **HTML report** (checkbox next to Solve all). A single offline `.html` file next to the
-  board with:
-  * the summary and tables,
-  * an interactive 3D view per net group (Plotly: rotate, zoom, hover),
-  * per-layer statistics and top-down voltage and current-density maps,
-  * the board temperature map when thermal is on.
+**Status: 0.5.0 (alpha).** Milestones 1–5 are done: board extraction, the 3D viewer, the FEM
+solver, the power tree, the results tools, electro-thermal co-simulation and the HTML report.
 See [docs/research.md](docs/research.md) for design notes.
 
-## Install (development)
+## Install
 
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
-2. Link this repo into your KiCad plugins folder. KiCad uses your *Documents* folder, which may
-   be redirected to OneDrive:
+2. Link (or copy) this repo into your KiCad plugins folder. KiCad uses your *Documents* folder,
+   which may be redirected to OneDrive:
 
    ```powershell
    $plug = "$([Environment]::GetFolderPath('MyDocuments'))\KiCad\10.0\plugins"
@@ -82,11 +26,157 @@ See [docs/research.md](docs/research.md) for design notes.
    ```
 
 3. Restart the PCB editor. KiCad builds the plugin venv in the background; the first time this
-   downloads PySide6 and VTK. The **KiPI** toolbar button appears once the venv is ready. If it
-   never appears, right-click the action in *Preferences → Plugins* and choose
-   *Recreate Plugin Environment*.
+   downloads PySide6 and VTK, so give it a few minutes. The **KiPI** toolbar button appears
+   once the venv is ready. If it never appears, right-click the action in
+   *Preferences → Plugins* and choose *Recreate Plugin Environment*.
 
-## Standalone use
+## Using KiPI
+
+### 1. Open the board
+
+Open your board in the PCB editor and click the **KiPI** toolbar button. KiPI opens in its
+own window and reads the board through the KiCad API; the log at the bottom streams each
+stage as it runs.
+
+* **Refill zones** (toolbar, on by default) refills every zone in KiCad before reading, so
+  the zone fills KiPI sees match your current routing. KiPI analyses filled copper only.
+* **Load from KiCad** re-reads the board after you edit it, and reloads the saved PI setup
+  (save first if you have unsaved changes).
+* **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
+  later without KiCad.
+
+### 2. Pick the nets
+
+The **Board** panel on the left lists every net. Tick the nets you want to analyse: they are
+drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** filters the
+list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
+the filter box to find a net.
+
+Below that:
+
+* **Copper layers** toggles layers in the view.
+* **Display** colours copper by layer or by net, exaggerates the stackup (**Z scale**), shows
+  or hides vias, pads and the board, and cuts the view along X, Y or Z (**Cut**, slider,
+  **Flip**) to look inside the stackup.
+* **Info** shows whatever you last clicked in 3D. **Select in KiCad** selects that pad or
+  via in the PCB editor.
+
+Toolbar buttons set **Top / Bottom / Iso** views and save a **Screenshot…**. Drag to rotate,
+scroll to zoom and shift-drag (or middle-drag) to pan.
+
+### 3. Describe the power system
+
+The **PI setup** panel on the right holds the power tree. KiPI infers nothing from the board,
+so every entry comes from you. Each list has **Add**, **Duplicate** and **Remove** buttons.
+Pins are chosen with a picker: pick the net, then the part (type to search), then optionally
+the pin numbers (e.g. `1,2,5`; blank means all of that part's pins on the net). Problems such
+as missing pins, or two VRMs on one group, are shown in red as you edit.
+
+**VRMs tab**: one entry per regulator or supply.
+
+| Field | Meaning |
+|---|---|
+| Type | **Source** (ideal supply), **LDO** (I_in = I_out + I_q) or **Switcher** (P_in = P_out / efficiency) |
+| Output pins, Set voltage | Where it drives, and to what voltage |
+| Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
+| Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
+| Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
+| Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
+
+**Loads tab**: one entry per consumer.
+
+* **Supply pins** and **Current**. With several supply pins, **Current split** chooses
+  between splitting the current evenly over all pins and giving explicit **pin groups**,
+  each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
+  part draws different currents on different rails or pins, e.g. a core and an I/O supply.
+* **Ground pins** (optional) include the ground return.
+* **Max drop** (%) is the PASS/FAIL limit. Each load is judged by its worst pin.
+
+**DC connections tab**: parts that pass DC from one net to another, such as sense
+resistors, ferrite beads, fuses, load switches and 0 Ω links. Give **Side A pins**,
+**Side B pins** and a **Resistance**. Nets joined this way are solved together as one group,
+and each group may hold only one VRM. A net with no connection to its VRM is reported, not
+guessed at.
+
+**Mesh tab**: **Max edge** is the largest triangle edge in mm; smaller is more accurate and
+slower. **Via grading** controls how fast the mesh refines towards plated holes, and
+**Barrel plating** sets the via wall thickness. The defaults suit most boards.
+
+**Thermal tab** (off by default): tick **Electro-thermal co-simulation** to make losses heat
+the board and the warmer copper become more resistive. Set:
+
+* **Ambient** temperature.
+* **Iterations**: three is usually enough. The Notes tab shows how much each iteration
+  changed.
+* **Airflow** in m/s.
+* **Grid**, the thermal cell size: *auto* gives about 250 cells across the board.
+* **Laminate k**: *from stackup* looks up the in-plane conductivity from each dielectric's
+  material in your KiCad stackup (FR4, prepreg types, polyimide, Kapton, PTFE, Rogers,
+  ceramic, aluminium…). Unrecognised names fall back to FR4 with a warning. Enter a value
+  here to override.
+
+The setup is saved as `<board>.kipi-setup.json` next to the board when you click **Save** at
+the top of the panel and every time you solve. It travels with the project and can go into
+version control.
+
+### 4. Solve
+
+Click **Solve all**. Every net group is meshed and solved, the downstream loads first and then
+back towards the source, so each VRM's input current includes everything it feeds. Progress
+and solver residuals stream into the log; **Cancel** stops the run.
+
+Tick **HTML report** before solving to also write `<board>_kipi_report.html` next to the
+board, and **Report** opens it afterwards. It is a single file that works offline, containing:
+
+* the summary and every results table;
+* an interactive 3D view per net group (rotate, zoom, hover for values);
+* per-layer statistics, with top-down voltage and current-density maps;
+* the board temperature map when thermal is on.
+
+### 5. Read the results
+
+In the **Results** group, choose a **net group** and a **field** to show in 3D:
+
+* **Voltage**
+* **Current density**. Tick **Arrows** to see where and which way the current flows.
+* **Power density**
+* **Via current**
+* **Temperature** (with thermal on)
+
+Click any point on the copper or any via to probe it. **Show copper** returns to the plain
+geometry view.
+
+Result tabs:
+
+| Tab | Shows |
+|---|---|
+| Loads | Each load's current, effective voltage, drop, worst pin and PASS/FAIL. Double-click to show its group. |
+| VRMs | Output and input voltage, current and power, plus conversion loss |
+| DC connections | Current and loss in each series part |
+| Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
+| Losses | Copper loss per group and layer, vias, DC connections and VRM conversion |
+| Notes | Solver details, warnings and the thermal iteration history |
+
+**Export ▾** writes the tables as CSV, the 3D results as a ParaView `.vtm`, or **Save
+results…** as a `.kipi-results` file, which the toolbar's **Open results…** reloads without
+solving again. Results files are Python pickles, so only open ones you created.
+
+### Tips and troubleshooting
+
+* **"No copper path" between a VRM and a load** usually means unrouted copper, an unfilled
+  zone, or a missing DC connection for a series part between them.
+* **Unexpected drop:** compare the board view with KiCad. Thermal reliefs, necked traces and
+  via counts dominate DC drop, and the Current density view with Arrows makes the bottleneck
+  obvious.
+* **Slow solves:** raise **Max edge**, or analyse fewer nets at a time. Large planes are cheap
+  but very fine traces are not.
+* **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
+  15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
+  task runs longer than a minute, a stack dump of every thread. Attach both to bug reports.
+
+## Development
+
+KiPI also runs outside KiCad, against the running PCB editor or a saved snapshot:
 
 ```powershell
 python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
@@ -97,11 +187,7 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m pytest tests
 ```
 
-Each session writes its own log to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last 15
-sessions are kept. A matching `.crash.log` collects native crash tracebacks, plus stack dumps
-of every thread if a background task runs longer than a minute (useful when something hangs).
-
-## Layout
+### Layout
 
 | Path | Purpose |
 |---|---|
@@ -111,7 +197,28 @@ of every thread if a background task runs longer than a minute (useful when some
 | `kipi/geometry/` | Per-net, per-layer copper union (shapely) |
 | `kipi/mesh/` | Conforming per-layer triangle mesh (Triangle), graded around plated holes |
 | `kipi/solver/` | 2.5D FEM: sheet conductance, via/PTH barrels, series parts, sources, loads; LU / AMG-CG |
-| `kipi/pi/` | User power-tree setup (VRMs, loads, DC connections), JSON, validation, tree solver |
+| `kipi/pi/` | User power-tree setup (VRMs, loads, DC connections), JSON, validation, tree solver, results tables |
+| `kipi/thermal/` | Board heat model, stackup material conductivities, electro-thermal iteration |
+| `kipi/report/` | Self-contained HTML report (Plotly 3D, matplotlib maps) |
 | `kipi/viz/` | PyVista mesh building and batching, result meshes (no Qt) |
 | `kipi/gui/` | PySide6 main window, embedded 3D viewer, worker threads |
 | `kipi/progress.py` | Progress/log reporting used by every pipeline stage |
+
+## License
+
+KiPI is free software: you can redistribute it and/or modify it under the terms of the
+[GNU General Public License](LICENSE) as published by the Free Software Foundation, either
+version 3 of the License, or (at your option) any later version. It is distributed WITHOUT
+ANY WARRANTY; see the license for details. Copyright © 2026 Drew Maatman.
+
+**Note on the mesher.** KiPI meshes copper with Jonathan Shewchuk's
+[Triangle](https://www.cs.cmu.edu/~quake/triangle.html), through the
+[`triangle`](https://pypi.org/project/triangle/) Python package. Triangle is not open source
+in the OSI sense. Its author's terms allow free use and redistribution, but it **may not be
+sold or included in commercial products without a license from its author**. Using KiPI for
+your own design work is fine. If you want to ship KiPI, or anything built on it, as part of
+a commercial product, you will need to arrange a license for Triangle with its author or
+swap in another mesher. The meshing code is isolated in `kipi/mesh/` for that reason.
+
+The other dependencies are under permissive licenses, apart from PySide6 (LGPL-3.0). All of
+them are compatible with the GPL.
