@@ -31,6 +31,7 @@ class ThermalResult:
     temps: np.ndarray             # (ny, nx) degC, NaN outside the board
     history: List[dict] = field(default_factory=list)   # per iteration: t_max, dt_max
     heat_w: float = 0.0           # total heat put into the board
+    dielectrics: list = field(default_factory=list)      # (material, mm, Dielectric) used
 
     @property
     def t_max(self) -> float:
@@ -114,7 +115,8 @@ def solve_electrothermal(snap: BoardSnapshot, setup: PISetup, thermal: ThermalSe
         progress.info(f"Iteration {it}: {heat_total * 1e3:.1f} mW into the board, peak "
                       f"{np.nanmax(temps):.2f} °C (ambient {thermal.ambient_c:g} °C), "
                       f"max change {dt:.3f} °C")
-    tree.thermal = ThermalResult(thermal, model.x, model.y, temps, history, heat_total)
+    tree.thermal = ThermalResult(thermal, model.x, model.y, temps, history, heat_total,
+                                 model.dielectrics)
     tree.solve_s = time.perf_counter() - t0
     if n > 1 and history[-1]["dt_max"] > 0.05 * max(history[-1]["t_max"] - thermal.ambient_c, 1e-9):
         tree.warnings.append(f"Electro-thermal solve may not have settled: the last iteration "

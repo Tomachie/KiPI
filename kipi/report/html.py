@@ -299,6 +299,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      f"{th.settings.airflow_m_s:g} m/s, {len(th.history)} iteration(s).</p>")
         parts.append(f"<div class='maps'><figure><img src='{_thermal_map(th, outline)}'>"
                      "</figure></div>")
+        if th.dielectrics:
+            parts.append("<h3>Laminate (in-plane thermal conductivity)</h3>" + _table(
+                ["Stackup material", "Thickness (mm)", "Taken as", "k (W/m·K)"],
+                [[_e(m or "(unnamed)"), _num(t, ".3f"),
+                  _e(i.matched) + (" ⚠" if i.assumed else ""), _num(i.k_w_mk, "g")]
+                 for m, t, i in th.dielectrics]))
         parts.append(_table(["Iteration", "Heat (W)", "Peak (°C)", "Max change (°C)"],
                             [[str(h["iteration"]), _num(h["heat_w"]), _num(h["t_max"], ".2f"),
                               _num(h["dt_max"], ".3f")] for h in th.history]))

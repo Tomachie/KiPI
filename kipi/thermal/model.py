@@ -6,7 +6,9 @@ through the laminate, and leaves both faces by convection to ambient:
 
     div(G_th grad T) - 2 h (T - T_amb) + q'' = 0
 
-G_th (W/K per square) = sum over layers of k_cu * t_cu * coverage + k_fr4 * t_board.
+G_th (W/K per square) = sum over copper layers of k_cu * t_cu * coverage + sum over
+dielectric layers of k(material) * t, with k looked up from each dielectric's material in
+the KiCad stackup (see :mod:`kipi.thermal.materials`).
 Through the thickness the board is taken as isothermal: for FR4 the through-plane
 resistance t/k (~0.005 K m^2/W for 1.6 mm) is about a tenth of the convective 1/(2h),
 so every layer sees the same temperature at a point. Heat from all nets and layers
@@ -32,7 +34,6 @@ from kipi.model.board import BoardSnapshot
 from kipi.progress import NULL, ProgressReporter
 
 K_CU_W_MM_K = 0.39          # copper, 390 W/(m K)
-K_FR4_W_MM_K = 0.0008       # FR4 in-plane, ~0.8 W/(m K)
 H_NATURAL_W_M2K = 10.0      # natural convection + radiation, per face
 H_PER_M_S = 3.8             # added per m/s of airflow, per face
 
@@ -44,6 +45,7 @@ class ThermalSettings:
     iterations: int = 3
     airflow_m_s: float = 0.0
     grid_mm: float = 0.0        # 0 = automatic (~250 cells across the board)
+    laminate_k_w_mk: float = 0.0  # 0 = from the stackup's dielectric materials
 
     def h_w_mm2_k(self) -> float:
         return (H_NATURAL_W_M2K + H_PER_M_S * max(self.airflow_m_s, 0.0)) * 1e-6
@@ -68,7 +70,17 @@ class BoardThermalModel:
         self.inside = shapely.contains_xy(board, X, Y)
 
         # In-plane sheet conductance per cell: copper coverage of every layer + laminate.
-        g = np.full(X.shape, K_FR4_W_MM_K * st.board_thickness_mm)
+        from kipi.thermal.materials import laminate_conductance
+        g_lam, self.dielectrics = laminate_conductance(st, settings.laminate_k_w_mk or None)
+        for material, t, info in self.dielectrics:
+            note = " (not recognised; assumed FR4)" if info.assumed else ""
+            progress.info(f"  dielectric {material or '(unnamed)'} {t:.3f} mm: {info.matched}, "
+                          f"k = {info.k_w_mk:g} W/m·K{note}")
+            if info.assumed:
+                progress.warn(f"Dielectric material {material!r} not recognised; using FR4 "
+                              f"({info.k_w_mk:g} W/m·K). Set 'Laminate k' in the Thermal tab "
+                              "to override.")
+        g = np.full(X.shape, g_lam)
         for cu in st.copper:
             copper = _layer_copper(snap, cu.id)
             if copper is None:

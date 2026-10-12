@@ -96,3 +96,41 @@ def test_electrothermal_cosim_heats_and_raises_drop():
     assert by_name(hot.loads, "U2").drop > by_name(cold.loads, "U2").drop
     dts = [h["dt_max"] for h in hot.thermal.history]
     assert dts[-1] < dts[0]                         # settling
+
+
+@pytest.mark.parametrize("name,k,assumed", [
+    ("FR4", 0.8, False), ("FR4 core", 0.8, False), ("FR408-HR", 0.8, False), ("370HR", 0.8, False),
+    ("2116 RC54%", 0.6, False), ("3313 RC57%", 0.6, False), ("Prepreg", 0.6, False),
+    ("Polyimide", 0.30, False), ("Kapton", 0.12, False), ("Polyolefin", 0.25, False),
+    ("PTFE", 0.25, False), ("Teflon", 0.25, False), ("RO4350B", 0.69, False),
+    ("Rogers RO4003C", 0.71, False), ("RT/duroid 5880", 0.20, False), ("Ceramic", 24.0, False),
+    ("Al", 205.0, False), ("Aluminum nitride", 170.0, False), ("unobtainium", 0.8, True),
+    ("", 0.8, True),
+])
+def test_dielectric_lookup(name, k, assumed):
+    from kipi.thermal.materials import lookup
+    d = lookup(name)
+    assert d.k_w_mk == pytest.approx(k) and d.assumed == assumed
+
+
+def test_laminate_conductance_follows_stackup_materials():
+    from kipi.model.board import DielectricLayer
+    from kipi.thermal.materials import laminate_conductance
+    st = plate().stackup
+    g_fr4, rows = laminate_conductance(st)
+    assert g_fr4 == pytest.approx(0.8e-3 * 1.5)
+    st.dielectrics = [DielectricLayer(1.5, "Ceramic")]
+    g_cer, _ = laminate_conductance(st)
+    assert g_cer == pytest.approx(24e-3 * 1.5)
+    assert laminate_conductance(st, override_k_w_mk=2.0)[0] == pytest.approx(2e-3 * 1.5)
+    # A ceramic board spreads heat far better: the hot spot is much cooler.
+    peaks = []
+    for mat in ("FR4", "Ceramic"):
+        snap = plate()
+        snap.stackup.dielectrics = [DielectricLayer(1.5, mat)]
+        snap.zones = []                                   # bare laminate, no copper spreading
+        m = BoardThermalModel(snap, ThermalSettings(enabled=True, grid_mm=1.0))
+        heat = m.empty_heat()
+        m.deposit(heat, np.array([[20.0, 20.0]]), np.array([0.5]))
+        peaks.append(np.nanmax(m.solve(heat)))
+    assert peaks[0] > 2 * peaks[1]

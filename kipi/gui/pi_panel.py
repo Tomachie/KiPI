@@ -840,11 +840,17 @@ class PIPanel(QWidget):
         self.spin_airflow.setSpecialValueText("still air")
         self.spin_tgrid = _spin(0, 10, t.grid_mm, 2, " mm", 0.1)
         self.spin_tgrid.setSpecialValueText("auto")
+        self.spin_lam_k = _spin(0, 500, t.laminate_k_w_mk, 2, " W/m·K", 0.1)
+        self.spin_lam_k.setSpecialValueText("from stackup")
+        self.spin_lam_k.setToolTip("In-plane conductivity of the dielectric. 'From stackup' "
+                                   "looks it up from each dielectric's material name "
+                                   "(FR4, polyimide, Kapton, PTFE, Rogers, ceramic, Al...).")
         f.addRow(self.chk_thermal)
         f.addRow("Ambient", self.spin_ambient)
         f.addRow("Iterations", self.spin_iters)
         f.addRow("Airflow", self.spin_airflow)
         f.addRow("Grid", self.spin_tgrid)
+        f.addRow("Laminate k", self.spin_lam_k)
         note = QLabel("Heat from every net and layer (copper, vias, DC parts, VRM conversion "
                       "loss) spreads through the board's copper and laminate and leaves both "
                       "faces by convection: h = 10 + 3.8·v W/m²K per face.")
@@ -852,7 +858,7 @@ class PIPanel(QWidget):
         note.setStyleSheet("color: #999;")
         f.addRow(note)
         self.chk_thermal.toggled.connect(self._thermal_changed)
-        for wdg in (self.spin_ambient, self.spin_airflow, self.spin_tgrid):
+        for wdg in (self.spin_ambient, self.spin_airflow, self.spin_tgrid, self.spin_lam_k):
             wdg.valueChanged.connect(self._thermal_changed)
         self.spin_iters.valueChanged.connect(self._thermal_changed)
         return w
@@ -864,7 +870,9 @@ class PIPanel(QWidget):
         t.iterations = self.spin_iters.value()
         t.airflow_m_s = self.spin_airflow.value()
         t.grid_mm = self.spin_tgrid.value()
-        for wdg in (self.spin_ambient, self.spin_iters, self.spin_airflow, self.spin_tgrid):
+        t.laminate_k_w_mk = self.spin_lam_k.value()
+        for wdg in (self.spin_ambient, self.spin_iters, self.spin_airflow, self.spin_tgrid,
+                    self.spin_lam_k):
             wdg.setEnabled(t.enabled)
         self.btn_solve.setText("Solve all (electro-thermal)" if t.enabled else "Solve all")
 
@@ -893,6 +901,7 @@ class PIPanel(QWidget):
         t = setup.thermal
         for wdg, val in ((self.spin_ambient, t.ambient_c), (self.spin_iters, t.iterations),
                          (self.spin_airflow, t.airflow_m_s), (self.spin_tgrid, t.grid_mm),
+                         (self.spin_lam_k, t.laminate_k_w_mk),
                          (self.chk_thermal, t.enabled), (self.chk_report, setup.html_report)):
             wdg.blockSignals(True)
             (wdg.setChecked if isinstance(wdg, QCheckBox) else wdg.setValue)(val)
@@ -1042,6 +1051,10 @@ class PIPanel(QWidget):
                             f"{th.settings.ambient_c:g} °C, airflow {th.settings.airflow_m_s:g} m/s")
             notes.insert(1, "&nbsp;&nbsp;iterations: " + ", ".join(
                 f"{h['iteration']}: {h['t_max']:.2f} °C (Δ {h['dt_max']:.3f})" for h in th.history))
+            notes.insert(2, "&nbsp;&nbsp;dielectrics: " + "; ".join(
+                f"{html.escape(m or '(unnamed)')} {t:.3f} mm → {html.escape(i.matched)}, "
+                f"{i.k_w_mk:g} W/m·K{' ⚠ assumed' if i.assumed else ''}"
+                for m, t, i in th.dielectrics))
         for g in tree.groups.values():
             role = f"driven by {g.driver}" if g.kind == "rail" else f"ground, referenced at {g.driver}"
             notes.append(f"&nbsp;&nbsp;<b>{html.escape(g.name)}</b> ({role}): "

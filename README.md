@@ -55,6 +55,11 @@ The setup is saved as `<board>.kipi-setup.json` next to the board.
     DC-connection parts, and VRM conversion loss.
   * Heat spreads through every layer's copper and the laminate, and leaves both faces by
     convection at h = 10 + 3.8·v W/m²K per face, so neighbouring planes heat each other.
+  * The laminate's in-plane conductivity comes from each dielectric's material in the
+    KiCad stackup. Recognised names include FR4 cores and prepregs (e.g. "2116 RC54%"),
+    polyimide, Kapton, polyolefin, PTFE, Rogers RO4000/RO3000/RT-duroid, ceramics
+    and aluminium. Unrecognised names fall back to FR4 with a warning, and
+    "Laminate k" in the Thermal tab overrides the value.
   * The results gain a Temperature view and the peak temperature with its iteration
     history.
 * **HTML report** (checkbox next to Solve all). A single offline `.html` file next to the
