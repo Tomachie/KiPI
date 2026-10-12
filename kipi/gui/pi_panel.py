@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QMenu, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
     QWidget,
@@ -588,6 +588,9 @@ class PIPanel(QWidget):
     group_changed = Signal(str)
     show_geometry = Signal()
     save_requested = Signal()
+    arrows_toggled = Signal(bool)
+    via_selected = Signal(str, str)        # group name, via / PTH pad id
+    export_requested = Signal(str)         # "csv", "vtk" or "results"
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -644,11 +647,24 @@ class PIPanel(QWidget):
             self.cmb_field.addItem(f"{label} ({unit})", key)
         self.cmb_field.currentIndexChanged.connect(
             lambda i: self.field_changed.emit(self.cmb_field.itemData(i)))
+        self.chk_arrows = QCheckBox("Arrows", g_res)
+        self.chk_arrows.setToolTip("Show current-flow arrows over the copper")
+        self.chk_arrows.toggled.connect(self.arrows_toggled.emit)
+        b_export = QPushButton("Export ▾", g_res)
+        menu = QMenu(b_export)
+        menu.addAction("Tables as CSV…", lambda: self.export_requested.emit("csv"))
+        menu.addAction("3D results for ParaView (.vtm)…", lambda: self.export_requested.emit("vtk"))
+        menu.addAction("Save results…", lambda: self.export_requested.emit("results"))
+        b_export.setMenu(menu)
+        self.btn_export = b_export
+        b_export.setEnabled(False)
         b_geom = QPushButton("Show copper", g_res)
         b_geom.clicked.connect(self.show_geometry.emit)
         row.addWidget(self.cmb_group, 2)
         row.addWidget(self.cmb_field, 2)
+        row.addWidget(self.chk_arrows)
         row.addWidget(b_geom)
+        row.addWidget(b_export)
         lr.addLayout(row)
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)", "Drop (mV)",
@@ -660,6 +676,9 @@ class PIPanel(QWidget):
         self.res_tabs.addTab(self.tbl_loads, "Loads")
         self.res_tabs.addTab(self.tbl_vrms, "VRMs")
         self.res_tabs.addTab(self.tbl_links, "DC connections")
+        self.res_tabs.addTab(self._vias_tab(), "Vias")
+        self.tbl_losses = self._table(["Group"])
+        self.res_tabs.addTab(self.tbl_losses, "Losses")
         self.res_tabs.addTab(self.txt_notes, "Notes")
         self.tbl_loads.cellDoubleClicked.connect(self._row_to_group)
         lr.addWidget(self.res_tabs)
@@ -667,6 +686,79 @@ class PIPanel(QWidget):
         self.setEnabled(False)
 
     # ------------------------------------------------------------------ widgets
+    def _vias_tab(self) -> QWidget:
+        w = QWidget()
+        v = QVBoxLayout(w)
+        v.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        row.addWidget(QLabel("Current limit"))
+        self.spin_via_limit = _spin(0, 1e6, 0, 1, " mA", 10)
+        self.spin_via_limit.setSpecialValueText("none")
+        self.spin_via_limit.setToolTip("Vias carrying more than this are marked FAIL")
+        self.spin_via_limit.valueChanged.connect(self._via_limit_changed)
+        row.addWidget(self.spin_via_limit)
+        row.addStretch(1)
+        row.addWidget(QLabel("double-click a row to show it"))
+        v.addLayout(row)
+        self.tbl_vias = self._table(["Group", "Via / pad", "x (mm)", "y (mm)", "Drill (mm)",
+                                     "I (mA)", "P (mW)", ""])
+        self.tbl_vias.cellDoubleClicked.connect(self._via_row_clicked)
+        v.addWidget(self.tbl_vias)
+        return w
+
+    def _via_limit_changed(self, value):
+        self.setup.via_current_limit_a = (value / 1e3) or None
+        if getattr(self, "_tree", None) is not None:
+            self._fill_vias()
+
+    def _via_row_clicked(self, row, _col):
+        it = self.tbl_vias.item(row, 0)
+        if it is not None:
+            self.via_selected.emit(it.text(), it.data(Qt.UserRole))
+
+    def _fill_vias(self, max_rows: int = 500):
+        from kipi.pi.report import via_rows
+        rows = via_rows(self._tree, self.snapshot, self.setup.via_current_limit_a)[:max_rows]
+        t = self.tbl_vias
+        t.setRowCount(len(rows))
+        for r, v in enumerate(rows):
+            status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
+            color = None if v.passed is None else ("#60d060" if v.passed else "#ff6060")
+            for c, text in enumerate([v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
+                                      f"{v.drill_mm:.3f}", f"{v.current * 1e3:.2f}",
+                                      f"{v.power * 1e3:.4f}", status]):
+                it = QTableWidgetItem(text)
+                if c == 7 and color:
+                    it.setForeground(QColor(color))
+                t.setItem(r, c, it)
+            t.item(r, 0).setData(Qt.UserRole, v.owner_id)
+
+    def _fill_losses(self):
+        from kipi.pi.report import loss_rows
+        rows = loss_rows(self._tree, self.snapshot)
+        layers = [c.name for c in self.snapshot.stackup.copper
+                  if any(c.name in r.by_layer for r in rows)]
+        headers = ["Group", *[f"{n} (mW)" for n in layers], "Vias (mW)", "DC parts (mW)",
+                   "Total (mW)"]
+        t = self.tbl_losses
+        t.setColumnCount(len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        vrm_rows = [v for v in self._tree.vrms if v.p_loss is not None]
+        t.setRowCount(len(rows) + 1 + len(vrm_rows))
+        total = 0.0
+        for r, row in enumerate(rows):
+            cells = [row.group, *[f"{row.by_layer.get(n, 0.0) * 1e3:.3f}" for n in layers],
+                     f"{row.vias * 1e3:.3f}", f"{row.links * 1e3:.3f}", f"{row.total * 1e3:.3f}"]
+            total += row.total
+            for c, text in enumerate(cells):
+                t.setItem(r, c, QTableWidgetItem(text))
+        r = len(rows)
+        t.setItem(r, 0, QTableWidgetItem("All copper + parts"))
+        t.setItem(r, len(headers) - 1, QTableWidgetItem(f"{total * 1e3:.3f}"))
+        for k, v in enumerate(vrm_rows, start=r + 1):
+            t.setItem(k, 0, QTableWidgetItem(f"VRM {v.name} (conversion)"))
+            t.setItem(k, len(headers) - 1, QTableWidgetItem(f"{v.p_loss * 1e3:.3f}"))
+
     def _table(self, headers) -> QTableWidget:
         t = QTableWidget(0, len(headers), self)
         t.setHorizontalHeaderLabels(headers)
@@ -709,6 +801,9 @@ class PIPanel(QWidget):
             sp.setValue(v)
             sp.blockSignals(False)
         self.clear_results()
+        self.spin_via_limit.blockSignals(True)
+        self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)
+        self.spin_via_limit.blockSignals(False)
         self.setEnabled(True)
         self._refresh_pickers()
         for il in (self.vrm_list, self.load_list, self.link_list):
@@ -797,7 +892,10 @@ class PIPanel(QWidget):
         return self.cmb_field.currentData()
 
     def clear_results(self):
-        for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links):
+        self._tree = None
+        if hasattr(self, "btn_export"):
+            self.btn_export.setEnabled(False)
+        for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links, self.tbl_vias, self.tbl_losses):
             t.setRowCount(0)
         self.txt_notes.clear()
         self.cmb_group.blockSignals(True)
@@ -858,6 +956,10 @@ class PIPanel(QWidget):
         self.cmb_group.addItems(list(tree.groups))
         self.cmb_group.setCurrentText(initial_group)
         self.cmb_group.blockSignals(False)
+        self._tree = tree
+        self._fill_vias()
+        self._fill_losses()
+        self.btn_export.setEnabled(True)
         self.res_tabs.setCurrentWidget(self.tbl_loads)
 
     def _row_to_group(self, row, _col):

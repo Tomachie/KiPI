@@ -7,6 +7,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
+from vtkmodules.vtkCommonDataModel import vtkPlane
 from vtkmodules.vtkRenderingCore import vtkActor, vtkCellPicker, vtkPolyDataMapper
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
@@ -100,6 +101,9 @@ class Viewer3D(QWidget):
         self._result_actors: Dict[int, object] = {}      # layer id -> actor
         self._result_via_actor = None
         self._scalar_bars: List[str] = []
+        self._arrows_on = False
+        self._arrow_actors: Dict[int, object] = {}          # layer id -> actor
+        self._clip = None                                   # (axis, fraction, flip) or None
         # Clicks are handled here rather than with pyvista's point picking, so a click can
         # also select a via by its on-screen distance (vias are only a few pixels wide).
         self._picker = vtkCellPicker()
@@ -194,6 +198,8 @@ class Viewer3D(QWidget):
 
     def render(self):
         self._flush()
+        if self._clip is not None:
+            self._apply_clip_all()
         self.plotter.render()
 
     def clear(self):
@@ -238,6 +244,9 @@ class Viewer3D(QWidget):
                 self._apply_actor_visibility(chunk.category, actor)
         for lid, actor in self._result_actors.items():
             actor.SetVisibility(lid not in self._hidden_layers)
+        for lid, actor in self._arrow_actors.items():
+            actor.SetVisibility(lid not in self._hidden_layers)
+        self._apply_clip_all()
         if self._result_via_actor is not None:
             # In the via-current view the vias are the result, so always show them.
             self._result_via_actor.SetVisibility(self._show_vias
@@ -256,6 +265,10 @@ class Viewer3D(QWidget):
             a.SetScale(1.0, 1.0, self._zscale)
         if self._result_via_actor is not None:
             self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+        for a in self._arrow_actors.values():
+            a.SetScale(1.0, 1.0, self._zscale)
+        if self._clip is not None:
+            self._apply_clip_all()
         self.plotter.reset_camera_clipping_range()
         self.plotter.render()
 
@@ -293,6 +306,9 @@ class Viewer3D(QWidget):
             p.remove_actor(a, render=False)
         if self._result_via_actor is not None:
             p.remove_actor(self._result_via_actor, render=False)
+        for a in self._arrow_actors.values():
+            p.remove_actor(a, render=False)
+        self._arrow_actors.clear()
         for title in self._scalar_bars:
             try:
                 p.remove_scalar_bar(title, render=False)
@@ -309,7 +325,88 @@ class Viewer3D(QWidget):
             self._draw_via_result(scene, arr, f"{label} ({unit})")
         else:
             self._draw_copper_result(scene, arr, assoc, f"{label} ({unit})")
+        if self._arrows_on:
+            self._draw_arrows(scene)
         self._apply_visibility()
+
+    # ------------------------------------------------------------------ arrows
+    def set_arrows_visible(self, on: bool):
+        self._arrows_on = bool(on)
+        if self._result is None:
+            return
+        for a in self._arrow_actors.values():
+            self.plotter.remove_actor(a, render=False)
+        self._arrow_actors.clear()
+        if self._arrows_on:
+            self._draw_arrows(self._result)
+        self._apply_visibility()
+
+    def _draw_arrows(self, scene):
+        """White arrows along the current, length ~ sqrt(|J|) relative to the peak."""
+        p = self.plotter
+        mags = [lr.arrow_mag for lr in scene.layers.values() if len(lr.arrow_mag)]
+        if not mags:
+            return
+        # Scale against the 95th percentile, not the peak: the peak sits at a pad corner
+        # and would shrink every other arrow to its minimum length.
+        peak = float(np.percentile(np.concatenate(mags), 95))
+        if peak <= 0:
+            return
+        geom = pv.Arrow(tip_length=0.4, tip_radius=0.22, shaft_radius=0.08)
+        for lid, lr in scene.layers.items():
+            if not len(lr.arrow_pts):
+                continue
+            pts = pv.PolyData(lr.arrow_pts)
+            pts["dir"] = lr.arrow_dir
+            pts["len"] = lr.arrow_spacing * (0.3 + 0.65 * np.minimum(1.0, np.sqrt(lr.arrow_mag / peak)))
+            glyphs = pts.glyph(orient="dir", scale="len", factor=1.0, geom=geom)
+            actor = p.add_mesh(glyphs, color="white", name=f"arrows:{lid}", pickable=False,
+                               reset_camera=False, render=False)
+            actor.SetScale(1.0, 1.0, self._zscale)
+            self._arrow_actors[lid] = actor
+
+    # ------------------------------------------------------------------ cut plane
+    def set_clip(self, axis: Optional[str], fraction: float = 0.5, flip: bool = False):
+        """Cut the view with a plane normal to ``axis`` ("x", "y", "z" or None to clear)
+        at ``fraction`` (0..1) of the scene's extent; ``flip`` keeps the other side."""
+        self._clip = None if not axis else (axis, float(fraction), bool(flip))
+        self._apply_clip_all()
+        self.plotter.render()
+
+    def _all_actors(self):
+        out = list(self._chunk_actors.values()) + list(self._board_actors)
+        out += list(self._result_actors.values()) + list(self._arrow_actors.values())
+        if self._result_via_actor is not None:
+            out.append(self._result_via_actor)
+        return out
+
+    def _clip_plane(self):
+        axis, frac, flip = self._clip
+        b = self.plotter.renderer.ComputeVisiblePropBounds()
+        i = "xyz".index(axis)
+        lo, hi = b[2 * i], b[2 * i + 1]
+        origin = [0.0, 0.0, 0.0]
+        origin[i] = lo + frac * (hi - lo)
+        normal = [0.0, 0.0, 0.0]
+        normal[i] = -1.0 if flip else 1.0        # keep the side the normal points to
+        plane = vtkPlane()
+        plane.SetOrigin(*origin)
+        plane.SetNormal(*normal)
+        return plane
+
+    def _apply_clip_all(self):
+        actors = self._all_actors()
+        plane = None
+        if self._clip is not None:
+            # Bounds of everything, unclipped, so the slider maps to the whole board.
+            for a in actors:
+                a.GetMapper().RemoveAllClippingPlanes()
+            plane = self._clip_plane()
+        for a in actors:
+            m = a.GetMapper()
+            m.RemoveAllClippingPlanes()
+            if plane is not None:
+                m.AddClippingPlane(plane)
 
     def _draw_copper_result(self, scene, arr, assoc, title):
         """Copper coloured by a field; vias drawn plain for context."""

@@ -41,6 +41,12 @@ class LayerResult:
     tri_j: np.ndarray
     tri_p: np.ndarray
     centroid_tree: cKDTree = field(repr=False, default=None)
+    # Current-flow arrows (display coordinates: x, -y, z): positions, unit directions,
+    # |J| in A/mm^2 and the grid spacing they were sampled on.
+    arrow_pts: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    arrow_dir: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    arrow_mag: np.ndarray = field(default_factory=lambda: np.zeros(0))
+    arrow_spacing: float = 1.0
 
 
 @dataclass
@@ -85,6 +91,44 @@ def _barycentric(p: np.ndarray, x: float, y: float, tol: float = 1e-9):
     return np.array([a, b, c])
 
 
+ARROW_GRID = 45          # arrows across the longest side of a layer's copper
+ARROW_MIN_FRACTION = 0.02   # skip bins carrying less than this fraction of the peak |J|
+
+
+def current_arrows(pts2: np.ndarray, tris: np.ndarray, grad: np.ndarray, area: np.ndarray,
+                   z: float, grid: int = ARROW_GRID):
+    """Sample the sheet current on a grid: one arrow per occupied cell.
+
+    Each arrow sits at the cell's area-weighted centroid and points along the
+    area-weighted mean current direction (-grad V). Returns display-space positions,
+    unit directions, |J| and the cell size.
+    """
+    if len(tris) == 0:
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), 1.0
+    c = pts2[tris].mean(axis=1)
+    lo = c.min(axis=0)
+    span = max(float((c.max(axis=0) - lo).max()), 1e-6)
+    h = span / grid
+    key = np.floor((c - lo) / h).astype(np.int64)
+    key = key[:, 0] * (grid + 2) + key[:, 1]
+    flow = -np.nan_to_num(grad)                   # current direction in KiCad axes
+    uniq, inv = np.unique(key, return_inverse=True)
+    w = area
+    sw = np.bincount(inv, weights=w)
+    cx = np.bincount(inv, weights=w * c[:, 0]) / sw
+    cy = np.bincount(inv, weights=w * c[:, 1]) / sw
+    fx = np.bincount(inv, weights=w * flow[:, 0]) / sw
+    fy = np.bincount(inv, weights=w * flow[:, 1]) / sw
+    mag = np.hypot(fx, fy)
+    keep = mag > ARROW_MIN_FRACTION * (mag.max() if len(mag) else 0.0)
+    if not np.any(keep):
+        return np.zeros((0, 3)), np.zeros((0, 3)), np.zeros(0), h
+    cx, cy, fx, fy, mag = cx[keep], cy[keep], fx[keep], fy[keep], mag[keep]
+    pts = np.column_stack([cx, -cy, np.full(len(cx), z)])
+    dirs = np.column_stack([fx / mag, -fy / mag, np.zeros(len(cx))])
+    return pts, dirs, mag, h
+
+
 def _range(chunks: List[np.ndarray]) -> Tuple[float, float]:
     vals = np.concatenate([c[np.isfinite(c)] for c in chunks]) if chunks else np.zeros(0)
     if len(vals) == 0:
@@ -118,8 +162,13 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16) -> Result
         slab.point_data["drop_mV"] = np.tile((v_ref - v) * 1e3, 2)
         slab.cell_data["J"] = tri_j[source]
         slab.cell_data["P"] = tri_p[source]
-        layers[lid] = LayerResult(lid, slab, pts2, tris, v, tri_j, tri_p,
-                                  cKDTree(pts2[tris].mean(axis=1)))
+        lr = LayerResult(lid, slab, pts2, tris, v, tri_j, tri_p, cKDTree(pts2[tris].mean(axis=1)))
+        rho = result.solution.problem.settings.rho_ohm_mm
+        apts, adir, amag, h = current_arrows(pts2, tris, fields.grad[tri_sel],
+                                             fields.tri_area[tri_sel],
+                                             cu.z_top_mm + 0.002)
+        lr.arrow_pts, lr.arrow_dir, lr.arrow_mag, lr.arrow_spacing = apts, adir, amag / rho, h
+        layers[lid] = lr
 
     ranges = {}
     for key, (arr, assoc, _, _) in FIELDS.items():

@@ -89,6 +89,7 @@ class PISetup:
     loads: List[Load] = field(default_factory=list)
     links: List[DcLink] = field(default_factory=list)
     settings: SolveSettings = field(default_factory=SolveSettings)
+    via_current_limit_a: Optional[float] = None   # vias above this are flagged FAIL
 
     # ------------------------------------------------------------------ JSON
     def to_dict(self) -> dict:
@@ -118,6 +119,7 @@ class PISetup:
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"]) for k in d.get("links", [])],
+            via_current_limit_a=d.get("via_current_limit_a"),
             settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
                                       if k in known}),
         )

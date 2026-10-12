@@ -29,6 +29,20 @@ including ground return if ground pins are set. It lists each load's drop and PA
 each VRM's input and output, and each DC connection's current and loss. Pick a group to
 see its voltage, current density, power density or via current in 3D, and click to probe.
 The setup is saved as `<board>.kipi-setup.json` next to the board.
+
+**Results (Milestone 4):**
+
+* **Current arrows:** optional, showing where and which way current flows.
+* **Cut plane:** a cut along X, Y or Z (Display panel) to look into the stackup.
+* **Vias tab:** every via and PTH barrel ranked by current, with an optional current limit
+  for PASS/FAIL; double-click a row to jump to it.
+* **Losses tab:** copper loss per group and layer, vias, DC connections and VRM conversion
+  loss.
+* **Export:** the tables as CSV and the 3D results as ParaView `.vtm`. **Save results** writes
+  a `.kipi-results` file that **Open results…** reloads without solving. Results files are
+  Python pickles, so only open ones you created.
+* **Loads:** a load can split its current across pin groups. PASS/FAIL uses the worst
+  pin.
 See [docs/research.md](docs/research.md) for design notes.
 
 ## Install (development)
