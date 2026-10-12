@@ -53,12 +53,26 @@ class Vrm:
 
 
 @dataclass
+class PinGroup:
+    """Some of a load's supply pins drawing their own share of current."""
+    pins: List[str]
+    current: float
+    name: str = ""
+
+
+@dataclass
 class Load:
     name: str
     supply: PinRef
     current: float
     ground: Optional[PinRef] = None
-    tolerance_pct: Optional[float] = None   # pass if the drop is within this % of nominal
+    tolerance_pct: Optional[float] = None   # pass if the worst pin's drop is within this %
+    # Empty: ``current`` is split equally across the supply pins. Otherwise each group
+    # of supply pins draws its own current and the load's total is their sum.
+    groups: List[PinGroup] = field(default_factory=list)
+
+    def total_current(self) -> float:
+        return sum(g.current for g in self.groups) if self.groups else self.current
 
 
 @dataclass
@@ -98,7 +112,9 @@ class PISetup:
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
-                        ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"))
+                        ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
+                        groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""))
+                                for g in l.get("groups", [])])
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"]) for k in d.get("links", [])],
@@ -196,6 +212,20 @@ def validate(setup: PISetup) -> List[str]:
 
     rail_groups = set(by_group)
     for l in setup.loads:
+        if l.groups:
+            seen_pins: Dict[str, int] = {}
+            for gi, g in enumerate(l.groups):
+                if not g.pins:
+                    errors.append(f"Load {l.name}: pin group {g.name or gi + 1} has no pins")
+                for pin in g.pins:
+                    if pin in seen_pins:
+                        errors.append(f"Load {l.name}: pin {pin} is in more than one group")
+                    seen_pins[pin] = gi
+            if l.supply.pins:
+                outside = sorted(set(seen_pins) - set(l.supply.pins))
+                if outside:
+                    errors.append(f"Load {l.name}: group pins {', '.join(outside)} are not "
+                                  "among its supply pins")
         if groups[l.supply.net] not in rail_groups:
             errors.append(f"Load {l.name}: no VRM drives {group_name(groups[l.supply.net])}")
         if l.ground:

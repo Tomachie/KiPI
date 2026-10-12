@@ -133,5 +133,52 @@ def test_validation_rules():
 def test_setup_json_round_trip(tmp_path):
     s = setup(kind="smps", eff=0.85, sense=True, ground=True)
     s.links.append(DcLink("FB1", PinRef("U2", "+3V3", ["1"]), PinRef("U2", "+3V3", ["1"]), 0.05))
+    from kipi.pi.model import PinGroup
+    s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]
     back = PISetup.load(s.save(tmp_path / "x.kipi-setup.json"))
     assert back == s
+
+
+def board_two_pin():
+    """board() plus a second +3V3 pin on U2 halfway along the strip (x 16..17)."""
+    b = board()
+    b.pads.append(pad("u2_3", "+3V3", "U2", "3", box(16, 0, 17, 1)))
+    b.invalidate_index()
+    return b
+
+
+def test_per_pin_group_currents():
+    from kipi.pi.model import PinGroup
+    s = setup("ldo")
+    s.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 0.0, tolerance_pct=0.05,
+                      groups=[PinGroup(["3"], 0.3, "mid"), PinGroup(["1"], 0.7, "end")])
+    res = solve_tree(board_two_pin(), s)
+    ld = by_name(res.loads, "U2")
+    assert ld.current == pytest.approx(1.0)
+    v_mid = 3.3 - 1.0 * R(3)              # all 1 A flows from U1.2 (x=13) to the mid pin (x=16)
+    v_end = v_mid - 0.7 * R(4)            # 0.7 A continues to the end pin (x=21)
+    groups = {g[0]: g for g in ld.pin_groups}
+    assert groups["mid"][2] == pytest.approx(v_mid, rel=1e-9)
+    assert groups["end"][2] == pytest.approx(v_end, rel=1e-9)
+    assert ld.v_worst == pytest.approx(v_end, rel=1e-9)
+    assert ld.drop_worst > ld.drop                      # mean hides the worst pin
+    assert ld.passed == (100 * (3.3 - v_end) / 3.3 <= 0.05)
+    assert by_name(res.vrms, "U1").i_out == pytest.approx(1.0, rel=1e-9)
+
+    # The same total split equally gives a different (and wrong for this part) answer.
+    s2 = setup("ldo")
+    s2.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 1.0)
+    eq = by_name(solve_tree(board_two_pin(), s2).loads, "U2")
+    assert eq.v_worst == pytest.approx(v_mid - 0.5 * R(4), rel=1e-9)
+
+
+def test_pin_group_validation():
+    from kipi.pi.model import PinGroup
+    s = setup()
+    s.loads[0].groups = [PinGroup(["1"], 0.5), PinGroup(["1"], 0.5)]
+    assert any("more than one group" in e for e in validate(s))
+    s.loads[0].groups = [PinGroup([], 0.5)]
+    assert any("has no pins" in e for e in validate(s))
+    s.loads[0].supply = PinRef("U2", "+3V3", ["1"])
+    s.loads[0].groups = [PinGroup(["3"], 0.5)]
+    assert any("not among its supply pins" in e for e in validate(s))

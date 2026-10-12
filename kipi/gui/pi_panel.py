@@ -16,7 +16,8 @@ from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
-    QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
+    QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from kipi.model.board import BoardSnapshot
@@ -52,6 +53,8 @@ def make_searchable(combo: QComboBox):
     comp.setFilterMode(Qt.MatchContains)
     comp.setCaseSensitivity(Qt.CaseInsensitive)
     combo.lineEdit().setPlaceholderText("type to search…")
+    # Show the start of long entries (the reference), not the end.
+    combo.currentIndexChanged.connect(lambda _i: combo.lineEdit().setCursorPosition(0))
 
     def settle():
         text = combo.lineEdit().text()
@@ -305,23 +308,118 @@ class LoadEditor(_Editor):
         f = self.form
         self.name = QLineEdit()
         self.supply = self._picker()
+        self.mode = QComboBox()
+        self.mode.addItem("Equal across the supply pins", "equal")
+        self.mode.addItem("Per pin group", "groups")
         self.current = _spin(-1000, 1000, 0.1, 4, " A", 0.01)
+        self.groups = QTableWidget(0, 4)
+        self.groups.setHorizontalHeaderLabels(["Group", "Pins", "Current", ""])
+        hdr = self.groups.horizontalHeader()
+        hdr.setSectionResizeMode(0, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(1, QHeaderView.Stretch)
+        hdr.setSectionResizeMode(3, QHeaderView.Fixed)
+        self.groups.setColumnWidth(3, 28)
+        self.groups.verticalHeader().setVisible(False)
+        self.groups.setMinimumHeight(110)
+        self.btn_group = QPushButton("Add pin group")
+        self.btn_group.clicked.connect(lambda: (self._add_group_row("", "", 0.0), self._store()))
+        self.btn_each = QPushButton("One group per pin")
+        self.btn_each.setToolTip("Replace the groups with one group per supply pin")
+        self.btn_each.clicked.connect(self._group_per_pin)
+        gb = QHBoxLayout()
+        gb.addWidget(self.btn_group)
+        gb.addWidget(self.btn_each)
+        self.lbl_total = QLabel()
         self.ground = self._picker(optional=True)
         self.tol = _spin(0, 100, 0, 2, " %", 0.5)
         self.tol.setSpecialValueText("no limit")
+        self.tol.setToolTip("PASS if the worst supply pin's drop is within this % of the "
+                            "VRM set voltage")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
+        f.addRow("Current split", self.mode)
         f.addRow("Current", self.current)
+        f.addRow(self.groups)
+        f.addRow(gb)
+        f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
         f.addRow("Max drop", self.tol)
-        self._watch(self.name, self.current, self.tol)
+        self._watch(self.name, self.current, self.tol, self.mode)
+        self.mode.currentIndexChanged.connect(self._mode_rows)
+        self._gb_widgets = (self.btn_group, self.btn_each)
+
+    def _mode_rows(self, *_):
+        grouped = self.mode.currentData() == "groups"
+        self.form.setRowVisible(self.current, not grouped)
+        self.form.setRowVisible(self.groups, grouped)
+        self.form.setRowVisible(self.lbl_total, grouped)
+        for w in self._gb_widgets:
+            w.setVisible(grouped)
+
+    def _add_group_row(self, name: str, pins: str, current: float):
+        r = self.groups.rowCount()
+        self.groups.insertRow(r)
+        for col, text in ((0, name), (1, pins)):
+            e = QLineEdit(text)
+            e.setPlaceholderText("optional" if col == 0 else "e.g. 15,28")
+            e.editingFinished.connect(self._store)
+            self.groups.setCellWidget(r, col, e)
+        sp = _spin(-1000, 1000, current, 4, " A", 0.01)
+        sp.valueChanged.connect(self._store)
+        self.groups.setCellWidget(r, 2, sp)
+        btn = QToolButton()
+        btn.setText("✕")
+        btn.setAutoRaise(True)
+        btn.clicked.connect(lambda _=False, b=btn: self._remove_group_of(b))
+        self.groups.setCellWidget(r, 3, btn)
+
+    def _remove_group_of(self, widget):
+        for r in range(self.groups.rowCount()):
+            if self.groups.cellWidget(r, 3) is widget:
+                self.groups.removeRow(r)
+                self._store()
+                return
+
+    def _supply_pins(self) -> List[str]:
+        ref = self.supply.value()
+        if ref is None or self.panel.snapshot is None:
+            return []
+        return ref.pins or next((p for r, _, p in parts_on_net(self.panel.snapshot, ref.net)
+                                 if r == ref.ref), [])
+
+    def _fill_per_pin(self, total: float):
+        pins = self._supply_pins()
+        self.groups.setRowCount(0)
+        for pin in pins:
+            self._add_group_row(f"pin {pin}", pin, total / max(1, len(pins)))
+
+    def _group_per_pin(self):
+        current = self._groups_value()
+        total = sum(g.current for g in current) if current else self.current.value()
+        self._fill_per_pin(total)
+        self._store()
+
+    def _groups_value(self):
+        from kipi.pi.model import PinGroup
+        out = []
+        for r in range(self.groups.rowCount()):
+            pins = [t for t in re.split(r"[,\s]+", self.groups.cellWidget(r, 1).text().strip()) if t]
+            out.append(PinGroup(pins, self.groups.cellWidget(r, 2).value(),
+                                self.groups.cellWidget(r, 0).text().strip()))
+        return out
 
     def _load(self, l: Load):
         self.name.setText(l.name)
         self.supply.set_value(l.supply)
         self.current.setValue(l.current)
+        self.groups.setRowCount(0)
+        for g in l.groups:
+            self._add_group_row(g.name, ",".join(g.pins), g.current)
+        self.mode.setCurrentIndex(1 if l.groups else 0)
         self.ground.set_value(l.ground)
         self.tol.setValue(l.tolerance_pct or 0.0)
+        self.lbl_total.setText(f"{l.total_current():.4g} A")
+        self._mode_rows()
 
     def _save(self, l: Load):
         new_supply = self.supply.value() or l.supply
@@ -334,8 +432,16 @@ class LoadEditor(_Editor):
         l.name = typed
         l.supply = new_supply
         l.current = self.current.value()
+        if self.mode.currentData() == "groups":
+            if self.groups.rowCount() == 0:
+                # Switching to groups: start with one group per pin, same total current.
+                self._fill_per_pin(l.current)
+            l.groups = self._groups_value()
+        else:
+            l.groups = []
         l.ground = self.ground.value()
         l.tolerance_pct = self.tol.value() or None
+        self.lbl_total.setText(f"{l.total_current():.4g} A")
 
 
 class LinkEditor(_Editor):
@@ -546,7 +652,7 @@ class PIPanel(QWidget):
         lr.addLayout(row)
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)", "Drop (mV)",
-                                      "Drop %", "Limit %", ""])
+                                      "Worst pin (mV)", "Worst %", "Limit %", ""])
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
                                      "P in (W)", "Loss (W)"])
         self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"])
@@ -715,10 +821,11 @@ class PIPanel(QWidget):
             status = "" if l.passed is None else ("PASS" if l.passed else "FAIL")
             color = None if l.passed is None else ("#60d060" if l.passed else "#ff6060")
             for c, text in enumerate([l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
-                                      f"{l.drop * 1e3:.3f}", f"{l.drop_pct:.3f}",
+                                      f"{l.drop * 1e3:.3f}", f"{l.drop_worst * 1e3:.3f}",
+                                      f"{l.drop_worst_pct:.3f}",
                                       "" if l.tolerance_pct is None else f"{l.tolerance_pct:g}",
                                       status]):
-                put(self.tbl_loads, r, c, text, color if c == 7 else None)
+                put(self.tbl_loads, r, c, text, color if c == 8 else None)
         self.tbl_vrms.setRowCount(len(tree.vrms))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         for r, v in enumerate(tree.vrms):
@@ -738,6 +845,12 @@ class PIPanel(QWidget):
             role = f"driven by {g.driver}" if g.kind == "rail" else f"ground, referenced at {g.driver}"
             notes.append(f"&nbsp;&nbsp;<b>{html.escape(g.name)}</b> ({role}): "
                          f"{html.escape(', '.join(g.nets))}")
+        for l in tree.loads:
+            if l.pin_groups:
+                notes.append(f"<b>{html.escape(l.name)}</b> pin groups:")
+                for name, amps, vmean, vmin in l.pin_groups:
+                    notes.append(f"&nbsp;&nbsp;{html.escape(name)}: {amps:.4g} A, "
+                                 f"{vmean:.5f} V (lowest pin {vmin:.5f} V)")
         notes += [f"⚠ {html.escape(w)}" for w in tree.warnings]
         self.txt_notes.setHtml("<br>".join(notes))
         self.cmb_group.blockSignals(True)
