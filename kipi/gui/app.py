@@ -50,7 +50,12 @@ def setup_logging(level=logging.INFO, console: bool = None) -> Path:
                           "# 'Windows fatal exception: code 0x8001010d' entries are harmless COM\n"
                           "# notices that Windows raises and Python reports; they are not crashes.\n")
         _crash_file.flush()
-        faulthandler.enable(file=_crash_file, all_threads=True)
+        # Current thread only: on Windows faulthandler also fires on first-chance COM
+        # exceptions (0x8001010d) raised inside Qt's message loop, and walking the stacks
+        # of threads that are still running (a board load in the worker) can itself
+        # access-violate, killing the process with 0xC000041D. A real fault still dumps
+        # the faulting thread; the hang watchdog below still dumps all threads.
+        faulthandler.enable(file=_crash_file, all_threads=False)
     except OSError:
         pass
     _install_excepthooks()
