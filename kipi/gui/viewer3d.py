@@ -325,11 +325,17 @@ class Viewer3D(QWidget):
             self._draw_via_result(scene, arr, f"{label} ({unit})")
         else:
             self._draw_copper_result(scene, arr, assoc, f"{label} ({unit})")
-        if self._arrows_on:
+        if self._arrows_shown():
             self._draw_arrows(scene)
         self._apply_visibility()
 
     # ------------------------------------------------------------------ arrows
+    ARROW_FIELD = "current_density"
+
+    def _arrows_shown(self) -> bool:
+        """Arrows belong to the current-density view only."""
+        return self._arrows_on and self._result_field == self.ARROW_FIELD
+
     def set_arrows_visible(self, on: bool):
         self._arrows_on = bool(on)
         if self._result is None:
@@ -337,7 +343,7 @@ class Viewer3D(QWidget):
         for a in self._arrow_actors.values():
             self.plotter.remove_actor(a, render=False)
         self._arrow_actors.clear()
-        if self._arrows_on:
+        if self._arrows_shown():
             self._draw_arrows(self._result)
         self._apply_visibility()
 

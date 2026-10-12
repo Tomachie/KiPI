@@ -32,7 +32,8 @@ The setup is saved as `<board>.kipi-setup.json` next to the board.
 
 **Results (Milestone 4):**
 
-* **Current arrows:** optional, showing where and which way current flows.
+* **Current arrows:** shown with the current-density view, showing where and which way
+  current flows.
 * **Cut plane:** a cut along X, Y or Z (Display panel) to look into the stackup.
 * **Vias tab:** every via and PTH barrel ranked by current, with an optional current limit
   for PASS/FAIL; double-click a row to jump to it.

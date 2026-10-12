@@ -647,9 +647,11 @@ class PIPanel(QWidget):
             self.cmb_field.addItem(f"{label} ({unit})", key)
         self.cmb_field.currentIndexChanged.connect(
             lambda i: self.field_changed.emit(self.cmb_field.itemData(i)))
+        self.cmb_field.currentIndexChanged.connect(self._update_arrow_box)
         self.chk_arrows = QCheckBox("Arrows", g_res)
         self.chk_arrows.setToolTip("Show current-flow arrows over the copper")
         self.chk_arrows.toggled.connect(self.arrows_toggled.emit)
+        self._update_arrow_box()
         b_export = QPushButton("Export ▾", g_res)
         menu = QMenu(b_export)
         menu.addAction("Tables as CSV…", lambda: self.export_requested.emit("csv"))
@@ -686,6 +688,13 @@ class PIPanel(QWidget):
         self.setEnabled(False)
 
     # ------------------------------------------------------------------ widgets
+    def _update_arrow_box(self, *_):
+        """Arrows only apply to the current-density view."""
+        on = self.cmb_field.currentData() == "current_density"
+        self.chk_arrows.setEnabled(on)
+        self.chk_arrows.setToolTip("Show current-flow arrows over the copper" if on else
+                                   "Current arrows are shown with Current density")
+
     def _vias_tab(self) -> QWidget:
         w = QWidget()
         v = QVBoxLayout(w)
