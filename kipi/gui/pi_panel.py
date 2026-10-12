@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractItemView, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QVBoxLayout, QWidget,
 )
@@ -37,6 +37,35 @@ def _spin(lo, hi, value, decimals, suffix, step=None) -> QDoubleSpinBox:
         s.setSingleStep(step)
     s.setKeyboardTracking(False)
     return s
+
+
+def make_searchable(combo: QComboBox):
+    """Let the user type to filter a combo box (substring, case-insensitive).
+
+    Text that matches no item is discarded when editing finishes, so the combo always
+    holds a real choice.
+    """
+    combo.setEditable(True)
+    combo.setInsertPolicy(QComboBox.NoInsert)
+    comp = combo.completer()
+    comp.setCompletionMode(QCompleter.PopupCompletion)
+    comp.setFilterMode(Qt.MatchContains)
+    comp.setCaseSensitivity(Qt.CaseInsensitive)
+    combo.lineEdit().setPlaceholderText("type to search…")
+
+    def settle():
+        text = combo.lineEdit().text()
+        i = combo.findText(text, Qt.MatchFixedString)
+        if i < 0:
+            # Accept a unique partial match (e.g. "u402"); otherwise restore the choice.
+            hits = [k for k in range(combo.count())
+                    if text and text.lower() in combo.itemText(k).lower()]
+            i = hits[0] if len(hits) == 1 else combo.currentIndex()
+        if i >= 0:
+            if i != combo.currentIndex():
+                combo.setCurrentIndex(i)
+            combo.lineEdit().setText(combo.itemText(i))
+    combo.lineEdit().editingFinished.connect(settle)
 
 
 def parts_on_net(snap: BoardSnapshot, net: str):
@@ -65,8 +94,10 @@ class PinPicker(QWidget):
         lay = QHBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
         self.cmb_net = QComboBox(self)
+        make_searchable(self.cmb_net)
         self.cmb_net.setMinimumContentsLength(10)
         self.cmb_part = QComboBox(self)
+        make_searchable(self.cmb_part)
         self.cmb_part.setMinimumContentsLength(8)
         self.txt_pins = QLineEdit(self)
         self.txt_pins.setPlaceholderText("all pins")
@@ -74,25 +105,35 @@ class PinPicker(QWidget):
         lay.addWidget(self.cmb_net, 3)
         lay.addWidget(self.cmb_part, 3)
         lay.addWidget(self.txt_pins, 2)
-        self.cmb_net.currentTextChanged.connect(self._net_changed)
+        self.cmb_net.currentIndexChanged.connect(self._net_changed)
         self.cmb_part.currentIndexChanged.connect(self._part_changed)
         self.txt_pins.editingFinished.connect(self.changed.emit)
         self._loading = False
 
+    def net(self) -> str:
+        """The selected net (not the half-typed search text)."""
+        i = self.cmb_net.currentIndex()
+        return self.cmb_net.itemText(i) if i >= 0 else ""
+
+    def _select_net(self, name: str):
+        i = self.cmb_net.findText(name, Qt.MatchFixedString)
+        if i >= 0:
+            self.cmb_net.setCurrentIndex(i)
+
     def refresh_nets(self, nets: List[str]):
-        cur = self.cmb_net.currentText()
+        cur = self.net()
         self._loading = True
         self.cmb_net.clear()
         if self.optional:
             self.cmb_net.addItem(NONE)
         self.cmb_net.addItems(nets)
-        if cur and self.cmb_net.findText(cur) >= 0:
-            self.cmb_net.setCurrentText(cur)
+        if cur:
+            self._select_net(cur)
         self._loading = False
         self._fill_parts()
 
     def _fill_parts(self, keep: Optional[str] = None):
-        net = self.cmb_net.currentText()
+        net = self.net()
         keep = keep or self.cmb_part.currentData()
         self.cmb_part.blockSignals(True)
         self.cmb_part.clear()
@@ -108,7 +149,7 @@ class PinPicker(QWidget):
         self._update_hint()
 
     def _update_hint(self):
-        net, ref = self.cmb_net.currentText(), self.cmb_part.currentData()
+        net, ref = self.net(), self.cmb_part.currentData()
         if self.panel.snapshot is None or not ref:
             return
         pins = next((p for r, _, p in parts_on_net(self.panel.snapshot, net) if r == ref), [])
@@ -128,19 +169,20 @@ class PinPicker(QWidget):
     def set_value(self, ref: Optional[PinRef]):
         self._loading = True
         if ref is None:
-            self.cmb_net.setCurrentText(NONE if self.optional else self.cmb_net.currentText())
+            if self.optional:
+                self._select_net(NONE)
             self.txt_pins.clear()
         else:
             if self.cmb_net.findText(ref.net) < 0:
                 self.cmb_net.addItem(ref.net)     # keep nets used by the setup selectable
-            self.cmb_net.setCurrentText(ref.net)
+            self._select_net(ref.net)
             self._fill_parts(keep=ref.ref)
             self.txt_pins.setText(",".join(ref.pins))
         self._loading = False
         self._fill_parts(keep=ref.ref if ref else None)
 
     def value(self) -> Optional[PinRef]:
-        net = self.cmb_net.currentText()
+        net = self.net()
         ref = self.cmb_part.currentData()
         if not net or net == NONE or not ref:
             return None
@@ -220,7 +262,8 @@ class VrmEditor(_Editor):
         f.addRow("Ground pins", self.ground)
         self._watch(self.name, self.kind, self.voltage, self.eff, self.iq)
         self.kind.currentIndexChanged.connect(self._kind_rows)
-        self.output.cmb_net.currentTextChanged.connect(self._guess_voltage)
+        self.output.cmb_net.currentIndexChanged.connect(
+            lambda _i: self._guess_voltage(self.output.net()))
 
     def _kind_rows(self, *_):
         kind = self.kind.currentData()
