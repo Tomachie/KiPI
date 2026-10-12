@@ -8,3 +8,5 @@ shapely>=2.1
 scipy>=1.11
 triangle>=20230923
 pyamg>=5.0
+plotly>=5.20
+matplotlib>=3.8

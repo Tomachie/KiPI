@@ -26,6 +26,7 @@ FIELDS = {
     "voltage": ("V", "point", "Voltage", "V"),
     "current_density": ("J", "cell", "Current density", "A/mm²"),
     "power_density": ("P", "cell", "Power density", "mW/mm²"),
+    "temperature": ("T", "point", "Temperature", "°C"),
     "via_current": ("I_mA", "via", "Via current", "mA"),
 }
 
@@ -136,7 +137,9 @@ def _range(chunks: List[np.ndarray]) -> Tuple[float, float]:
     return float(vals.min()), float(vals.max())
 
 
-def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16) -> ResultScene:
+def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16,
+                       temperature=None) -> ResultScene:
+    """``temperature`` (optional): callable KiCad xy (mm) -> degC from a thermal solve."""
     mesh, sol, fields = result.mesh, result.solution, result.fields
     st = snap.stackup
     v_ref = fields.v_ref
@@ -160,6 +163,9 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16) -> Result
         slab, source = slab_from_triangles(pts2, tris, cu.z_bottom_mm, cu.thickness_mm)
         slab.point_data["V"] = np.tile(v, 2)
         slab.point_data["drop_mV"] = np.tile((v_ref - v) * 1e3, 2)
+        temp = (np.asarray(temperature(pts2), dtype=float) if temperature is not None
+                else np.full(len(pts2), np.nan))
+        slab.point_data["T"] = np.tile(temp, 2)
         slab.cell_data["J"] = tri_j[source]
         slab.cell_data["P"] = tri_p[source]
         lr = LayerResult(lid, slab, pts2, tris, v, tri_j, tri_p, cKDTree(pts2[tris].mean(axis=1)))

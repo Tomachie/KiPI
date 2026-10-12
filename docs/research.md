@@ -116,3 +116,24 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
   as a terminal, now runs clean in 20 s.
 * **Stale task signals.** A task's `finished` can arrive after its `done()` has started the
   next task. Handlers now ignore finishes from tasks that are no longer current.
+
+
+## Electro-thermal model (Milestone 5)
+
+* **Model.** A 2D finite-difference board model:
+  * In-plane sheet conductance is Σ k_cu·t·(copper coverage of each layer, all nets) +
+    k_FR4·t_board.
+  * Both faces convect to ambient at h = 10 + 3.8·v W/m²K.
+  * Through the thickness the board is treated as one sheet. For 1.6 mm of FR4, t/k is about
+    0.005 K·m²/W, roughly a tenth of 1/(2h).
+  * The model is factorized once and re-solved each iteration.
+* **Tests.** Uniform heating matches q/(2h). A point source balances to 1e-9. More airflow
+  runs cooler. Hot copper's drop scales exactly by 1 + α·ΔT.
+* **DSP board** (2 A on +3.3V through a switcher at 85%): 1.42 W total, mostly the switcher's
+  conversion loss. The peak is 82 °C at the switcher in still air and 74.7 °C at 2 m/s. It
+  settles in 2–3 iterations.
+* **Warm-started CG.** pyamg measures its tolerance against the first residual. After a
+  warm start that residual is already small, so the tolerance has to be rescaled to
+  tol·‖b‖/‖r₀‖, and the solve skipped when the warm start already meets it. Without that,
+  re-solves ran to the iteration limit and fell back to direct solves (114 s → 52 s for
+  four iterations).

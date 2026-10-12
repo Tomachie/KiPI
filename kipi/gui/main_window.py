@@ -605,6 +605,9 @@ class MainWindow(QMainWindow):
         self._save_setup()
         import copy
         frozen = copy.deepcopy(setup)     # edits during the solve don't affect it
+        report_path = None
+        if frozen.html_report and self._setup_path is not None:
+            report_path = self._setup_path.parent / f"{self._results_stem()}_kipi_report.html"
 
         def work(progress):
             from kipi.mesh.mesher import MeshError
@@ -612,14 +615,27 @@ class MainWindow(QMainWindow):
             from kipi.solver import SolveError
             from kipi.viz.results import build_result_scene
             try:
-                tree = solve_tree(snap, frozen, progress)
+                if frozen.thermal.enabled:
+                    from kipi.thermal.cosim import solve_electrothermal
+                    tree = solve_electrothermal(snap, frozen, frozen.thermal, progress)
+                else:
+                    tree = solve_tree(snap, frozen, progress)
             except (SolveError, MeshError) as e:
                 progress.warn(str(e))
                 return None, str(e)       # a setup problem, reported in the panel
             scenes = {}
             with progress.timed("Building result views"):
+                temp = tree.thermal.sampler() if tree.thermal is not None else None
                 for name, g in tree.groups.items():
-                    scenes[name] = build_result_scene(snap, g.result)
+                    scenes[name] = build_result_scene(snap, g.result, temperature=temp)
+            if report_path is not None:
+                from kipi.report.html import write_report
+                with progress.timed("Writing HTML report"):
+                    try:
+                        tree.report_path = write_report(report_path, tree, scenes, snap, frozen,
+                                                        progress)
+                    except OSError as e:
+                        progress.warn(f"Could not write the report: {e}")
             return tree, scenes
 
         def done(out):
@@ -628,6 +644,7 @@ class MainWindow(QMainWindow):
                 self.solve_panel.show_error(scenes)
                 return
             self._tree, self._scenes = tree, scenes
+            self.solve_panel.set_report(getattr(tree, "report_path", None))
             first = tree.loads[0].group if tree.loads else next(iter(tree.groups))
             self.solve_panel.show_results(tree, first)
             self._show_group(first)

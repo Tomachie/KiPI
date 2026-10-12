@@ -44,6 +44,25 @@ The setup is saved as `<board>.kipi-setup.json` next to the board.
   Python pickles, so only open ones you created.
 * **Loads:** a load can split its current across pin groups. PASS/FAIL uses the worst
   pin.
+
+**Milestone 5:**
+
+* **Electro-thermal co-simulation** (Thermal tab; off by default). You set the ambient
+  temperature, the number of iterations, the airflow (m/s) and optionally the grid size.
+  * Each iteration solves the power tree with copper resistivity at the current
+    temperature: ρ(T) = ρ₂₀·(1 + 0.00393·(T − 20)).
+  * All heat goes onto one board-level map: copper and via loss from every group,
+    DC-connection parts, and VRM conversion loss.
+  * Heat spreads through every layer's copper and the laminate, and leaves both faces by
+    convection at h = 10 + 3.8·v W/m²K per face, so neighbouring planes heat each other.
+  * The results gain a Temperature view and the peak temperature with its iteration
+    history.
+* **HTML report** (checkbox next to Solve all). A single offline `.html` file next to the
+  board with:
+  * the summary and tables,
+  * an interactive 3D view per net group (Plotly: rotate, zoom, hover),
+  * per-layer statistics and top-down voltage and current-density maps,
+  * the board temperature map when thermal is on.
 See [docs/research.md](docs/research.md) for design notes.
 
 ## Install (development)

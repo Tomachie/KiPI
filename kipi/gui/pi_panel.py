@@ -14,7 +14,7 @@ from typing import Callable, Dict, List, Optional
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractItemView, QCheckBox, QMenu, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QMenu, QComboBox, QSpinBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
     QWidget,
@@ -622,6 +622,7 @@ class PIPanel(QWidget):
         self.tabs.addTab(self.load_list, "Loads")
         self.tabs.addTab(self.link_list, "DC connections")
         self.tabs.addTab(self._settings_tab(), "Mesh")
+        self.tabs.addTab(self._thermal_tab(), "Thermal")
         for il in (self.vrm_list, self.load_list, self.link_list):
             il.changed.connect(self._on_changed)
         lay.addWidget(self.tabs, 3)
@@ -630,10 +631,23 @@ class PIPanel(QWidget):
         self.lbl_errors.setWordWrap(True)
         self.lbl_errors.setStyleSheet("color: #ff8080;")
         lay.addWidget(self.lbl_errors)
+        row = QHBoxLayout()
         self.btn_solve = QPushButton("Solve all", self)
         self.btn_solve.setStyleSheet("font-weight: bold; padding: 6px;")
         self.btn_solve.clicked.connect(lambda: self.solve_requested.emit(self.setup))
-        lay.addWidget(self.btn_solve)
+        self.chk_report = QCheckBox("HTML report", self)
+        self.chk_report.setToolTip("Also write an HTML report (interactive 3D, per-layer maps "
+                                   "and tables) next to the board")
+        self.chk_report.toggled.connect(lambda on: setattr(self.setup, "html_report", on))
+        self.btn_report = QPushButton("Report", self)
+        self.btn_report.setToolTip("Open the last HTML report in your browser")
+        self.btn_report.setVisible(False)
+        self.btn_report.clicked.connect(self._open_report)
+        self.report_path = None
+        row.addWidget(self.btn_solve, 1)
+        row.addWidget(self.chk_report)
+        row.addWidget(self.btn_report)
+        lay.addLayout(row)
 
         g_res = QGroupBox("Results", self)
         lr = QVBoxLayout(g_res)
@@ -644,7 +658,8 @@ class PIPanel(QWidget):
             lambda t: t and self.group_changed.emit(t))
         self.cmb_field = QComboBox(g_res)
         for key, (_, _, label, unit) in FIELDS.items():
-            self.cmb_field.addItem(f"{label} ({unit})", key)
+            if key != "temperature":           # added once a thermal solve exists
+                self.cmb_field.addItem(f"{label} ({unit})", key)
         self.cmb_field.currentIndexChanged.connect(
             lambda i: self.field_changed.emit(self.cmb_field.itemData(i)))
         self.cmb_field.currentIndexChanged.connect(self._update_arrow_box)
@@ -688,6 +703,25 @@ class PIPanel(QWidget):
         self.setEnabled(False)
 
     # ------------------------------------------------------------------ widgets
+    def set_report(self, path):
+        self.report_path = path
+        self.btn_report.setVisible(path is not None)
+
+    def _open_report(self):
+        if self.report_path:
+            from qtpy.QtCore import QUrl
+            from qtpy.QtGui import QDesktopServices
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.report_path)))
+
+    def _set_temperature_field(self, available: bool):
+        i = self.cmb_field.findData("temperature")
+        if available and i < 0:
+            self.cmb_field.addItem("Temperature (°C)", "temperature")
+        elif not available and i >= 0:
+            if self.cmb_field.currentIndex() == i:
+                self.cmb_field.setCurrentIndex(0)
+            self.cmb_field.removeItem(i)
+
     def _update_arrow_box(self, *_):
         """Arrows only apply to the current-density view."""
         on = self.cmb_field.currentData() == "current_density"
@@ -791,6 +825,49 @@ class PIPanel(QWidget):
             sp.valueChanged.connect(self._settings_changed)
         return w
 
+    def _thermal_tab(self) -> QWidget:
+        w = QWidget()
+        f = QFormLayout(w)
+        t = self.setup.thermal
+        self.chk_thermal = QCheckBox("Electro-thermal co-simulation")
+        self.chk_thermal.setToolTip("Iterate the DC solve with a board temperature map: copper "
+                                    "loss heats the board, hotter copper is more resistive")
+        self.spin_ambient = _spin(-55, 200, t.ambient_c, 1, " °C", 1)
+        self.spin_iters = QSpinBox()
+        self.spin_iters.setRange(1, 50)
+        self.spin_iters.setValue(t.iterations)
+        self.spin_airflow = _spin(0, 30, t.airflow_m_s, 1, " m/s", 0.5)
+        self.spin_airflow.setSpecialValueText("still air")
+        self.spin_tgrid = _spin(0, 10, t.grid_mm, 2, " mm", 0.1)
+        self.spin_tgrid.setSpecialValueText("auto")
+        f.addRow(self.chk_thermal)
+        f.addRow("Ambient", self.spin_ambient)
+        f.addRow("Iterations", self.spin_iters)
+        f.addRow("Airflow", self.spin_airflow)
+        f.addRow("Grid", self.spin_tgrid)
+        note = QLabel("Heat from every net and layer (copper, vias, DC parts, VRM conversion "
+                      "loss) spreads through the board's copper and laminate and leaves both "
+                      "faces by convection: h = 10 + 3.8·v W/m²K per face.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #999;")
+        f.addRow(note)
+        self.chk_thermal.toggled.connect(self._thermal_changed)
+        for wdg in (self.spin_ambient, self.spin_airflow, self.spin_tgrid):
+            wdg.valueChanged.connect(self._thermal_changed)
+        self.spin_iters.valueChanged.connect(self._thermal_changed)
+        return w
+
+    def _thermal_changed(self, *_):
+        t = self.setup.thermal
+        t.enabled = self.chk_thermal.isChecked()
+        t.ambient_c = self.spin_ambient.value()
+        t.iterations = self.spin_iters.value()
+        t.airflow_m_s = self.spin_airflow.value()
+        t.grid_mm = self.spin_tgrid.value()
+        for wdg in (self.spin_ambient, self.spin_iters, self.spin_airflow, self.spin_tgrid):
+            wdg.setEnabled(t.enabled)
+        self.btn_solve.setText("Solve all (electro-thermal)" if t.enabled else "Solve all")
+
     def _settings_changed(self, *_):
         s = self.setup.settings
         s.max_edge_mm = self.spin_edge.value()
@@ -813,6 +890,14 @@ class PIPanel(QWidget):
         self.spin_via_limit.blockSignals(True)
         self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)
         self.spin_via_limit.blockSignals(False)
+        t = setup.thermal
+        for wdg, val in ((self.spin_ambient, t.ambient_c), (self.spin_iters, t.iterations),
+                         (self.spin_airflow, t.airflow_m_s), (self.spin_tgrid, t.grid_mm),
+                         (self.chk_thermal, t.enabled), (self.chk_report, setup.html_report)):
+            wdg.blockSignals(True)
+            (wdg.setChecked if isinstance(wdg, QCheckBox) else wdg.setValue)(val)
+            wdg.blockSignals(False)
+        self._thermal_changed()
         self.setEnabled(True)
         self._refresh_pickers()
         for il in (self.vrm_list, self.load_list, self.link_list):
@@ -895,7 +980,8 @@ class PIPanel(QWidget):
     # ------------------------------------------------------------------ results
     def set_busy(self, busy: bool, queued: bool = False):
         self.btn_solve.setEnabled(not busy and not self.lbl_errors.text())
-        self.btn_solve.setText(("Queued…" if queued else "Solving…") if busy else "Solve all")
+        idle = "Solve all (electro-thermal)" if self.setup.thermal.enabled else "Solve all"
+        self.btn_solve.setText(("Queued…" if queued else "Solving…") if busy else idle)
 
     def current_field(self) -> str:
         return self.cmb_field.currentData()
@@ -948,6 +1034,14 @@ class PIPanel(QWidget):
                                       f"{s.power * 1e3:.3f}"]):
                 put(self.tbl_links, r, c, text)
         notes = [f"Solved {len(tree.groups)} net group(s) in {tree.solve_s:.2f} s:"]
+        th = getattr(tree, "thermal", None)
+        if th is not None:
+            x, y, tmax = th.hottest()
+            notes.insert(0, f"<b>Electro-thermal:</b> {th.heat_w:.3g} W into the board, peak "
+                            f"<b>{tmax:.1f} °C</b> at ({x:.1f}, {y:.1f}) mm, ambient "
+                            f"{th.settings.ambient_c:g} °C, airflow {th.settings.airflow_m_s:g} m/s")
+            notes.insert(1, "&nbsp;&nbsp;iterations: " + ", ".join(
+                f"{h['iteration']}: {h['t_max']:.2f} °C (Δ {h['dt_max']:.3f})" for h in th.history))
         for g in tree.groups.values():
             role = f"driven by {g.driver}" if g.kind == "rail" else f"ground, referenced at {g.driver}"
             notes.append(f"&nbsp;&nbsp;<b>{html.escape(g.name)}</b> ({role}): "
@@ -960,6 +1054,7 @@ class PIPanel(QWidget):
                                  f"{vmean:.5f} V (lowest pin {vmin:.5f} V)")
         notes += [f"⚠ {html.escape(w)}" for w in tree.warnings]
         self.txt_notes.setHtml("<br>".join(notes))
+        self._set_temperature_field(getattr(tree, "thermal", None) is not None)
         self.cmb_group.blockSignals(True)
         self.cmb_group.clear()
         self.cmb_group.addItems(list(tree.groups))
