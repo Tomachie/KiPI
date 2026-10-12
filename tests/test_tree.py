@@ -168,8 +168,19 @@ def test_setup_json_round_trip(tmp_path):
     s.links.append(DcLink("FB1", PinRef("U2", "+3V3", ["1"]), PinRef("U2", "+3V3", ["1"]), 0.05))
     from kipi.pi.model import PinGroup
     s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]
+    s.settings.rho_by_layer = {"In1.Cu": 1.9e-5}
+    s.settings.tcr_per_c = 0.0038
     back = PISetup.load(s.save(tmp_path / "x.kipi-setup.json"))
     assert back == s
+
+
+def test_resistivity_must_be_positive():
+    s = setup()
+    s.settings.rho_by_layer = {"F.Cu": 0.0}
+    assert any("positive on F.Cu" in e for e in validate(s))
+    s.settings.rho_by_layer = {}
+    s.settings.rho_ohm_mm = -1.0
+    assert any("resistivity must be positive" in e for e in validate(s))
 
 
 def board_two_pin():

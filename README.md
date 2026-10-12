@@ -113,6 +113,13 @@ guessed at.
 slower. **Via grading** controls how fast the mesh refines towards plated holes, and
 **Barrel plating** sets the via wall thickness. The defaults suit most boards.
 
+**Copper tab**: **Resistivity** at 20 °C, by default annealed copper (1.724 µΩ·cm), applies to
+every layer and to via barrel plating. **TCR** is the temperature coefficient that the
+electro-thermal co-simulation uses (0.00393 /°C for copper). The table lists each copper layer.
+Give a layer its own resistivity to override the default, for example for electroplated or
+rolled-annealed foil. Leave it at **default** to use the value above. Layer thicknesses come
+from the KiCad board stackup. **Thickness unit** shows them in µm, mil or oz (1 oz = 35 µm).
+
 **Thermal tab** (off by default): tick **Electro-thermal co-simulation** to make losses heat
 the board and the warmer copper become more resistive. Set:
 

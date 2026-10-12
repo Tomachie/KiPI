@@ -277,4 +277,10 @@ def validate(setup: PISetup) -> List[str]:
     if any(visit(g) for g in list(feeds)):
         errors.append("The power tree has a loop (a VRM feeds, directly or indirectly, its "
                       "own input)")
+    s = setup.settings
+    if not s.rho_ohm_mm > 0:
+        errors.append("Copper resistivity must be positive")
+    bad = sorted(n for n, r in s.rho_by_layer.items() if not r > 0)
+    if bad:
+        errors.append(f"Resistivity must be positive on {', '.join(bad)}")
     return errors

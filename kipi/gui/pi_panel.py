@@ -9,9 +9,10 @@ from __future__ import annotations
 import html
 import math
 import re
+from functools import partial
 from typing import Callable, Dict, List, Optional
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QSettings, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QMenu, QComboBox, QSpinBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
@@ -26,6 +27,19 @@ from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, VRM_KINDS, validat
 from kipi.viz.results import FIELDS
 
 NONE = "(none)"
+UOHM_CM = 1e-5          # 1 µΩ·cm in Ω·mm, the unit the solver works in
+# Copper thickness display units, as mm per unit. 1 oz/ft² is taken as 35 µm, the usual
+# nominal value (KiCad's default 35 µm and 17.5 µm foils read as 1 oz and ½ oz).
+THICKNESS_UNITS = {"µm": 1e-3, "mil": 0.0254, "oz": 0.035}
+
+
+def format_thickness(mm: float, unit: str) -> str:
+    value = mm / THICKNESS_UNITS[unit]
+    if unit == "µm":
+        return f"{value:.1f} µm"
+    if unit == "mil":
+        return f"{value:.2f} mil"
+    return f"{value:.3g} oz"
 
 
 def _spin(lo, hi, value, decimals, suffix, step=None) -> QDoubleSpinBox:
@@ -626,6 +640,7 @@ class PIPanel(QWidget):
         self.tabs.addTab(self.load_list, "Loads")
         self.tabs.addTab(self.link_list, "DC connections")
         self.tabs.addTab(self._settings_tab(), "Mesh")
+        self.tabs.addTab(self._copper_tab(), "Copper")
         self.tabs.addTab(self._thermal_tab(), "Thermal")
         for il in (self.vrm_list, self.load_list, self.link_list):
             il.changed.connect(self._on_changed)
@@ -829,6 +844,82 @@ class PIPanel(QWidget):
             sp.valueChanged.connect(self._settings_changed)
         return w
 
+    def _copper_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        f = QFormLayout()
+        s = self.setup.settings
+        self.spin_rho = _spin(0.5, 100.0, s.rho_ohm_mm / UOHM_CM, 3, " µΩ·cm", 0.01)
+        self.spin_rho.setToolTip("Resistivity at 20 °C of every layer without its own value, "
+                                 "and of via barrel plating. Annealed copper is 1.724 µΩ·cm.")
+        self.spin_tcr = _spin(0.0, 0.02, s.tcr_per_c, 5, " /°C", 0.0001)
+        self.spin_tcr.setToolTip("Temperature coefficient of resistance, used by the "
+                                 "electro-thermal co-simulation. Copper is 0.00393 /°C.")
+        f.addRow("Resistivity", self.spin_rho)
+        f.addRow("TCR", self.spin_tcr)
+        self.cmb_thk_unit = QComboBox()
+        self.cmb_thk_unit.addItems(list(THICKNESS_UNITS))
+        self.cmb_thk_unit.setToolTip("Unit for the layer thicknesses below (1 oz = 35 µm). "
+                                     "Thicknesses come from the board stackup in KiCad.")
+        unit = QSettings("KiPI", "KiPI").value("copper/thickness_unit", "µm")
+        self.cmb_thk_unit.setCurrentText(unit if unit in THICKNESS_UNITS else "µm")
+        self.cmb_thk_unit.currentTextChanged.connect(self._thickness_unit_changed)
+        f.addRow("Thickness unit", self.cmb_thk_unit)
+        lay.addLayout(f)
+        self.tbl_rho = self._table(["Layer", "Thickness", "Resistivity at 20 °C"])
+        self.tbl_rho.setSelectionMode(QAbstractItemView.NoSelection)
+        lay.addWidget(self.tbl_rho, 1)
+        note = QLabel("Per-layer values override the resistivity above, e.g. for thin "
+                      "electroplated or rolled-annealed foil. 'default' uses the value above.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #999;")
+        lay.addWidget(note)
+        for sp in (self.spin_rho, self.spin_tcr):
+            sp.valueChanged.connect(self._copper_changed)
+        return w
+
+    def _fill_rho_table(self):
+        t = self.tbl_rho
+        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
+        overrides = self.setup.settings.rho_by_layer
+        t.setRowCount(len(layers))
+        for r, cu in enumerate(layers):
+            t.setItem(r, 0, QTableWidgetItem(cu.name))
+            item = QTableWidgetItem()
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            t.setItem(r, 1, item)
+            sp = _spin(0.0, 100.0, overrides.get(cu.name, 0.0) / UOHM_CM, 3, " µΩ·cm", 0.01)
+            sp.setSpecialValueText("default")
+            sp.setToolTip(f"Resistivity of {cu.name} at 20 °C ('default' uses the "
+                          f"Resistivity setting above)")
+            sp.valueChanged.connect(partial(self._layer_rho_changed, cu.name))
+            t.setCellWidget(r, 2, sp)
+        self._show_thicknesses()
+
+    def _show_thicknesses(self):
+        unit = self.cmb_thk_unit.currentText()
+        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
+        for r, cu in enumerate(layers):
+            self.tbl_rho.item(r, 1).setText(format_thickness(cu.thickness_mm, unit))
+
+    def _thickness_unit_changed(self, unit: str):
+        QSettings("KiPI", "KiPI").setValue("copper/thickness_unit", unit)
+        self._show_thicknesses()
+
+    def _layer_rho_changed(self, name: str, value: float):
+        overrides = self.setup.settings.rho_by_layer
+        if value > 0:
+            overrides[name] = value * UOHM_CM
+        else:
+            overrides.pop(name, None)
+        self._on_changed()
+
+    def _copper_changed(self, *_):
+        s = self.setup.settings
+        s.rho_ohm_mm = self.spin_rho.value() * UOHM_CM
+        s.tcr_per_c = self.spin_tcr.value()
+        self._on_changed()
+
     def _thermal_tab(self) -> QWidget:
         w = QWidget()
         f = QFormLayout(w)
@@ -894,10 +985,13 @@ class PIPanel(QWidget):
         self.lbl_file.setText(file_label)
         for sp, v in ((self.spin_edge, setup.settings.max_edge_mm),
                       (self.spin_grading, setup.settings.grading),
-                      (self.spin_plating, setup.settings.plating_mm * 1000)):
+                      (self.spin_plating, setup.settings.plating_mm * 1000),
+                      (self.spin_rho, setup.settings.rho_ohm_mm / UOHM_CM),
+                      (self.spin_tcr, setup.settings.tcr_per_c)):
             sp.blockSignals(True)
             sp.setValue(v)
             sp.blockSignals(False)
+        self._fill_rho_table()
         self.clear_results()
         self.spin_via_limit.blockSignals(True)
         self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)

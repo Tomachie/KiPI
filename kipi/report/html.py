@@ -242,7 +242,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append(f"<p class='note'>Mesh: max edge {s.max_edge_mm:g} mm, via grading "
                  f"{s.grading:g}, barrel plating {s.plating_mm * 1000:g} µm, copper "
                  f"resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
-                 f"(TCR {s.tcr_per_c:g}/°C).</p>")
+                 f"(TCR {s.tcr_per_c:g}/°C)"
+                 + ("; layer overrides: " + ", ".join(
+                     f"{_e(n)} {r * 1e-3:.4g} Ω·m" for n, r in sorted(s.rho_by_layer.items()))
+                    if s.rho_by_layer else "")
+                 + ".</p>")
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")

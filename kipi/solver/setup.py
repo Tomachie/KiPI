@@ -10,7 +10,7 @@ node (its pads tied together).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional
 
 # Annealed copper (IACS) at 20 degC, in ohm*mm.
 RHO_CU_OHM_MM = 1.724e-5
@@ -53,8 +53,15 @@ class SolveSettings:
     plating_mm: float = 0.025       # via / PTH barrel plating thickness
     rho_ohm_mm: float = RHO_CU_OHM_MM      # at REF_TEMP_C
     tcr_per_c: float = 0.00393             # copper resistance temperature coefficient
+    # Per-layer overrides of rho_ohm_mm, keyed by copper layer name (e.g. "In1.Cu").
+    # Layers not listed, and via barrels, use rho_ohm_mm.
+    rho_by_layer: Dict[str, float] = field(default_factory=dict)
     tol: float = 1e-10              # relative residual for the iterative solver
     max_iter: int = 2000
+
+    def rho_for(self, layer_name: str) -> float:
+        """Resistivity of a copper layer at REF_TEMP_C, in ohm*mm."""
+        return self.rho_by_layer.get(layer_name, self.rho_ohm_mm)
 
 
 @dataclass
