@@ -78,7 +78,9 @@ def compute_fields(sol: Solution) -> Fields:
     g2 = gx * gx + gy * gy
     gs = np.array([sol.sheet_g[l] for l in mesh.tri_layer])
     area = np.abs(two_a) / 2
-    j = np.sqrt(g2) / rho                             # A/mm^2
+    factor = sol.tri_rho_factor if sol.tri_rho_factor is not None else 1.0
+    gs = gs / factor                                  # sheet conductance at temperature
+    j = np.sqrt(g2) / (rho * factor)                  # A/mm^2
     pd = gs * g2                                      # W/mm^2
     tri_power = pd * area
 

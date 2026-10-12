@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from kipi.solver.setup import SolveSettings
+from kipi.thermal.model import ThermalSettings
 
 FORMAT_VERSION = 1
 VRM_KINDS = ("source", "ldo", "smps")
@@ -90,6 +91,8 @@ class PISetup:
     links: List[DcLink] = field(default_factory=list)
     settings: SolveSettings = field(default_factory=SolveSettings)
     via_current_limit_a: Optional[float] = None   # vias above this are flagged FAIL
+    thermal: ThermalSettings = field(default_factory=ThermalSettings)   # off by default
+    html_report: bool = False                     # write an HTML report after solving
 
     # ------------------------------------------------------------------ JSON
     def to_dict(self) -> dict:
@@ -120,6 +123,9 @@ class PISetup:
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"]) for k in d.get("links", [])],
             via_current_limit_a=d.get("via_current_limit_a"),
+            thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
+                                       if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
+            html_report=bool(d.get("html_report", False)),
             settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
                                       if k in known}),
         )

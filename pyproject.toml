@@ -1,3 +1,72 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kipi"
+dynamic = ["version"]
+description = "DC power-integrity analysis for KiCad: IR drop, current density, via currents and electro-thermal co-simulation in 3D"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
+maintainers = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
+keywords = [
+    "kicad", "pcb", "power integrity", "ir drop", "dc drop", "pdn",
+    "current density", "fem", "electro-thermal", "eda",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Manufacturing",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Environment :: X11 Applications :: Qt",
+]
+# Keep in sync with requirements.txt, which KiCad installs into the plugin's venv.
+dependencies = [
+    "kicad-python>=0.7.0",
+    "PySide6-Essentials>=6.6",
+    "qtpy>=2.4",
+    "pyvista>=0.44",
+    "pyvistaqt>=0.11",
+    "numpy>=1.24",
+    "shapely>=2.1",
+    "scipy>=1.11",
+    "triangle>=20230923",
+    "pyamg>=5.0",
+    "plotly>=5.20",
+    "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.urls]
+Homepage = "https://github.com/drewsum/KiPI"
+Repository = "https://github.com/drewsum/KiPI"
+Issues = "https://github.com/drewsum/KiPI/issues"
+Documentation = "https://github.com/drewsum/KiPI/blob/main/docs/research.md"
+
+[project.scripts]
+# Standalone app: connect to the running KiCad, or open a saved snapshot.
+kipi = "kipi.__main__:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "kipi.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["kipi*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests"]

@@ -10,10 +10,11 @@ node (its pads tied together).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List
+from typing import Callable, List, Optional
 
 # Annealed copper (IACS) at 20 degC, in ohm*mm.
 RHO_CU_OHM_MM = 1.724e-5
+REF_TEMP_C = 20.0
 
 
 @dataclass
@@ -50,7 +51,8 @@ class SolveSettings:
     min_edge_mm: float = 0.02       # smallest element, at plated holes
     grading: float = 0.2            # element size growth per mm away from a hole (0 = off)
     plating_mm: float = 0.025       # via / PTH barrel plating thickness
-    rho_ohm_mm: float = RHO_CU_OHM_MM
+    rho_ohm_mm: float = RHO_CU_OHM_MM      # at REF_TEMP_C
+    tcr_per_c: float = 0.00393             # copper resistance temperature coefficient
     tol: float = 1e-10              # relative residual for the iterative solver
     max_iter: int = 2000
 
@@ -63,6 +65,9 @@ class NetProblem:
     settings: SolveSettings = field(default_factory=SolveSettings)
     series: List[SeriesLink] = field(default_factory=list)
     nets: List[str] = field(default_factory=list)   # copper nets meshed; default [net]
+    # Optional copper temperature, a callable mapping (N, 2) KiCad xy in mm to degC.
+    # Resistivity becomes rho * (1 + tcr * (T - REF_TEMP_C)). Not saved with setups.
+    temperature: Optional[Callable] = field(default=None, repr=False, compare=False)
 
     def __post_init__(self):
         if not self.nets:

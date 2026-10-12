@@ -100,6 +100,8 @@ class TreeResult:
     vrms: List[VrmReport] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
     solve_s: float = 0.0
+    thermal: Optional[object] = None          # kipi.thermal.cosim.ThermalResult, if run
+    report_path: Optional[object] = None      # HTML report written for this solve, if any
 
 
 class _Pads:
@@ -141,7 +143,11 @@ def _input_current(v: Vrm, v_out: float, i_out: float, v_in: float) -> float:
 
 
 def solve_tree(snap: BoardSnapshot, setup: PISetup,
-               progress: ProgressReporter = NULL) -> TreeResult:
+               progress: ProgressReporter = NULL, temperature=None,
+               mesh_cache: Optional[dict] = None) -> TreeResult:
+    """Solve every rail and ground group. ``temperature`` (optional) maps KiCad xy (mm) to
+    copper temperature in degC for temperature-dependent resistivity. ``mesh_cache`` (a
+    dict) lets repeated solves of the same setup reuse their meshes."""
     t0 = time.perf_counter()
     errors = validate(setup)
     if errors:
@@ -185,12 +191,20 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
 
     def build(g, sources, loads, label):
         nets = sorted(g)
-        prob = NetProblem(label, sources, loads, s, series=links_in(g), nets=nets)
-        with progress.timed(f"Meshing {label}"):
-            mesh = mesh_nets(snap, nets, prob.terminal_pad_ids(), name=label,
-                             max_edge_mm=s.max_edge_mm, min_angle_deg=s.min_angle_deg,
-                             simplify_mm=s.simplify_mm, circle_quad_segs=s.circle_quad_segs,
-                             min_edge_mm=s.min_edge_mm, grading=s.grading, progress=progress)
+        prob = NetProblem(label, sources, loads, s, series=links_in(g), nets=nets,
+                          temperature=temperature)
+        key = (tuple(nets), tuple(sorted(prob.terminal_pad_ids())), s.max_edge_mm, s.grading,
+               s.min_edge_mm, s.circle_quad_segs, s.simplify_mm, s.min_angle_deg)
+        mesh = mesh_cache.get(key) if mesh_cache is not None else None
+        if mesh is None:
+            with progress.timed(f"Meshing {label}"):
+                mesh = mesh_nets(snap, nets, prob.terminal_pad_ids(), name=label,
+                                 max_edge_mm=s.max_edge_mm, min_angle_deg=s.min_angle_deg,
+                                 simplify_mm=s.simplify_mm, circle_quad_segs=s.circle_quad_segs,
+                                 min_edge_mm=s.min_edge_mm, grading=s.grading,
+                                 progress=progress)
+            if mesh_cache is not None:
+                mesh_cache[key] = mesh
         return prob, mesh, LinearSystem(snap, mesh, prob, progress)
 
     v_out: Dict[str, float] = {}

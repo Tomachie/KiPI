@@ -27,7 +27,7 @@ from scipy.sparse.csgraph import connected_components
 from kipi.mesh.mesher import NetMesh
 from kipi.model.board import BoardSnapshot
 from kipi.progress import NULL, ProgressReporter
-from kipi.solver.setup import SHORT_OHMS, NetProblem
+from kipi.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem
 
 DIRECT_SOLVE_MAX_UNKNOWNS = 30_000
 
@@ -68,6 +68,7 @@ class Solution:
     stats: Dict[str, float] = field(default_factory=dict)
     series_elements: List[SeriesElement] = field(default_factory=list)
     series_current: Dict[str, float] = field(default_factory=dict)   # A from side A to B
+    tri_rho_factor: Optional[np.ndarray] = None   # rho(T)/rho(20 C) per triangle, if heated
     warnings: List[str] = field(default_factory=list)
 
 
@@ -99,6 +100,14 @@ def _merge_groups(n: int, groups: List[np.ndarray]) -> Tuple[np.ndarray, int]:
     graph = sp.coo_matrix((np.ones(len(r)), (r, c)), shape=(n, n))
     count, labels = connected_components(graph, directed=False)
     return labels, count
+
+
+def _rho_factor(problem: NetProblem, xy: np.ndarray) -> Optional[np.ndarray]:
+    """rho(T) / rho(REF_TEMP_C) at the given points, or None when no temperature."""
+    if problem.temperature is None:
+        return None
+    t = np.asarray(problem.temperature(xy), dtype=float)
+    return np.maximum(1.0 + problem.settings.tcr_per_c * (t - REF_TEMP_C), 0.05)
 
 
 def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
@@ -133,6 +142,9 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         raise SolveError("Degenerate triangles in mesh")
     gs = np.array([sheet_g[l] for l in mesh.tri_layer]) if len(set(mesh.tri_layer)) > 1 \
         else np.full(len(mesh.tris), sheet_g[mesh.tri_layer[0]])
+    rho_factor = _rho_factor(problem, mesh.points[mesh.tris].mean(axis=1))
+    if rho_factor is not None:
+        gs = gs / rho_factor
     coef = gs / (4 * area)
     ke = coef[:, None, None] * (b[:, :, None] * b[:, None, :] + c[:, :, None] * c[:, None, :])
     m = merged_of[mesh.tris]
@@ -151,6 +163,8 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         for la, lb in zip(layers[:-1], layers[1:]):
             dz = abs(st.layer(la).z_mid_mm - st.layer(lb).z_mid_mm)
             g = a_barrel / (s.rho_ohm_mm * max(dz, 1e-6))
+            if problem.temperature is not None:
+                g /= float(_rho_factor(problem, np.asarray([bar.position]))[0])
             na = merged_of[bar.ring_nodes[la][0]]
             nb = merged_of[bar.ring_nodes[lb][0]]
             if na == nb:
@@ -180,7 +194,7 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     K = sp.coo_matrix((data, (rows, cols)), shape=(nm, nm)).tocsr()
     K.sum_duplicates()
     pad_unknown = {pid: int(merged_of[nodes[0]]) for pid, nodes in pad_groups.items()}
-    return K, merged_of, nm, sheet_g, elements, pad_unknown, series
+    return K, merged_of, nm, sheet_g, elements, pad_unknown, series, rho_factor
 
 
 # ---------------------------------------------------------------------------
@@ -239,9 +253,24 @@ class _Factor:
                 progress.info(f"  CG iteration {len(residuals) - 1}: relative residual {r:.2e}")
                 progress.fraction(min(1.0, math.log10(max(r, 1e-300)) / log_target))
 
-        x = self.ml.solve(rhs, x0=self.x_prev, tol=s.tol, maxiter=s.max_iter, accel="cg",
+        # The target is ||b - A x|| <= tol * ||b||. pyamg measures its tolerance against the
+        # first residual, which after a warm start (power-tree and electro-thermal
+        # re-solves) is already small, so convert, and skip the solve if already there.
+        norm_b = float(np.linalg.norm(rhs))
+        if norm_b == 0:
+            self.x_prev = np.zeros_like(rhs)
+            return self.x_prev
+        x0 = self.x_prev if self.x_prev is not None and len(self.x_prev) == len(rhs) else None
+        r0 = norm_b if x0 is None else float(np.linalg.norm(rhs - self.A @ x0))
+        if x0 is not None and r0 <= s.tol * norm_b:
+            self.stats["iterations"] = 0
+            self.stats["relative_residual"] = r0 / norm_b
+            progress.info(f"Warm start already converged (relative residual {r0 / norm_b:.2e})")
+            return x0
+        tol_eff = min(0.5, s.tol * norm_b / max(r0, 1e-300))
+        x = self.ml.solve(rhs, x0=x0, tol=tol_eff, maxiter=s.max_iter, accel="cg",
                           callback=cb, residuals=residuals)
-        rel = residuals[-1] / max(residuals[0], 1e-300) if residuals else 0.0
+        rel = float(np.linalg.norm(rhs - self.A @ x)) / norm_b
         self.stats["iterations"] = len(residuals) - 1
         self.stats["relative_residual"] = rel
         progress.info(f"CG converged in {len(residuals) - 1} iterations, "
@@ -274,7 +303,7 @@ class LinearSystem:
         self.warnings: List[str] = []
         with progress.timed("Assembling"):
             (self.K, self.merged_of, nm, self.sheet_g, self.elements, self.pad_unknown,
-             self.series) = assemble(snap, mesh, problem)
+             self.series, self.rho_factor) = assemble(snap, mesh, problem)
             progress.info(f"{nm} unknowns after merging pads and drill rings, "
                           f"{self.K.nnz} non-zeros, {len(self.elements)} barrel segments, "
                           f"{len(self.series)} series part(s)")
@@ -374,7 +403,8 @@ class LinearSystem:
                         merged_of=self.merged_of, v_merged=v, sheet_g=self.sheet_g,
                         barrel_elements=self.elements, source_current=source_current,
                         stats=stats, warnings=list(self.warnings),
-                        series_elements=self.series, series_current=series_current)
+                        series_elements=self.series, series_current=series_current,
+                        tri_rho_factor=self.rho_factor)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,
