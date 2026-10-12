@@ -130,10 +130,12 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                       [[l.name, n, a, vm, vmin] for l in tree.loads
                        for n, a, vm, vmin in l.pin_groups]))
     out.append(_write(folder / f"{stem}_vrms.csv",
-                      ["vrm", "type", "group", "v_set_V", "v_out_V", "v_sense_V", "i_out_A",
-                       "v_in_V", "i_in_A", "p_out_W", "p_in_W", "p_loss_W"],
-                      [[v.name, v.kind, v.group, v.v_set, v.v_out, v.v_sense, v.i_out, v.v_in,
-                        v.i_in, v.p_out, v.p_in, v.p_loss] for v in tree.vrms]))
+                      ["vrm", "type", "group", "v_set_V", "v_out_V", "v_sense_V",
+                       "v_ground_sense_V", "i_out_A", "v_in_V", "i_in_A", "p_out_W", "p_in_W",
+                       "p_loss_W"],
+                      [[v.name, v.kind, v.group, v.v_set, v.v_out, v.v_sense, v.v_ground_sense,
+                        v.i_out, v.v_in, v.i_in, v.p_out, v.p_in, v.p_loss]
+                       for v in tree.vrms]))
     out.append(_write(folder / f"{stem}_dc_connections.csv",
                       ["part", "group", "resistance_ohm", "current_A", "v_a_V", "v_b_V",
                        "power_W"],

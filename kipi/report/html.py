@@ -260,11 +260,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      _table(["Load", "Pin group", "I (A)", "V mean", "V lowest pin"], pg))
     parts.append("<h2 id='vrms'>VRMs</h2>")
     parts.append(_table(
-        ["VRM", "Type", "Group", "V set", "V out", "V sense", "I out (A)", "V in", "I in (A)",
-         "P out (W)", "P in (W)", "Loss (W)"],
+        ["VRM", "Type", "Group", "V set", "V out", "V sense", "V gnd sense", "I out (A)",
+         "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)"],
         [[_e(v.name), _e(v.kind), _e(v.group), _num(v.v_set, ".5g"), _num(v.v_out, ".5f"),
-          _num(v.v_sense, ".5f"), _num(v.i_out), _num(v.v_in, ".5f"), _num(v.i_in),
-          _num(v.p_out), _num(v.p_in), _num(v.p_loss)] for v in tree.vrms]))
+          _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
+          _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss)]
+         for v in tree.vrms]))
     links = [[_e(sr.name), _e(g.name), _num(sr.resistance * 1e3, "g"), _num(sr.current),
               _num(sr.power * 1e3, ".3f")]
              for g in tree.groups.values() for sr in g.result.fields.series]
