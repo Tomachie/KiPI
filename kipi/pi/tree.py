@@ -9,6 +9,8 @@ output delivers, and its input pins are a load on the group feeding it.
              at the VRM's input pins, which depends on I_in, so the feeding group is
              iterated to a fixed point (the factorized system is reused).
 * Remote sense: the VRM's output is corrected until the sense pins sit at the set point.
+  With ground sense, the set point is held above the ground sense pins instead of 0 V;
+  their voltage comes from the ground solve, so rails and grounds are iterated together.
 * Ground: groups used as ground are referenced to 0 V at the source VRM's ground pins.
   Loads return their current at their ground pins; every other VRM returns
   I_in - I_out at its ground pins.
@@ -87,6 +89,7 @@ class VrmReport:
     i_in: Optional[float]
     p_out: float
     p_in: Optional[float]
+    v_ground_sense: Optional[float] = None   # at the ground sense pins, if any
 
     @property
     def p_loss(self) -> Optional[float]:
@@ -207,81 +210,25 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
                 mesh_cache[key] = mesh
         return prob, mesh, LinearSystem(snap, mesh, prob, progress)
 
+    built = {}                                   # group -> (mesh, system), reused per pass
+
+    def system_for(g, sources, loads, label):
+        if g not in built:
+            _, mesh, system = build(g, sources, loads, label)
+            built[g] = (mesh, system)
+        return built[g]
+
     v_out: Dict[str, float] = {}
     i_out: Dict[str, float] = {}
     v_in: Dict[str, float] = {}
     i_in: Dict[str, float] = {}
     v_sense: Dict[str, float] = {}
+    # Ground-sensing VRMs regulate against their ground sense pins, whose voltage comes
+    # from the ground solve, which depends on the rails' currents: iterate both to a
+    # fixed point (passes after the first only re-solve the factorized systems).
+    v_gsense: Dict[str, float] = {v.name: 0.0 for v in setup.vrms if v.ground_sense}
     rail_solutions = {}
-
-    # ---------------------------------------------------------------- rails
-    for gi, g in enumerate(order):
-        progress.check_cancel()
-        vrm = driver[g]
-        label = label_of(g)
-        progress.stage(f"Rail {gi + 1}/{len(order)}: {label} (from {vrm.name})")
-        loads = []
-        for l in setup.loads:
-            if l.supply.net not in g:
-                continue
-            if not l.groups:
-                loads.append(CurrentLoad(l.name, pads(l.supply), l.current))
-                continue
-            for gi, grp in enumerate(l.groups):
-                ref = PinRef(l.supply.ref, l.supply.net, list(grp.pins))
-                loads.append(CurrentLoad(_group_load_name(l, gi), pads(ref), grp.current))
-        children = fed_by.get(g, [])
-        child_load = {c.name: f"{c.name} (input)" for c in children}
-        for c in children:
-            loads.append(CurrentLoad(child_load[c.name], pads(c.input), 0.0))
-        sense_pads = pads(vrm.sense) if vrm.sense else []
-        if sense_pads:
-            loads.append(CurrentLoad(f"{vrm.name} (sense)", sense_pads, 0.0))
-        src_pads = pads(vrm.output)
-        prob, mesh, system = build(g, [VoltageSource(vrm.name, src_pads, vrm.voltage)], loads,
-                                   label)
-
-        v_src = vrm.voltage
-        vin_est = {c.name: vrm.voltage for c in children}
-        sol = None
-        for it in range(1, MAX_TREE_ITERATIONS + 1):
-            currents = {child_load[c.name]: _input_current(c, v_out[c.name], i_out[c.name],
-                                                           vin_est[c.name])
-                        for c in children}
-            sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
-            change = 0.0
-            for c in children:
-                new = _mean_v(sol, pads(c.input))
-                change = max(change, abs(new - vin_est[c.name]))
-                vin_est[c.name] = new
-            if sense_pads:
-                vs = _mean_v(sol, sense_pads)
-                step = vrm.voltage - vs
-                v_src += step
-                change = max(change, abs(step))
-            if change < V_TOL:
-                break
-        else:
-            out.warnings.append(f"{label}: power-tree iteration did not converge "
-                                f"(last change {change:.2e} V)")
-        if sense_pads:
-            sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
-            v_sense[vrm.name] = _mean_v(sol, sense_pads)
-        progress.info(f"{label}: {it} iteration(s), {vrm.name} supplies "
-                      f"{sol.source_current[vrm.name] * 1e3:.2f} mA at {v_src:.5f} V")
-
-        v_out[vrm.name] = v_src
-        i_out[vrm.name] = sol.source_current[vrm.name]
-        for c in children:
-            v_in[c.name] = vin_est[c.name]
-            i_in[c.name] = currents[child_load[c.name]]
-        fields = compute_fields(sol)
-        out.groups[label] = GroupResult(label, sorted(g), "rail", vrm.name,
-                                        NetResult(mesh, sol, fields), it)
-        out.warnings.extend(f"{label}: {w}" for w in sol.warnings)
-        rail_solutions[g] = sol
-
-    # ---------------------------------------------------------------- grounds
+    ground_solutions = {}
     ground_groups = []
     for v in setup.vrms:
         if v.ground and groups[v.ground.net] not in ground_groups:
@@ -289,27 +236,122 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
     for l in setup.loads:
         if l.ground and groups[l.ground.net] not in ground_groups:
             ground_groups.append(groups[l.ground.net])
-    ground_solutions = {}
-    for g in ground_groups:
-        progress.check_cancel()
-        label = label_of(g)
-        progress.stage(f"Ground: {label}")
-        refs = [v for v in setup.vrms if v.kind == "source" and v.ground and v.ground.net in g]
-        sources = [VoltageSource(f"{v.name} (gnd)", pads(v.ground), 0.0) for v in refs]
-        loads = [CurrentLoad(f"{l.name} (return)", pads(l.ground), -l.total_current())
-                 for l in setup.loads if l.ground and l.ground.net in g]
+
+    for tree_pass in range(1, MAX_TREE_ITERATIONS + 1):
+        solved = []                              # (label, nets, kind, driver, mesh, sol, it)
+        pass_warnings: List[str] = []
+        suffix = f" (pass {tree_pass})" if tree_pass > 1 else ""
+
+        # ------------------------------------------------------------ rails
+        for gi, g in enumerate(order):
+            progress.check_cancel()
+            vrm = driver[g]
+            label = label_of(g)
+            progress.stage(f"Rail {gi + 1}/{len(order)}: {label} (from {vrm.name}){suffix}")
+            loads = []
+            for l in setup.loads:
+                if l.supply.net not in g:
+                    continue
+                if not l.groups:
+                    loads.append(CurrentLoad(l.name, pads(l.supply), l.current))
+                    continue
+                for gi, grp in enumerate(l.groups):
+                    ref = PinRef(l.supply.ref, l.supply.net, list(grp.pins))
+                    loads.append(CurrentLoad(_group_load_name(l, gi), pads(ref), grp.current))
+            children = fed_by.get(g, [])
+            child_load = {c.name: f"{c.name} (input)" for c in children}
+            for c in children:
+                loads.append(CurrentLoad(child_load[c.name], pads(c.input), 0.0))
+            sense_pads = pads(vrm.sense) if vrm.sense else []
+            if sense_pads:
+                loads.append(CurrentLoad(f"{vrm.name} (sense)", sense_pads, 0.0))
+            src_pads = pads(vrm.output)
+            mesh, system = system_for(g, [VoltageSource(vrm.name, src_pads, vrm.voltage)],
+                                      loads, label)
+
+            # The VRM holds (sense or output pins) - (ground sense pins) at its set point.
+            target = vrm.voltage + v_gsense.get(vrm.name, 0.0)
+            v_src = target
+            vin_est = {c.name: v_in.get(c.name, vrm.voltage) for c in children}
+            sol = None
+            for it in range(1, MAX_TREE_ITERATIONS + 1):
+                currents = {child_load[c.name]: _input_current(c, v_out[c.name],
+                                                               i_out[c.name], vin_est[c.name])
+                            for c in children}
+                sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
+                change = 0.0
+                for c in children:
+                    new = _mean_v(sol, pads(c.input))
+                    change = max(change, abs(new - vin_est[c.name]))
+                    vin_est[c.name] = new
+                if sense_pads:
+                    vs = _mean_v(sol, sense_pads)
+                    step = target - vs
+                    v_src += step
+                    change = max(change, abs(step))
+                if change < V_TOL:
+                    break
+            else:
+                pass_warnings.append(f"{label}: power-tree iteration did not converge "
+                                     f"(last change {change:.2e} V)")
+            if sense_pads:
+                sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
+                v_sense[vrm.name] = _mean_v(sol, sense_pads)
+            progress.info(f"{label}: {it} iteration(s), {vrm.name} supplies "
+                          f"{sol.source_current[vrm.name] * 1e3:.2f} mA at {v_src:.5f} V")
+
+            v_out[vrm.name] = v_src
+            i_out[vrm.name] = sol.source_current[vrm.name]
+            for c in children:
+                v_in[c.name] = vin_est[c.name]
+                i_in[c.name] = currents[child_load[c.name]]
+            solved.append((label, sorted(g), "rail", vrm.name, mesh, sol, it))
+            pass_warnings.extend(f"{label}: {w}" for w in sol.warnings)
+            rail_solutions[g] = sol
+
+        # ------------------------------------------------------------ grounds
+        for g in ground_groups:
+            progress.check_cancel()
+            label = label_of(g)
+            progress.stage(f"Ground: {label}{suffix}")
+            refs = [v for v in setup.vrms
+                    if v.kind == "source" and v.ground and v.ground.net in g]
+            sources = [VoltageSource(f"{v.name} (gnd)", pads(v.ground), 0.0) for v in refs]
+            loads = [CurrentLoad(f"{l.name} (return)", pads(l.ground), -l.total_current())
+                     for l in setup.loads if l.ground and l.ground.net in g]
+            currents = {}
+            for v in setup.vrms:
+                if v.ground and v.ground.net in g and v.kind != "source":
+                    # Output current comes back in, input current leaves to its own source.
+                    currents[f"{v.name} (gnd)"] = i_out[v.name] - i_in[v.name]
+                    loads.append(CurrentLoad(f"{v.name} (gnd)", pads(v.ground), 0.0))
+                if v.ground_sense and v.ground_sense.net in g:
+                    loads.append(CurrentLoad(f"{v.name} (gnd sense)", pads(v.ground_sense),
+                                             0.0))
+            mesh, system = system_for(g, sources, loads, label)
+            sol = system.solve(currents=currents, progress=NULL)
+            solved.append((label, sorted(g), "ground", ", ".join(v.name for v in refs),
+                           mesh, sol, 1))
+            pass_warnings.extend(f"{label}: {w}" for w in sol.warnings)
+            ground_solutions[g] = sol
+
+        change = 0.0
         for v in setup.vrms:
-            if v.ground and v.ground.net in g and v.kind != "source":
-                # Output current comes back in, input current leaves to its own source.
-                loads.append(CurrentLoad(f"{v.name} (gnd)", pads(v.ground),
-                                         i_out[v.name] - i_in[v.name]))
-        prob, mesh, system = build(g, sources, loads, label)
-        sol = system.solve(progress=NULL)
-        out.groups[label] = GroupResult(label, sorted(g), "ground",
-                                        ", ".join(v.name for v in refs),
-                                        NetResult(mesh, sol, compute_fields(sol)))
-        out.warnings.extend(f"{label}: {w}" for w in sol.warnings)
-        ground_solutions[g] = sol
+            if v.ground_sense:
+                new = _mean_v(ground_solutions[groups[v.ground.net]], pads(v.ground_sense))
+                change = max(change, abs(new - v_gsense[v.name]))
+                v_gsense[v.name] = new
+        if change < V_TOL:
+            break
+    else:
+        pass_warnings.append(f"Ground-sense iteration did not converge "
+                             f"(last change {change:.2e} V)")
+    if tree_pass > 1:
+        progress.info(f"Ground sense: converged in {tree_pass} power-tree passes")
+    for label, nets, kind, drv, mesh, sol, it in solved:
+        out.groups[label] = GroupResult(label, nets, kind, drv,
+                                        NetResult(mesh, sol, compute_fields(sol)), it)
+    out.warnings.extend(pass_warnings)
 
     # ---------------------------------------------------------------- reports
     for l in setup.loads:
@@ -345,7 +387,8 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         vi, ii = v_in.get(v.name), i_in.get(v.name)
         out.vrms.append(VrmReport(v.name, v.kind, label_of(groups[v.output.net]), v.voltage,
                                   v_out[v.name], v_sense.get(v.name), i_out[v.name], vi, ii,
-                                  p_out, None if vi is None else vi * ii))
+                                  p_out, None if vi is None else vi * ii,
+                                  v_gsense.get(v.name)))
     out.solve_s = time.perf_counter() - t0
     progress.info(f"Power tree solved: {len(order)} rail(s), {len(ground_groups)} ground(s) "
                   f"in {out.solve_s:.2f} s")

@@ -49,13 +49,14 @@ def board():
     return BoardSnapshot("tree", "", st, nets, [], [], pads, [], zones, [])
 
 
-def setup(kind="ldo", eff=0.9, iq=0.0, sense=False, ground=False):
+def setup(kind="ldo", eff=0.9, iq=0.0, sense=False, ground=False, gsense=False):
     src = Vrm("J1", PinRef("J1", "VIN", ["1"]), 12.0, "source",
               ground=PinRef("J1", "GND", ["2"]) if ground else None)
     reg = Vrm("U1", PinRef("U1", "+3V3", ["2"]), 3.3, kind, efficiency=eff, quiescent_a=iq,
               input=PinRef("U1", "VIN", ["1"]),
               sense=PinRef("U2", "+3V3", ["1"]) if sense else None,
-              ground=PinRef("U1", "GND", ["3"]) if ground else None)
+              ground=PinRef("U1", "GND", ["3"]) if ground else None,
+              ground_sense=PinRef("U2", "GND", ["2"]) if gsense else None)
     load = Load("U2", PinRef("U2", "+3V3", ["1"]), 1.0,
                 ground=PinRef("U2", "GND", ["2"]) if ground else None, tolerance_pct=1.0)
     return PISetup([src, reg], [load], [], SolveSettings(max_edge_mm=0.3))
@@ -108,6 +109,31 @@ def test_ground_return_drop():
     assert "GND" in res.groups and res.groups["GND"].kind == "ground"
 
 
+def test_ground_sense_regulates_against_the_load_ground():
+    res = solve_tree(board(), setup("ldo", iq=0.01, sense=True, ground=True, gsense=True))
+    u1, ld = by_name(res.vrms, "U1"), by_name(res.loads, "U2")
+    v_gnd = 1.01 * R(9) + 1.0 * R(10)
+    assert u1.v_ground_sense == pytest.approx(v_gnd, rel=1e-9)
+    assert u1.v_out == pytest.approx(3.3 + 1.0 * R(8) + v_gnd, rel=1e-9)
+    assert ld.v_effective == pytest.approx(3.3, abs=1e-9)
+    assert ld.drop == pytest.approx(0.0, abs=1e-9)
+
+
+def test_ground_sense_without_positive_sense():
+    res = solve_tree(board(), setup("ldo", iq=0.01, ground=True, gsense=True))
+    u1 = by_name(res.vrms, "U1")
+    assert u1.v_sense is None
+    assert u1.v_out == pytest.approx(3.3 + 1.01 * R(9) + 1.0 * R(10), rel=1e-9)
+
+
+def test_ground_sense_with_switcher_converges():
+    # A switcher's ground current depends on its output voltage, which depends on the
+    # ground sense voltage: the rails and grounds must be iterated together.
+    res = solve_tree(board(), setup("smps", eff=0.8, sense=True, ground=True, gsense=True))
+    assert not any("converge" in w for w in res.warnings)
+    assert by_name(res.loads, "U2").v_effective == pytest.approx(3.3, abs=1e-8)
+
+
 def test_validation_rules():
     s = setup()
     assert validate(s) == []
@@ -128,10 +154,17 @@ def test_validation_rules():
     assert any("needs a reference" in e for e in validate(s))
     with pytest.raises(SolveError, match="Setup problems"):
         solve_tree(board(), s)
+    s = setup(ground=True, gsense=True)
+    assert validate(s) == []
+    s.vrms[1].ground = None
+    assert any("ground sense needs" in e for e in validate(s))
+    s = setup(ground=True, gsense=True)
+    s.vrms[1].ground_sense = PinRef("U2", "+3V3", ["1"])
+    assert any("ground sense pins must be on" in e for e in validate(s))
 
 
 def test_setup_json_round_trip(tmp_path):
-    s = setup(kind="smps", eff=0.85, sense=True, ground=True)
+    s = setup(kind="smps", eff=0.85, sense=True, ground=True, gsense=True)
     s.links.append(DcLink("FB1", PinRef("U2", "+3V3", ["1"]), PinRef("U2", "+3V3", ["1"]), 0.05))
     from kipi.pi.model import PinGroup
     s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]

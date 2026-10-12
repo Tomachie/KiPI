@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/kipi_256.png" alt="KiPI logo" width="128">
+</p>
+
 # KiPI — DC power integrity for KiCad 10
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
@@ -84,6 +88,7 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
+| Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
 
 **Loads tab**: one entry per consumer.
 

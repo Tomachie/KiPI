@@ -51,6 +51,7 @@ class Vrm:
     input: Optional[PinRef] = None       # required for "ldo" and "smps"
     sense: Optional[PinRef] = None       # remote sense: regulate the voltage here
     ground: Optional[PinRef] = None      # ground pins (enables ground-net simulation)
+    ground_sense: Optional[PinRef] = None  # negative remote sense: regulate against these
 
 
 @dataclass
@@ -113,7 +114,8 @@ class PISetup:
             vrms=[Vrm(name=v["name"], output=pin(v["output"]), voltage=v["voltage"],
                       kind=v.get("kind", "source"), efficiency=v.get("efficiency", 0.9),
                       quiescent_a=v.get("quiescent_a", 0.0), input=pin(v.get("input")),
-                      sense=pin(v.get("sense")), ground=pin(v.get("ground")))
+                      sense=pin(v.get("sense")), ground=pin(v.get("ground")),
+                      ground_sense=pin(v.get("ground_sense")))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
@@ -166,7 +168,7 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
 
     nets = set(extra_nets)
     for v in setup.vrms:
-        for p in (v.output, v.input, v.sense, v.ground):
+        for p in (v.output, v.input, v.sense, v.ground, v.ground_sense):
             if p:
                 nets.add(p.net)
     for l in setup.loads:
@@ -209,6 +211,12 @@ def validate(setup: PISetup) -> List[str]:
         if v.sense and groups[v.sense.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: sense pins must be on the output net (or nets "
                           "DC-connected to it)")
+        if v.ground_sense and not v.ground:
+            errors.append(f"VRM {v.name}: ground sense needs the VRM's ground pins set "
+                          "(that is what makes its ground net simulated)")
+        elif v.ground_sense and groups[v.ground_sense.net] != groups[v.ground.net]:
+            errors.append(f"VRM {v.name}: ground sense pins must be on the VRM's ground net "
+                          "(or nets DC-connected to it)")
         if v.input and groups[v.input.net] == groups[v.output.net]:
             errors.append(f"VRM {v.name}: input and output are on the same net group")
         if v.ground:

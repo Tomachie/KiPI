@@ -254,6 +254,7 @@ class VrmEditor(_Editor):
         self.input = self._picker(optional=True)
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
+        self.ground_sense = self._picker(optional=True)
         f.addRow("Name", self.name)
         f.addRow("Type", self.kind)
         f.addRow("Output pins", self.output)
@@ -263,6 +264,7 @@ class VrmEditor(_Editor):
         f.addRow("Input pins", self.input)
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground pins", self.ground)
+        f.addRow("Ground sense pins", self.ground_sense)
         self._watch(self.name, self.kind, self.voltage, self.eff, self.iq)
         self.kind.currentIndexChanged.connect(self._kind_rows)
         self.output.cmb_net.currentIndexChanged.connect(
@@ -288,6 +290,7 @@ class VrmEditor(_Editor):
         self.input.set_value(v.input)
         self.sense.set_value(v.sense)
         self.ground.set_value(v.ground)
+        self.ground_sense.set_value(v.ground_sense)
         self._kind_rows()
 
     def _save(self, v: Vrm):
@@ -300,6 +303,7 @@ class VrmEditor(_Editor):
         v.input = self.input.value() if v.kind != "source" else None
         v.sense = self.sense.value()
         v.ground = self.ground.value()
+        v.ground_sense = self.ground_sense.value()
 
 
 class LoadEditor(_Editor):
