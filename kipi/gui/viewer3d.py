@@ -325,8 +325,7 @@ class Viewer3D(QWidget):
                 hi = float(np.percentile(vals, 99.5))
         if hi <= lo:
             hi = lo + 1e-12
-        # Voltage: red = lowest (worst), green = highest. Densities: dark -> bright.
-        cmap = "RdYlGn" if assoc == "point" else "inferno"
+        cmap = "turbo" if assoc == "point" else "inferno"
         log_scale = self._result_field == "power_density"
         if log_scale:
             lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
