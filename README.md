@@ -5,20 +5,20 @@
 
 KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin:
 
-1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements.
+1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements (beads, resistors, load switches).
 2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
 3. Inspect voltage, current density, via currents, copper power dissipation and (optionally)
    board temperature in a rotatable 3D view, and write an interactive HTML report.
 
-**Status: 0.5.0 (alpha).** Milestones 1–5 are done: board extraction, the 3D viewer, the FEM
-solver, the power tree, the results tools, electro-thermal co-simulation and the HTML report.
-See [docs/research.md](docs/research.md) for design notes.
+![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
+
+**Status: 0.5.0 (alpha).** This entire project was vibe coded with Claude Opus 5.5 in a single day. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
 
 ## Install
 
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
 2. Link (or copy) this repo into your KiCad plugins folder. KiCad uses your *Documents* folder,
-   which may be redirected to OneDrive:
+   which may be redirected to OneDrive on Windows machines:
 
    ```powershell
    $plug = "$([Environment]::GetFolderPath('MyDocuments'))\KiCad\10.0\plugins"
@@ -64,7 +64,9 @@ Below that:
 Toolbar buttons set **Top / Bottom / Iso** views and save a **Screenshot…**. Drag to rotate,
 scroll to zoom and shift-drag (or middle-drag) to pan.
 
-### 3. Describe the power system
+![Stackup cut along Y with 15× Z scale, showing the inner planes and via barrels](docs/images/stackup_cut.png)
+
+### 3. Model the power system
 
 The **PI setup** panel on the right holds the power tree. KiPI infers nothing from the board,
 so every entry comes from you. Each list has **Add**, **Duplicate** and **Remove** buttons.
@@ -91,6 +93,10 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
 * **Max drop** (%) is the PASS/FAIL limit. Each load is judged by its worst pin.
+
+| Loads tab | Thermal tab |
+|---|---|
+| ![Load editor](docs/images/setup_loads.png) | ![Thermal settings](docs/images/setup_thermal.png) |
 
 **DC connections tab**: parts that pass DC from one net to another, such as sense
 resistors, ferrite beads, fuses, load switches and 0 Ω links. Give **Side A pins**,
@@ -133,6 +139,10 @@ board, and **Report** opens it afterwards. It is a single file that works offlin
 * per-layer statistics, with top-down voltage and current-density maps;
 * the board temperature map when thermal is on.
 
+| Summary tables | Interactive 3D per net group |
+|---|---|
+| ![Report summary tables](docs/images/report_tables.png) | ![Report 3D voltage view](docs/images/report_3d.png) |
+
 ### 5. Read the results
 
 In the **Results** group, choose a **net group** and a **field** to show in 3D:
@@ -144,7 +154,15 @@ In the **Results** group, choose a **net group** and a **field** to show in 3D:
 * **Temperature** (with thermal on)
 
 Click any point on the copper or any via to probe it. **Show copper** returns to the plain
-geometry view.
+geometry view without any results.
+
+![Voltage across the +3.3V plane, with the Loads results table](docs/images/voltage.png)
+
+![Current density with flow arrows on the 5 A +12Vin input path](docs/images/current_density.png)
+
+| Via current | Temperature |
+|---|---|
+| ![Via current, with the Vias table ranked by current](docs/images/via_current.png) | ![Board temperature from the electro-thermal solve, with the Notes tab](docs/images/temperature.png) |
 
 Result tabs:
 

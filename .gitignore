@@ -6,3 +6,4 @@ __pycache__/
 build/
 dist/
 *.kipi.json.gz
+uv.lock
