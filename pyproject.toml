@@ -8,8 +8,8 @@ dynamic = ["version"]
 description = "DC power-integrity analysis for KiCad: IR drop, current density, via currents and electro-thermal co-simulation in 3D"
 readme = "README.md"
 requires-python = ">=3.10"
-authors = [{ name = "Drewsum", email = "drewmaatman@gmail.com" }]
-maintainers = [{ name = "Drewsum", email = "drewmaatman@gmail.com" }]
+authors = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
+maintainers = [{ name = "Drew Maatman", email = "drewmaatman@gmail.com" }]
 keywords = [
     "kicad", "pcb", "power integrity", "ir drop", "dc drop", "pdn",
     "current density", "fem", "electro-thermal", "eda",
