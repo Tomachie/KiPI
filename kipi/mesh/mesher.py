@@ -448,3 +448,46 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
                   f"{len(mesh.layers)} layer(s), {len(mesh.barrels)} plated holes "
                   f"({time.perf_counter() - t0:.2f} s)")
     return mesh
+
+
+def combine_meshes(meshes: Sequence[NetMesh], name: str, layer_order: Sequence[int]) -> NetMesh:
+    """Concatenate per-net meshes into one (node ids offset; nothing is connected)."""
+    pts, nl, tris, tl, barrels, pads = [], [], [], [], [], {}
+    off = 0
+    for m in meshes:
+        pts.append(m.points)
+        nl.append(m.node_layer)
+        tris.append(m.tris + off)
+        tl.append(m.tri_layer)
+        for b in m.barrels:
+            barrels.append(Barrel(b.owner_id, b.kind, b.position, b.drill_mm,
+                                  {l: n + off for l, n in b.ring_nodes.items()}))
+        for pid, per_layer in m.pad_nodes.items():
+            pads[pid] = {l: n + off for l, n in per_layer.items()}
+        off += m.n_nodes
+    present = {l for m in meshes for l in m.layers}
+    return NetMesh(net=name, points=np.vstack(pts), node_layer=np.concatenate(nl),
+                   tris=np.vstack(tris), tri_layer=np.concatenate(tl),
+                   layers=[l for l in layer_order if l in present], barrels=barrels,
+                   pad_nodes=pads)
+
+
+def mesh_nets(snap: BoardSnapshot, nets: Sequence[str], terminal_pad_ids: Sequence[str] = (),
+              name: Optional[str] = None, progress: ProgressReporter = NULL,
+              **kwargs) -> NetMesh:
+    """Mesh several nets (joined electrically by series parts) as one problem."""
+    if len(nets) == 1:
+        return mesh_net(snap, nets[0], terminal_pad_ids, progress=progress, **kwargs)
+    pad_net = {p.id: p.net for p in snap.pads}
+    meshes = []
+    for net in nets:
+        progress.info(f"-- {net}")
+        mine = [pid for pid in terminal_pad_ids if pad_net.get(pid) == net]
+        meshes.append(mesh_net(snap, net, mine, progress=progress, **kwargs))
+    stray = [pid for pid in terminal_pad_ids if pad_net.get(pid) not in nets]
+    if stray:
+        raise MeshError(f"Terminal pads are not on any of {list(nets)}: {stray}")
+    mesh = combine_meshes(meshes, name or " + ".join(nets), [c.id for c in snap.stackup.copper])
+    progress.info(f"Combined mesh: {mesh.n_nodes} nodes, {mesh.n_tris} triangles, "
+                  f"{len(nets)} nets")
+    return mesh

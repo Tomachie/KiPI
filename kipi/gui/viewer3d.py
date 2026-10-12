@@ -331,7 +331,7 @@ class Viewer3D(QWidget):
             lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
         bar = dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
                    height=0.5, width=0.05, fmt=_bar_format(lo, hi, log_scale),
-                   title_font_size=14,
+                   title_font_size=14, color="white",
                    label_font_size=12, n_labels=6)
         first = True
         for lid, lr in scene.layers.items():
@@ -369,7 +369,7 @@ class Viewer3D(QWidget):
             show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
             scalar_bar_args=dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
                                  height=0.5, width=0.05, fmt=_bar_format(lo, hi, False),
-                                 title_font_size=14, label_font_size=12, n_labels=6))
+                                 title_font_size=14, color="white", label_font_size=12, n_labels=6))
         self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         self._scalar_bars.append(title)
 
