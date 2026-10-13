@@ -256,11 +256,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append("<h2 id='loads'>Loads</h2>")
     parts.append(_table(
         ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop (mV)", "Drop %",
-         "Worst pin (mV)", "Worst %", "Limit %", "Result"],
+         "Worst pin (mV)", "Worst %", "Limit %", "Min V", "Result"],
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
           _num(l.v_effective, ".6f"), _num(l.drop * 1e3, ".3f"), _num(l.drop_pct, ".3f"),
           _num(l.drop_worst * 1e3, ".3f"), _num(l.drop_worst_pct, ".3f"),
-          _num(l.tolerance_pct, "g"), _verdict(l.passed, l.status)] for l in tree.loads]))
+          _num(l.tolerance_pct, "g"), _num(l.min_v, "g"), _verdict(l.passed, l.status)]
+         for l in tree.loads]))
     pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f")]
           for l in tree.loads for n, a, vm, vmin in l.pin_groups]
     if pg:

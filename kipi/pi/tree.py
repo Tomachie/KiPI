@@ -467,14 +467,26 @@ class _TreeSolver:
         rep = LoadReport(l.name, self.label_of(g), l.total_current(), nominal,
                          float(sv.mean()), float(sv.min()),
                          None if gv is None else g_mean, eff, nominal - eff,
-                         l.tolerance_pct, None, worst, self._pin_group_rows(l, sol), best)
+                         l.tolerance_pct, None, worst, self._pin_group_rows(l, sol), best,
+                         min_v=l.min_v)
         if not self.tree_converged or g in self.not_converged:
             rep.status = NOT_CONVERGED
         elif g in out_of_reg:
             rep.status, rep.passed = OUT_OF_REGULATION, False
-        elif l.tolerance_pct is not None and nominal:
-            rep.passed = max(rep.drop_worst_pct, rep.rise_pct) <= l.tolerance_pct
+        else:
+            rep.passed = self._judge(l, rep, nominal)
         return rep
+
+    @staticmethod
+    def _judge(l: Load, rep: LoadReport, nominal: float) -> Optional[bool]:
+        """Against the max-drop limit (both directions, % of the set voltage) and the
+        datasheet minimum (the worst pin's magnitude); None when neither is set."""
+        verdicts = []
+        if l.tolerance_pct is not None and nominal:
+            verdicts.append(max(rep.drop_worst_pct, rep.rise_pct) <= l.tolerance_pct)
+        if l.min_v is not None:
+            verdicts.append(abs(rep.v_worst) >= abs(l.min_v))
+        return all(verdicts) if verdicts else None
 
     def _pin_group_rows(self, l: Load, sol) -> List[tuple]:
         rows = []
