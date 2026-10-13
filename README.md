@@ -203,7 +203,7 @@ geometry view without any results.
 |---|---|
 | ![Via current, with the Vias table ranked by current](docs/images/via_current.png) | ![Board temperature from the electro-thermal solve, with the Notes tab](docs/images/temperature.png) |
 
-Result tabs:
+Result tabs (click a column header to sort by it; click again to reverse):
 
 | Tab | Shows |
 |---|---|

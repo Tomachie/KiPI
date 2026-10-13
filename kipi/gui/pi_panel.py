@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
 from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
+from kipi.gui.sortable import make_sortable, reset_sort, set_row
 from kipi.pi.tree import fmt_drop
 from kipi.viz.results import FIELDS
 
@@ -777,19 +778,20 @@ class PIPanel(QWidget):
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance %", ""])
+                                      "Tolerance %", ""], sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
                                   "a remote-sensed VRM's output pins. The worst pin is the one "
                                   "furthest from the set point either way.")
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
-                                     "P in (W)", "Loss (W)"])
-        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"])
+                                     "P in (W)", "Loss (W)"], sortable=True)
+        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"],
+                                      sortable=True)
         self.txt_notes = QTextBrowser(g_res)
         self.res_tabs.addTab(self.tbl_loads, "Loads")
         self.res_tabs.addTab(self.tbl_vrms, "VRMs")
         self.res_tabs.addTab(self.tbl_links, "DC connections")
         self.res_tabs.addTab(self._vias_tab(), "Vias")
-        self.tbl_losses = self._table(["Group"])
+        self.tbl_losses = self._table(["Group"], sortable=True)
         self.res_tabs.addTab(self.tbl_losses, "Losses")
         self.res_tabs.addTab(self.txt_notes, "Notes")
         self.tbl_loads.cellDoubleClicked.connect(self._row_to_group)
@@ -839,7 +841,7 @@ class PIPanel(QWidget):
         row.addWidget(QLabel("double-click a row to show it"))
         v.addLayout(row)
         self.tbl_vias = self._table(["Group", "Via / pad", "x (mm)", "y (mm)", "Drill (mm)",
-                                     "I (mA)", "P (mW)", ""])
+                                     "I (mA)", "P (mW)", ""], sortable=True)
         self.tbl_vias.cellDoubleClicked.connect(self._via_row_clicked)
         v.addWidget(self.tbl_vias)
         return w
@@ -857,15 +859,14 @@ class PIPanel(QWidget):
     def _fill_vias(self, max_rows: int = 500):
         from kipi.pi.report import via_rows
         rows = via_rows(self._tree, self.snapshot)[:max_rows]
-        self._via_currents = [v.current for v in rows]
         t = self.tbl_vias
+        reset_sort(t)
         with _bulk_fill(t):
             t.setRowCount(len(rows))
             for r, v in enumerate(rows):
-                for c, text in enumerate([v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
-                                          f"{v.drill_mm:.3f}", f"{v.current * 1e3:.2f}",
-                                          f"{v.power * 1e3:.4f}", ""]):
-                    t.setItem(r, c, QTableWidgetItem(text))
+                set_row(t, r, [v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
+                               f"{v.drill_mm:.3f}", (f"{v.current * 1e3:.2f}", v.current * 1e3),
+                               (f"{v.power * 1e3:.4f}", v.power * 1e3), ""])
                 t.item(r, 0).setData(Qt.UserRole, v.owner_id)
         self._set_via_status()
 
@@ -874,7 +875,8 @@ class PIPanel(QWidget):
         limit = self.setup.via_current_limit_a
         t = self.tbl_vias
         with _bulk_fill(t):
-            for r, current in enumerate(self._via_currents):
+            for r in range(t.rowCount()):           # rows may have been sorted
+                current = t.item(r, 5).key / 1e3
                 it = t.item(r, 7)
                 if limit is None:
                     it.setText("")
@@ -891,6 +893,7 @@ class PIPanel(QWidget):
         headers = ["Group", *[f"{n} (mW)" for n in layers], "Vias (mW)", "DC parts (mW)",
                    "Total (mW)"]
         t = self.tbl_losses
+        reset_sort(t)
         t.setColumnCount(len(headers))
         t.setHorizontalHeaderLabels(headers)
         vrm_rows = [v for v in self._tree.vrms if v.p_loss is not None]
@@ -900,22 +903,24 @@ class PIPanel(QWidget):
             cells = [row.group, *[f"{row.by_layer.get(n, 0.0) * 1e3:.3f}" for n in layers],
                      f"{row.vias * 1e3:.3f}", f"{row.links * 1e3:.3f}", f"{row.total * 1e3:.3f}"]
             total += row.total
-            for c, text in enumerate(cells):
-                t.setItem(r, c, QTableWidgetItem(text))
+            set_row(t, r, cells)
+        # The total and VRM conversion rows stay at the bottom whatever the sort.
+        blank = [""] * (len(headers) - 2)
         r = len(rows)
-        t.setItem(r, 0, QTableWidgetItem("All copper + parts"))
-        t.setItem(r, len(headers) - 1, QTableWidgetItem(f"{total * 1e3:.3f}"))
+        set_row(t, r, ["All copper + parts", *blank, f"{total * 1e3:.3f}"], pin=1)
         for k, v in enumerate(vrm_rows, start=r + 1):
-            t.setItem(k, 0, QTableWidgetItem(f"VRM {v.name} (conversion)"))
-            t.setItem(k, len(headers) - 1, QTableWidgetItem(f"{v.p_loss * 1e3:.3f}"))
+            set_row(t, k, [f"VRM {v.name} (conversion)", *blank, f"{v.p_loss * 1e3:.3f}"],
+                    pin=1, sub=k)
 
-    def _table(self, headers) -> QTableWidget:
+    def _table(self, headers, sortable: bool = False) -> QTableWidget:
         t = QTableWidget(0, len(headers), self)
         t.setHorizontalHeaderLabels(headers)
         t.verticalHeader().setVisible(False)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        if sortable:
+            make_sortable(t)
         return t
 
     def _settings_tab(self) -> QWidget:
@@ -1199,42 +1204,43 @@ class PIPanel(QWidget):
                                f'{html.escape(message).replace(chr(10), "<br>")}</span>')
 
     def show_results(self, tree, initial_group: str):
-        def put(t, r, c, text, color=None):
-            it = QTableWidgetItem(text)
-            if color:
-                it.setForeground(QColor(color))
-            t.setItem(r, c, it)
-
-        self.tbl_loads.setRowCount(len(tree.loads))
+        for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links):
+            reset_sort(t)                         # new results show in their natural order
+        t = self.tbl_loads
+        t.setRowCount(len(tree.loads))
         for r, l in enumerate(tree.loads):
             status = "" if l.passed is None else ("PASS" if l.passed else "FAIL")
-            color = None if l.passed is None else ("#60d060" if l.passed else "#ff6060")
-            for c, text in enumerate([l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
-                                      fmt_drop(l.drop, unit=""), fmt_drop(l.drop_worst, unit=""),
-                                      f"{abs(l.drop_worst_pct):.3f}",
-                                      "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}",
-                                      status]):
-                put(self.tbl_loads, r, c, text, color if c == 8 else None)
+            # Drop and boost sort as one signed value: largest boost ... largest drop.
+            set_row(t, r, [l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
+                           (fmt_drop(l.drop, unit=""), l.drop * 1e3),
+                           (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
+                           (f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
+                           "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}", status])
+            if l.passed is not None:
+                t.item(r, 8).setForeground(QColor("#60d060" if l.passed else "#ff6060"))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
-        rows = []                # each VRM, then one indented row per phase if multi-phase
-        for v in tree.vrms:
+        t = self.tbl_vrms
+        t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))
+        r = 0
+        for v in tree.vrms:                       # each VRM, then a row per phase under it
             kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases)} phases"
-            rows.append([v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
-                         f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g")])
-            rows.extend([f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
-                         f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
-                         f(p.p_loss, ".4g")] for p in v.phases)
-        self.tbl_vrms.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, text in enumerate(row):
-                put(self.tbl_vrms, r, c, text, "#a0a0a0" if row[0].startswith(" ") else None)
+            set_row(t, r, [v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
+                           f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g")])
+            parent = r
+            for p in v.phases:
+                r += 1
+                set_row(t, r, [f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
+                               f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
+                               f(p.p_loss, ".4g")], parent_row=parent, sub=p.index)
+                for c in range(t.columnCount()):
+                    t.item(r, c).setForeground(QColor("#a0a0a0"))
+            r += 1
         rows = [(g.name, s) for g in tree.groups.values() for s in g.result.fields.series]
         self.tbl_links.setRowCount(len(rows))
         for r, (gname, s) in enumerate(rows):
             cur = "" if math.isnan(s.current) else f"{s.current:.4g}"
-            for c, text in enumerate([s.name, gname, f"{s.resistance * 1e3:g}", cur,
-                                      f"{s.power * 1e3:.3f}"]):
-                put(self.tbl_links, r, c, text)
+            set_row(self.tbl_links, r, [s.name, gname, f"{s.resistance * 1e3:g}", cur,
+                                        f"{s.power * 1e3:.3f}"])
         notes = [f"Solved {len(tree.groups)} net group(s) in {tree.solve_s:.2f} s:"]
         th = getattr(tree, "thermal", None)
         if th is not None:
