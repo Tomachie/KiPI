@@ -16,6 +16,8 @@ from qtpy.QtWidgets import QApplication  # noqa: E402
 from kipi.pi.model import PISetup, setup_path  # noqa: E402
 from test_multiphase import board, two_phase  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("no_3d")
+
 
 @pytest.fixture(scope="module")
 def app():

@@ -30,7 +30,7 @@ def test_dialog_names_the_version_and_repo(app):
     assert any(not lb.pixmap().isNull() for lb in d.findChildren(QLabel) if lb.pixmap())
 
 
-def test_toolbar_has_about_after_open_results(app):
+def test_toolbar_has_about_after_open_results(app, no_3d):
     from qtpy.QtWidgets import QToolBar
     from kipi.gui.main_window import MainWindow
     w = MainWindow()
