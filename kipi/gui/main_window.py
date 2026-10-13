@@ -396,18 +396,23 @@ class MainWindow(QMainWindow):
             self.log(f"Screenshot saved to {path}")
 
     def _set_snapshot(self, snap: BoardSnapshot):
+        prev = self.snapshot
+        # Re-reading the same board from KiCad keeps the nets ticked now, even unsaved.
+        keep = (self._checked_nets() if prev is not None and
+                (prev.board_name, prev.project_dir) == (snap.board_name, snap.project_dir)
+                else None)
         self.snapshot = snap
         self._copper_cache.clear()
         self._picked = None
         self.btn_select_kicad.setEnabled(False)
         self.setWindowTitle(f"KiPI {__version__} — {snap.board_name}")
         self._populate_layers()
-        self._populate_nets()
-        self._show_board_summary()
         self._result = None
         self._tree = None
         self._scenes = {}
-        self._load_setup(snap)
+        setup = self._load_setup(snap)
+        self._populate_nets(keep if keep is not None else setup.nets, setup)
+        self._show_board_summary()
         from kipi.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
         self.sync_nets()
@@ -431,17 +436,29 @@ class MainWindow(QMainWindow):
             self.layer_list.addItem(it)
         self.layer_list.blockSignals(False)
 
-    def _populate_nets(self):
+    def _populate_nets(self, chosen: Optional[List[str]], setup):
+        """Fill the net list, ticking ``chosen``; None means the user has never chosen
+        (a new setup), so tick the main power and ground planes instead."""
         snap = self.snapshot
         kinds = classify_nets(snap)
-        zone_nets = {z.net for z in snap.zones}
         pad_count: Dict[str, int] = {}
         for p in snap.pads:
             pad_count[p.net] = pad_count.get(p.net, 0) + 1
-        # Start with the main plane nets: a few power nets plus the main ground.
-        by_pads = sorted(zone_nets, key=lambda n: -pad_count.get(n, 0))
-        auto = set([n for n in by_pads if kinds.get(n) == "power"][:MAX_AUTO_NETS - 1] +
-                   [n for n in by_pads if kinds.get(n) == "ground"][:1])
+        if chosen is not None:
+            auto = set(chosen)
+            gone = sorted(auto - set(kinds))
+            if gone:
+                self.log(f"Nets in the setup that are not on the board: {', '.join(gone)}",
+                         logging.WARNING)
+        else:
+            # Start with the main plane nets: a few power nets plus the main ground.
+            zone_nets = {z.net for z in snap.zones}
+            by_pads = sorted(zone_nets, key=lambda n: -pad_count.get(n, 0))
+            auto = set([n for n in by_pads if kinds.get(n) == "power"][:MAX_AUTO_NETS - 1] +
+                       [n for n in by_pads if kinds.get(n) == "ground"][:1])
+            # A setup saved before nets were stored: its VRMs, loads and links are on
+            # nets the user had ticked.
+            auto |= setup.pin_nets()
 
         self.net_list.blockSignals(True)
         self.net_list.clear()
@@ -513,6 +530,7 @@ class MainWindow(QMainWindow):
         if self.snapshot is None:
             return
         self.solve_panel.set_nets(list(self._checked_set()))
+        self.solve_panel.setup.nets = self._checked_nets()   # saved with the setup
         if self._busy():
             self._resync_pending = True
             return
@@ -584,10 +602,13 @@ class MainWindow(QMainWindow):
                 label = f"Could not read {path.name}; starting empty"
         self._setup_path = path
         self.solve_panel.set_board(snap, setup, label)
+        return setup
 
     def _save_setup(self):
         if self._setup_path is None:
             return
+        if self.snapshot is not None:   # a checkbox change may not have synced yet
+            self.solve_panel.setup.nets = self._checked_nets()
         try:
             self.solve_panel.setup.save(self._setup_path)
             self.solve_panel.lbl_file.setText(f"Setup: {self._setup_path}")

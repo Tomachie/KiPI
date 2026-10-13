@@ -116,6 +116,16 @@ class PISetup:
     via_current_limit_a: Optional[float] = None   # vias above this are flagged FAIL
     thermal: ThermalSettings = field(default_factory=ThermalSettings)   # off by default
     html_report: bool = False                     # write an HTML report after solving
+    # Nets ticked in the Board panel (the nets in scope). None = never chosen, so the
+    # GUI guesses the main power and ground planes; [] = the user unticked them all.
+    nets: Optional[List[str]] = None
+
+    def pin_nets(self) -> set:
+        """Nets the VRMs, loads and DC connections have pins on."""
+        refs = [r for v in self.vrms for r in v.pin_refs()]
+        refs += [r for ld in self.loads for r in (ld.supply, ld.ground) if r]
+        refs += [r for k in self.links for r in (k.side_a, k.side_b) if r]
+        return {r.net for r in refs}
 
     # ------------------------------------------------------------------ JSON
     def to_dict(self) -> dict:
@@ -152,6 +162,7 @@ class PISetup:
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
             html_report=bool(d.get("html_report", False)),
+            nets=list(d["nets"]) if d.get("nets") is not None else None,
             settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
                                       if k in known}),
         )

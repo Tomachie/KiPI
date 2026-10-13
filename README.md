@@ -56,6 +56,11 @@ drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** fil
 list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
 the filter box to find a net.
 
+The ticked nets are saved with the PI setup and ticked again the next time the board is
+opened. **Load from KiCad** on a board that is already open keeps the current ticks. Only
+a board with no saved choice starts with a guess: its largest power planes and the main
+ground.
+
 Below that:
 
 * **Copper layers** toggles layers in the view.

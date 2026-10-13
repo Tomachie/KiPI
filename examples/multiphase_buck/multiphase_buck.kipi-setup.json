@@ -182,5 +182,10 @@
     "laminate_k_w_mk": 0.0
   },
   "html_report": false,
+  "nets": [
+    "VIN",
+    "VCORE",
+    "GND"
+  ],
   "format_version": 1
 }
