@@ -92,11 +92,19 @@ def _unsupported(e: Exception) -> bool:
                                         or "no handler available" in str(e))
 
 
+def _reports_enabled(stackup_layers) -> bool:
+    """KiCad 10.0.1 leaves every layer's enabled flag unset (false); an unset flag on
+    every layer means the server does not report it, not that no layer is enabled."""
+    return any(sl.enabled for sl in stackup_layers)
+
+
 def _stackup_copper(stackup_layers) -> Dict[int, str]:
     """Enabled copper layers in the board's stackup, with the names shown in KiCad."""
     from kipy.proto.board import board_pb2
+    reports_enabled = _reports_enabled(stackup_layers)
     return {sl.layer: sl.user_name for sl in stackup_layers
-            if sl.enabled and sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER}
+            if (sl.enabled or not reports_enabled)
+            and sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER}
 
 
 def _copper_layer_ids(board, stackup_layers=(), progress: ProgressReporter = NULL) -> List[int]:
@@ -145,8 +153,9 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
 
     entries = []  # (kind, layer_id, thickness_mm, material, epsilon_r), top to bottom
     try:
+        reports_enabled = _reports_enabled(stackup_layers)
         for sl in stackup_layers:
-            if not sl.enabled:
+            if reports_enabled and not sl.enabled:
                 continue
             if sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER and sl.layer in names:
                 entries.append(("cu", sl.layer, mm(sl.thickness), "", 0.0))
