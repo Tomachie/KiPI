@@ -248,3 +248,25 @@ def test_old_setups_load_as_single_phase():
     for v in d["vrms"]:
         del v["phases"]
     assert all(v.phases == [] for v in PISetup.from_dict(d).vrms)
+
+
+def test_input_range_is_judged_on_the_worst_phase():
+    s = two_phase("ldo")
+    v1 = 12.0 - 2 * R(8)                   # phase 1's input; phase 2's is 9 mm further on
+    v2 = v1 - R(9)
+    s.vrms[1].vin_min = (v1 + v2) / 2
+    res = solve_tree(board(), s)
+    assert f"{v2:.4f} V is below" in by_name(res.vrms, "U1").regulation
+    assert by_name(res.loads, "U2").verdict == "VRM OUT OF REGULATION"
+
+
+def test_ldo_dropout_is_judged_on_the_worst_phase():
+    s = two_phase("ldo")
+    v1 = 12.0 - 2 * R(8)
+    v_load = 1.0 - (R(4) + R(13)) / 2
+    head1, head2 = v1 - (v_load + R(4)), v1 - R(9) - (v_load + R(13))
+    s.vrms[1].dropout_v = (head1 + head2) / 2  # phase 1 has the headroom, phase 2 does not
+    res = solve_tree(board(), s)
+    assert f"leaves {head2:.4f} V" in by_name(res.vrms, "U1").regulation
+    s.vrms[1].dropout_v = head2 * 0.99
+    assert by_name(solve_tree(board(), s).vrms, "U1").regulation == ""

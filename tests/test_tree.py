@@ -9,7 +9,7 @@ from kipi.model.board import (
     BoardSnapshot, CopperLayer, DielectricLayer, Net, Pad, Poly, Stackup, Zone,
 )
 from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate
-from kipi.pi.tree import solve_tree
+from kipi.pi.tree import NOT_CONVERGED, OUT_OF_REGULATION, solve_tree
 from kipi.solver.fem import SolveError
 from kipi.solver.setup import RHO_CU_OHM_MM as RHO, SolveSettings
 
@@ -226,3 +226,42 @@ def test_pin_group_validation():
     s.loads[0].supply = PinRef("U2", "+3V3", ["1"])
     s.loads[0].groups = [PinGroup(["3"], 0.5)]
     assert any("not among its supply pins" in e for e in validate(s))
+
+
+def test_load_above_nominal_fails_its_limit():
+    # Remote sense at U2 lifts U1's output by the strip drop; a load on U1's output pad
+    # sits above nominal by 1 A x R(8) (0.12 %), outside a 0.05 % limit.
+    s = setup("ldo", sense=True)
+    s.loads.append(Load("U1out", PinRef("U1", "+3V3", ["2"]), 0.0, tolerance_pct=0.05))
+    ld = by_name(solve_tree(board(), s).loads, "U1out")
+    assert ld.rise_pct == pytest.approx(100 * R(8) / 3.3, rel=1e-6)
+    assert ld.passed is False
+
+
+def test_ldo_in_dropout_fails_the_loads_it_feeds():
+    s = setup("ldo")
+    s.vrms[1].dropout_v = 9.0                  # 12 V in, 3.3 V out: 8.7 V of headroom
+    res = solve_tree(board(), s)
+    assert "dropout" in by_name(res.vrms, "U1").regulation
+    ld = by_name(res.loads, "U2")
+    assert ld.passed is False and ld.verdict == OUT_OF_REGULATION
+
+
+def test_switcher_below_its_input_minimum_fails_the_loads_it_feeds():
+    s = setup("smps", eff=0.9)
+    s.vrms[1].vin_min = 13.0
+    res = solve_tree(board(), s)
+    assert "minimum" in by_name(res.vrms, "U1").regulation
+    assert by_name(res.loads, "U2").verdict == OUT_OF_REGULATION
+
+
+def test_unconverged_group_leaves_its_loads_unjudged(monkeypatch):
+    import kipi.pi.tree as tree
+    monkeypatch.setattr(tree, "MAX_TREE_ITERATIONS", 1)
+    s = setup("smps", eff=0.9)
+    s.loads.append(Load("U1in", PinRef("U1", "VIN", ["1"]), 0.0, tolerance_pct=50.0))
+    res = solve_tree(board(), s)
+    ld = by_name(res.loads, "U1in")
+    assert ld.passed is None and ld.verdict == NOT_CONVERGED
+    assert res.groups["VIN"].converged is False
+    assert by_name(res.loads, "U2").passed is True     # its own rail converged

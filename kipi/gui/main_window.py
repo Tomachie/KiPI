@@ -649,9 +649,8 @@ class MainWindow(QMainWindow):
             self.solve_panel.show_results(tree, first)
             self._show_group(first)
             for l in tree.loads:
-                verdict = "" if l.passed is None else (" PASS" if l.passed else " FAIL")
                 self.log(f"  {l.name}: {l.drop * 1e3:.3f} mV drop ({l.drop_pct:.3f} %) "
-                         f"at {l.current:g} A{verdict}")
+                         f"at {l.current:g} A {l.verdict}".rstrip())
 
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)

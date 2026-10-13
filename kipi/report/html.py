@@ -49,10 +49,12 @@ def _table(headers: List[str], rows: List[List[str]], cls: str = "") -> str:
     return f'<table class="{cls}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
 
-def _verdict(passed: Optional[bool]) -> str:
+def _verdict(passed: Optional[bool], text: str = "") -> str:
+    """PASS / FAIL, or ``text`` when the result was not judged or failed for a reason."""
     if passed is None:
-        return ""
-    return '<span class="pass">PASS</span>' if passed else '<span class="fail">FAIL</span>'
+        return f'<span class="unjudged">{_e(text)}</span>' if text else ""
+    label = _e(text) if text else ("PASS" if passed else "FAIL")
+    return f'<span class="pass">{label}</span>' if passed else f'<span class="fail">{label}</span>'
 
 
 def _png(fig) -> str:
@@ -206,6 +208,7 @@ table { border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; backgrou
 th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: right; }
 th { background: #f0f0f0; } td:first-child, th:first-child { text-align: left; }
 .pass { color: #1a8f2c; font-weight: bold; } .fail { color: #c62828; font-weight: bold; }
+.unjudged { color: #b26a00; font-weight: bold; }
 .maps { display: flex; flex-wrap: wrap; gap: 12px; }
 .maps figure { margin: 0; background: white; border: 1px solid #ddd; padding: 6px; }
 .maps img { width: 520px; max-width: 100%; }
@@ -257,7 +260,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
           _num(l.v_effective, ".6f"), _num(l.drop * 1e3, ".3f"), _num(l.drop_pct, ".3f"),
           _num(l.drop_worst * 1e3, ".3f"), _num(l.drop_worst_pct, ".3f"),
-          _num(l.tolerance_pct, "g"), _verdict(l.passed)] for l in tree.loads]))
+          _num(l.tolerance_pct, "g"), _verdict(l.passed, l.status)] for l in tree.loads]))
     pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f")]
           for l in tree.loads for n, a, vm, vmin in l.pin_groups]
     if pg:
