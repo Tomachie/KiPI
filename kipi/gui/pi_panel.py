@@ -457,6 +457,10 @@ class LoadEditor(_Editor):
         self.tol.setSpecialValueText("no limit")
         self.tol.setToolTip("PASS if the worst supply pin's drop is within this % of the "
                             "VRM set voltage")
+        self.heat = _optional_spin(0, 1000, 3, " W", 0.01)
+        self.heat.setToolTip("Heat the part puts into the board. Not set: all the power it "
+                             "takes from its supply pins (V x I). Set it for a part that passes "
+                             "power on (load switch, LED or motor driver).")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -466,7 +470,8 @@ class LoadEditor(_Editor):
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
         f.addRow("Max drop", self.tol)
-        self._watch(self.name, self.current, self.tol, self.mode)
+        f.addRow("Heat", self.heat)
+        self._watch(self.name, self.current, self.tol, self.mode, self.heat)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
 
@@ -540,6 +545,7 @@ class LoadEditor(_Editor):
         self.mode.setCurrentIndex(1 if l.groups else 0)
         self.ground.set_value(l.ground)
         self.tol.setValue(l.tolerance_pct or 0.0)
+        _set_optional(self.heat, l.dissipation_w)
         self.lbl_total.setText(f"{l.total_current():.4g} A")
         self._mode_rows()
 
@@ -563,6 +569,7 @@ class LoadEditor(_Editor):
             l.groups = []
         l.ground = self.ground.value()
         l.tolerance_pct = self.tol.value() or None
+        l.dissipation_w = _get_optional(self.heat)
         self.lbl_total.setText(f"{l.total_current():.4g} A")
 
 
@@ -1256,15 +1263,20 @@ class PIPanel(QWidget):
         th = getattr(tree, "thermal", None)
         if th is not None:
             x, y, tmax = th.hottest()
-            notes.insert(0, f"<b>Electro-thermal:</b> {th.heat_w:.3g} W into the board, peak "
-                            f"<b>{tmax:.1f} °C</b> at ({x:.1f}, {y:.1f}) mm, ambient "
-                            f"{th.settings.ambient_c:g} °C, airflow {th.settings.airflow_m_s:g} m/s")
-            notes.insert(1, "&nbsp;&nbsp;iterations: " + ", ".join(
+            thermal_notes = [
+                f"<b>Electro-thermal:</b> {th.heat_w:.3g} W into the board, peak "
+                f"<b>{tmax:.1f} °C</b> at ({x:.1f}, {y:.1f}) mm, ambient "
+                f"{th.settings.ambient_c:g} °C, airflow {th.settings.airflow_m_s:g} m/s"]
+            if getattr(th, "heat_by_kind", None):
+                thermal_notes.append("&nbsp;&nbsp;heat by source: "
+                                     + html.escape(th.heat_breakdown()))
+            thermal_notes.append("&nbsp;&nbsp;iterations: " + ", ".join(
                 f"{h['iteration']}: {h['t_max']:.2f} °C (Δ {h['dt_max']:.3f})" for h in th.history))
-            notes.insert(2, "&nbsp;&nbsp;dielectrics: " + "; ".join(
+            thermal_notes.append("&nbsp;&nbsp;dielectrics: " + "; ".join(
                 f"{html.escape(m or '(unnamed)')} {t:.3f} mm → {html.escape(i.matched)}, "
                 f"{i.k_w_mk:g} W/m·K{' ⚠ assumed' if i.assumed else ''}"
                 for m, t, i in th.dielectrics))
+            notes = thermal_notes + notes
         for g in tree.groups.values():
             role = f"driven by {g.driver}" if g.kind == "rail" else f"ground, referenced at {g.driver}"
             notes.append(f"&nbsp;&nbsp;<b>{html.escape(g.name)}</b> ({role}): "
