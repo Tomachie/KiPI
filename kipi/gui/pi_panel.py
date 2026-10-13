@@ -59,6 +59,25 @@ def _spin(lo, hi, value, decimals, suffix, step=None) -> QDoubleSpinBox:
     return s
 
 
+def _optional_spin(lo, hi, decimals, suffix, step) -> QDoubleSpinBox:
+    """A spin box whose lowest value, one step below ``lo``, reads "not set"."""
+    s = _spin(lo - step, hi, lo - step, decimals, suffix, step)
+    s.setSpecialValueText("not set")
+    return s
+
+
+def _optional_volts() -> QDoubleSpinBox:
+    return _optional_spin(-1000, 1000, 3, " V", 0.1)
+
+
+def _get_optional(s: QDoubleSpinBox) -> Optional[float]:
+    return None if s.value() <= s.minimum() else s.value()
+
+
+def _set_optional(s: QDoubleSpinBox, value: Optional[float]):
+    s.setValue(s.minimum() if value is None else value)
+
+
 def make_searchable(combo: QComboBox):
     """Let the user type to filter a combo box (substring, case-insensitive).
 
@@ -280,6 +299,9 @@ class VrmEditor(_Editor):
         self.i_limit.setSpecialValueText("no limit")
         self.i_limit.setToolTip("PASS if the VRM's total output current (all phases) is at "
                                 "most this")
+        self.dropout = _spin(0, 100, 0, 3, " V", 0.05)
+        self.vin_min = _optional_volts()
+        self.vin_max = _optional_volts()
         self.input = self._picker(optional=True)
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
@@ -298,6 +320,9 @@ class VrmEditor(_Editor):
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
         f.addRow("Output current limit", self.i_limit)
+        f.addRow("Dropout", self.dropout)
+        f.addRow("Input min", self.vin_min)
+        f.addRow("Input max", self.vin_max)
         f.addRow("Phases", self.n_phases)
         f.addRow("Edit phase", self.cmb_phase)
         f.addRow("Output pins", self.output)
@@ -305,7 +330,8 @@ class VrmEditor(_Editor):
         f.addRow("Ground pins", self.ground)
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
-        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq, self.i_limit)
+        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq, self.i_limit,
+                    self.dropout, self.vin_min, self.vin_max)
         self.kind.currentIndexChanged.connect(self._kind_rows)
         self.n_phases.valueChanged.connect(self._phase_count_changed)
         self.cmb_phase.currentIndexChanged.connect(self._phase_selected)
@@ -317,6 +343,9 @@ class VrmEditor(_Editor):
         self.form.setRowVisible(self.eff, kind == "smps")
         self.form.setRowVisible(self.iq, kind != "source")
         self.form.setRowVisible(self.input, kind != "source")
+        self.form.setRowVisible(self.dropout, kind == "ldo")
+        self.form.setRowVisible(self.vin_min, kind != "source")
+        self.form.setRowVisible(self.vin_max, kind != "source")
 
     def _guess_voltage(self, net):
         if not self._loading and net and self._phase == 0:
@@ -370,6 +399,9 @@ class VrmEditor(_Editor):
         self._phase = 0
         self._phase_rows()
         self._show_phase(v)
+        self.dropout.setValue(v.dropout_v)
+        _set_optional(self.vin_min, v.vin_min)
+        _set_optional(self.vin_max, v.vin_max)
         self.sense.set_value(v.sense)
         self.ground_sense.set_value(v.ground_sense)
         self._kind_rows()
@@ -381,6 +413,9 @@ class VrmEditor(_Editor):
         v.efficiency = self.eff.value() / 100
         v.quiescent_a = self.iq.value() / 1e3
         v.current_limit_a = self.i_limit.value() or None
+        v.dropout_v = self.dropout.value()
+        v.vin_min = _get_optional(self.vin_min)
+        v.vin_max = _get_optional(self.vin_max)
         v.sense = self.sense.value()
         v.ground_sense = self.ground_sense.value()
         phases = v.all_phases()
@@ -1232,15 +1267,17 @@ class PIPanel(QWidget):
         t = self.tbl_loads
         t.setRowCount(len(tree.loads))
         for r, l in enumerate(tree.loads):
-            status = "" if l.passed is None else ("PASS" if l.passed else "FAIL")
+            status = l.verdict
             # Drop and boost sort as one signed value: largest boost ... largest drop.
             set_row(t, r, [l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
                            (fmt_drop(l.drop, unit=""), l.drop * 1e3),
                            (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
                            (f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
                            "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}", status])
-            if l.passed is not None:
-                t.item(r, 8).setForeground(QColor("#60d060" if l.passed else "#ff6060"))
+            color = (("#ffb040" if l.status else None) if l.passed is None
+                     else ("#60d060" if l.passed else "#ff6060"))
+            if color:
+                t.item(r, 8).setForeground(QColor(color))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         t = self.tbl_vrms
         t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))

@@ -66,6 +66,9 @@ class Vrm:
     phases: List[VrmPhase] = field(default_factory=list)
     # PASS if the total output current (all phases) is at most this many amps.
     current_limit_a: Optional[float] = None
+    dropout_v: float = 0.0               # LDO: least input-output difference it regulates at
+    vin_min: Optional[float] = None      # input range it regulates over (LDO / switcher)
+    vin_max: Optional[float] = None
 
     def all_phases(self) -> List[VrmPhase]:
         return [VrmPhase(self.output, self.input, self.ground), *self.phases]
@@ -152,7 +155,9 @@ class PISetup:
                       ground_sense=pin(v.get("ground_sense")),
                       phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
                                        pin(ph.get("ground"))) for ph in v.get("phases", [])],
-                      current_limit_a=v.get("current_limit_a"))
+                      current_limit_a=v.get("current_limit_a"),
+                      dropout_v=v.get("dropout_v", 0.0), vin_min=v.get("vin_min"),
+                      vin_max=v.get("vin_max"))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
@@ -283,6 +288,10 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: efficiency must be between 0 and 1")
         if v.current_limit_a is not None and not v.current_limit_a > 0:
             errors.append(f"VRM {v.name}: the output current limit must be positive")
+        if v.quiescent_a < 0 or v.dropout_v < 0:
+            errors.append(f"VRM {v.name}: quiescent current and dropout cannot be negative")
+        if v.vin_min is not None and v.vin_max is not None and v.vin_min > v.vin_max:
+            errors.append(f"VRM {v.name}: input range minimum is above its maximum")
         if v.sense and groups[v.sense.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: sense pins must be on the output net (or nets "
                           "DC-connected to it)")
@@ -304,6 +313,8 @@ def validate(setup: PISetup) -> List[str]:
 
     rail_groups = set(by_group)
     for l in setup.loads:
+        if l.tolerance_pct is not None and l.tolerance_pct < 0:
+            errors.append(f"Load {l.name}: max drop cannot be negative")
         if l.groups:
             seen_pins: Dict[str, int] = {}
             for gi, g in enumerate(l.groups):
@@ -326,6 +337,9 @@ def validate(setup: PISetup) -> List[str]:
         if v.input and groups[v.input.net] not in rail_groups:
             errors.append(f"VRM {v.name}: no VRM drives its input "
                           f"({group_name(groups[v.input.net])})")
+    for k in setup.links:
+        if k.resistance < 0:
+            errors.append(f"DC connection {k.name}: resistance cannot be negative")
     for g in ground_groups:
         if g in rail_groups:
             errors.append(f"{group_name(g)} is used both as a supply and as ground")
