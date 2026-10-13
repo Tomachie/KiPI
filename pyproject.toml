@@ -34,7 +34,7 @@ classifiers = [
 ]
 # Keep in sync with requirements.txt, which KiCad installs into the plugin's venv.
 dependencies = [
-    "kicad-python>=0.7.0",
+    "kicad-python>=0.7.1",
     "PySide6-Essentials>=6.6",
     "qtpy>=2.4",
     "pyvista>=0.44",

@@ -32,6 +32,12 @@ milestones rather than versions that were ever set.
 - **Progress messages** before long steps: meshing large planes, joining layers through
   many plated holes, mapping copper for the thermal model, and solving the board
   temperature.
+- **KiCad 9 support.** Boards are read from KiCad 9.0.0 onwards. Where a KiCad 9 release
+  lacks a request, KiPI takes the layers and their names from the stackup instead, and
+  zone refills wait on a request KiCad 9 answers. Before 9.0.3, plated pads are kept on
+  every layer, because KiCad cannot say which layers have their copper.
+- **Install notes for macOS and Linux:** plugin folders, and which Python each platform's
+  KiCad runs plugins with (macOS needs a newer Python than the one KiCad bundles).
 
 ### Changed
 - **The color scale fits the layers shown.** Hiding a copper layer rescales the result
@@ -42,6 +48,10 @@ milestones rather than versions that were ever set.
   merged once, rather than once per pad.
 - **The watchdog** dumps thread stacks from Python rather than from faulthandler's timer, and
   logs the UI thread's stack if the window stops responding during a task.
+- **kicad-python 0.7.1 or later** is required. 0.7.0 was only published as a source package
+  that does not build.
+- Net codes are read without kicad-python's deprecated `Net.code`, which KiCad is dropping
+  from the API.
 
 ### Fixed
 - **Refill zones** could return before KiCad had finished filling, so the reads that followed
@@ -70,6 +80,14 @@ milestones rather than versions that were ever set.
   currents the solve used. No result shown in the GUI or the report was affected.
 - CI runs on every branch, whatever its name, and the window tests run on Linux without an
   OpenGL context.
+
+### Development
+- **Tests against every KiCad API version.** A fake KiCad answers the IPC API's own
+  messages as each release from 9.0.0 to 10.0.6 does, and the tests extract a board from
+  each one through kicad-python's real `Board`.
+- **CI covers more platforms:** macOS, Python 3.10 to 3.13 on Linux, and the oldest allowed
+  kicad-python. A job that does not block CI shows whether every dependency has prebuilt
+  packages for Python 3.14 yet.
 
 ## 0.6.0 (2026-10-12): Quality of life
 

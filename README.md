@@ -20,13 +20,42 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
 
 ## Install
 
+### Requirements
+
+* **KiCad 10** (developed on 10.0.7; tested against every 10.0 release's API). **KiCad 9.0**
+  should also work, though it is only tested against a simulated KiCad 9, not a real one.
+  Before KiCad 9.0.3, KiCad cannot say which layers a plated pad has copper on, so pads
+  are kept on every layer, including inner layers where KiCad removed unconnected pads.
+  KiCad 9.0.0 cannot report net classes either.
+* **Python 3.10 to 3.13**, the one KiCad runs plugins with. KiCad installs KiPI's
+  dependencies with pip, and some of them (Triangle, PyAMG) have no prebuilt packages for
+  Python 3.14 yet.
+  * **Windows:** KiCad's own Python 3.11. Nothing to do.
+  * **Linux:** KiCad uses the system Python. Ubuntu 22.04 and 24.04, Debian 13 and Fedora 42
+    work. Ubuntu 26.04 and Fedora 43 ship Python 3.14: until those packages exist, pip has
+    to compile them, which needs a C/C++ compiler and the Python headers
+    (`sudo apt install build-essential python3-dev`).
+  * **macOS:** KiCad 10 bundles Python 3.9, which is too old. Install Python 3.12 (for
+    example from python.org or Homebrew) and select it as the **Python interpreter** in
+    *Preferences → Plugins*.
+
+### Steps
+
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
-2. Link (or copy) this repo into your KiCad plugins folder. KiCad uses your *Documents* folder,
-   which may be redirected to OneDrive on Windows machines:
+2. Link (or copy) this repo into your KiCad plugins folder. On Windows, KiCad uses your
+   *Documents* folder, which may be redirected to OneDrive:
 
    ```powershell
    $plug = "$([Environment]::GetFolderPath('MyDocuments'))\KiCad\10.0\plugins"
    New-Item -ItemType Junction -Path "$plug\KiPI" -Target "<path to this repo>"
+   ```
+
+   On macOS the folder is `~/Documents/KiCad/10.0/plugins`, and on Linux
+   `~/.local/share/kicad/10.0/plugins` (use `9.0` for KiCad 9):
+
+   ```sh
+   ln -s "<path to this repo>" ~/Documents/KiCad/10.0/plugins/KiPI          # macOS
+   ln -s "<path to this repo>" ~/.local/share/kicad/10.0/plugins/KiPI       # Linux
    ```
 
 3. Restart the PCB editor. KiCad builds the plugin venv in the background; the first time this
@@ -242,7 +271,8 @@ you created.
   obvious.
 * **Slow solves:** raise **Max edge**, or analyze fewer nets at a time. Large planes are cheap
   but very fine traces are not.
-* **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
+* **Logs:** each session writes to `kipi/kipi-<date>-<time>-<pid>.log` in the temporary
+  folder (`%TEMP%` on Windows, `$TMPDIR` on macOS, `/tmp` on Linux), and the last
   15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
   task runs longer than a minute, a stack dump of every thread. If the window stops
   responding during a task, the log records where the UI thread was stuck. Attach both
@@ -265,8 +295,17 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 `requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
 only in `requirements-dev.txt`.
 
-CI runs ruff and the test suite on Windows and Linux for every push and pull request. The
-tests also solve the example board and check that its committed setup still matches
+CI runs ruff and the test suite for every push and pull request: on Windows with Python 3.11,
+on Linux with Python 3.10 to 3.13, on macOS, and with the oldest kicad-python that
+`requirements.txt` allows. A further job checks whether every dependency has prebuilt
+packages for Python 3.14; it is expected to fail until Triangle and PyAMG publish them.
+
+`tests/kicad_fake.py` stands in for a running KiCad. It answers the IPC API's own
+messages the way each KiCad version from 9.0.0 to 10.0.6 does, refusing commands that
+version did not have yet, and `tests/test_kicad_versions.py` extracts a board from each one.
+When a KiCad release adds a command KiPI starts using, add it to `ADDED` there.
+
+The tests also solve the example board and check that its committed setup still matches
 `make_board.py`. After changing the generator, rerun
 `python examples/multiphase_buck/make_board.py` and commit both output files.
 
