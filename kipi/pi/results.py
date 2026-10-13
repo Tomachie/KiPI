@@ -41,6 +41,7 @@ class LoadReport:
     v_best: float = 0.0                  # highest supply pin minus lowest ground pin
     status: str = ""                     # why the load was not judged, or was failed outright
     basis: str = ""                      # which current was solved: typ, max, typ (no max)...
+    min_v: Optional[float] = None        # the load's datasheet minimum supply voltage
 
     @property
     def drop_pct(self) -> float:

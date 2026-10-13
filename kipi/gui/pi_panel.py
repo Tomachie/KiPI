@@ -466,6 +466,9 @@ class LoadEditor(_Editor):
         self.tol.setSpecialValueText("no limit")
         self.tol.setToolTip("PASS if the worst supply pin's drop is within this % of the "
                             "VRM set voltage")
+        self.min_v = _optional_volts()
+        self.min_v.setToolTip("The lowest supply voltage the part's datasheet allows: FAIL "
+                              "when the worst supply pin is below it")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -476,7 +479,8 @@ class LoadEditor(_Editor):
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
         f.addRow("Max drop", self.tol)
-        self._watch(self.name, self.current, self.current_max, self.tol, self.mode)
+        f.addRow("Min V", self.min_v)
+        self._watch(self.name, self.current, self.current_max, self.tol, self.mode, self.min_v)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
 
@@ -559,6 +563,7 @@ class LoadEditor(_Editor):
         self.mode.setCurrentIndex(1 if l.groups else 0)
         self.ground.set_value(l.ground)
         self.tol.setValue(l.tolerance_pct or 0.0)
+        _set_optional(self.min_v, l.min_v)
         self.lbl_total.setText(_amps(l.total_current()))
         self._mode_rows()
 
@@ -583,6 +588,7 @@ class LoadEditor(_Editor):
             l.groups = []
         l.ground = self.ground.value()
         l.tolerance_pct = self.tol.value() or None
+        l.min_v = _get_optional(self.min_v)
         self.lbl_total.setText(_amps(l.total_current()))
 
 
@@ -841,7 +847,8 @@ class PIPanel(QWidget):
         lr.addLayout(row)
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)", "Drop (mV)",
-                                      "Worst pin (mV)", "Worst %", "Limit %", "Current", ""])
+                                      "Worst pin (mV)", "Worst %", "Limit %", "Min V",
+                                      "Current", ""])
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
                                      "P in (W)", "Loss (W)"])
         self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"])
@@ -1270,8 +1277,9 @@ class PIPanel(QWidget):
                                       f"{l.drop * 1e3:.3f}", f"{l.drop_worst * 1e3:.3f}",
                                       f"{l.drop_worst_pct:.3f}",
                                       "" if l.tolerance_pct is None else f"{l.tolerance_pct:g}",
+                                      "" if l.min_v is None else f"{l.min_v:g}",
                                       l.basis, status]):
-                put(self.tbl_loads, r, c, text, color if c == 9 else None)
+                put(self.tbl_loads, r, c, text, color if c == 10 else None)
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         rows = []                # each VRM, then one indented row per phase if multi-phase
         for v in tree.vrms:

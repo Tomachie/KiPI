@@ -102,6 +102,9 @@ class Load:
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)
     current_max: Optional[float] = None     # maximum, for a worst-case solve
+    # The lowest supply voltage the part's datasheet allows (its recommended
+    # operating minimum): the load FAILS when its worst supply pin is below it.
+    min_v: Optional[float] = None
 
     def total_current(self) -> Optional[float]:
         """Typical total; None when it is not known."""
@@ -159,7 +162,8 @@ class PISetup:
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
                         groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""),
                                          g.get("current_max"))
-                                for g in l.get("groups", [])])
+                                for g in l.get("groups", [])],
+                        min_v=l.get("min_v"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], resistance_max=k.get("resistance_max"))
