@@ -160,7 +160,8 @@
         "pins": []
       },
       "tolerance_pct": 3.0,
-      "groups": []
+      "groups": [],
+      "current_max": null
     }
   ],
   "links": [],
@@ -188,5 +189,6 @@
     "laminate_k_w_mk": 0.0
   },
   "html_report": false,
+  "corner": "typ",
   "format_version": 1
 }
