@@ -161,7 +161,8 @@
       },
       "tolerance_pct": 3.0,
       "groups": [],
-      "current_max": null
+      "current_max": null,
+      "min_v": null
     }
   ],
   "links": [],
