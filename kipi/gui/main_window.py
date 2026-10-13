@@ -107,6 +107,12 @@ class MainWindow(QMainWindow):
         act("Screenshot…", self.save_screenshot)
         tb.addSeparator()
         act("Open results…", self.open_results, "Reopen a saved power-tree solve")
+        tb.addSeparator()
+        self.act_about = act("About", self.show_about, "Version, author and project links")
+
+    def show_about(self):
+        from kipi.gui.about import AboutDialog
+        AboutDialog(self).exec()
 
     def _build_left_panel(self):
         panel = QWidget(self)
