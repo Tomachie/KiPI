@@ -30,10 +30,20 @@ from kipi.progress import NULL, ProgressReporter
 from kipi.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem
 
 DIRECT_SOLVE_MAX_UNKNOWNS = 30_000
+# CG on big boards can reach the floor that round-off allows just above the target
+# tolerance; past that point it does not stall quietly but diverges. Stop once it has
+# gone this many iterations without a new best residual, and keep the best iterate.
+CG_STALL_ITERATIONS = 40
+CG_ACCEPT_FACTOR = 100     # accept a stopped CG result within this factor of tol
+CG_WARM_ACCEPT_FACTOR = 10  # skip CG when a warm start is already within this factor
 
 
 class SolveError(RuntimeError):
     pass
+
+
+class _Stalled(Exception):
+    """Raised from the CG callback when the residual stops improving."""
 
 
 @dataclass
@@ -240,47 +250,74 @@ class _Factor:
         if self.lu is not None:
             return np.asarray(self.lu(rhs))
         s = self.s
-        residuals: List[float] = []
-        state = {"last": 0.0}
-        log_target = math.log10(max(s.tol, 1e-16))
-
-        def cb(_x):
-            progress.check_cancel()
-            if not residuals:
-                return
-            now = time.perf_counter()
-            r = residuals[-1] / max(residuals[0], 1e-300)
-            if now - state["last"] > 0.25:
-                state["last"] = now
-                progress.info(f"  CG iteration {len(residuals) - 1}: relative residual {r:.2e}")
-                progress.fraction(min(1.0, math.log10(max(r, 1e-300)) / log_target))
-
-        # The target is ||b - A x|| <= tol * ||b||. pyamg measures its tolerance against the
-        # first residual, which after a warm start (power-tree and electro-thermal
-        # re-solves) is already small, so convert, and skip the solve if already there.
+        # The target is ||b - A x|| <= tol * ||b||, which is also what pyamg's CG tests
+        # (its default 'rr' criterion), so tol is passed straight through.
         norm_b = float(np.linalg.norm(rhs))
         if norm_b == 0:
             self.x_prev = np.zeros_like(rhs)
             return self.x_prev
         x0 = self.x_prev if self.x_prev is not None and len(self.x_prev) == len(rhs) else None
-        r0 = norm_b if x0 is None else float(np.linalg.norm(rhs - self.A @ x0))
-        if x0 is not None and r0 <= s.tol * norm_b:
-            self.stats["iterations"] = 0
-            self.stats["relative_residual"] = r0 / norm_b
-            progress.info(f"Warm start already converged (relative residual {r0 / norm_b:.2e})")
-            return x0
-        tol_eff = min(0.5, s.tol * norm_b / max(r0, 1e-300))
-        x = self.ml.solve(rhs, x0=x0, tol=tol_eff, maxiter=s.max_iter, accel="cg",
-                          callback=cb, residuals=residuals)
+        if x0 is not None:
+            # Re-solves (power-tree passes, electro-thermal iterations) often start right
+            # at the round-off floor, a little above tol, where CG cannot improve and
+            # would only spend CG_STALL_ITERATIONS finding that out.
+            r0 = float(np.linalg.norm(rhs - self.A @ x0))
+            if r0 <= s.tol * CG_WARM_ACCEPT_FACTOR * norm_b:
+                self.stats["iterations"] = 0
+                self.stats["relative_residual"] = r0 / norm_b
+                progress.info(f"Warm start already converged (relative residual {r0 / norm_b:.2e})")
+                return x0
+
+        residuals: List[float] = []
+        state = {"last": 0.0}
+        best = {"res": math.inf, "x": None, "it": 0}
+        log_target = math.log10(max(s.tol, 1e-16))
+
+        def cb(x):
+            progress.check_cancel()
+            if not residuals:
+                return
+            it = len(residuals) - 1
+            if residuals[-1] < best["res"]:
+                best.update(res=residuals[-1], x=x.copy(), it=it)
+            elif it - best["it"] >= CG_STALL_ITERATIONS:
+                raise _Stalled
+            now = time.perf_counter()
+            if now - state["last"] > 0.25:
+                state["last"] = now
+                r = residuals[-1] / norm_b
+                progress.info(f"  CG iteration {it}: relative residual {r:.2e}")
+                progress.fraction(min(1.0, math.log10(max(r, 1e-300)) / log_target))
+
+        stalled = False
+        try:
+            x = self.ml.solve(rhs, x0=x0, tol=s.tol, maxiter=s.max_iter, accel="cg",
+                              callback=cb, residuals=residuals)
+        except _Stalled:
+            stalled = True
+            x = best["x"]
+        else:
+            if best["x"] is not None and residuals[-1] > best["res"]:
+                x = best["x"]          # hit max_iter after wandering off its best iterate
         rel = float(np.linalg.norm(rhs - self.A @ x)) / norm_b
         self.stats["iterations"] = len(residuals) - 1
         self.stats["relative_residual"] = rel
-        progress.info(f"CG converged in {len(residuals) - 1} iterations, "
-                      f"relative residual {rel:.2e}")
-        if rel > s.tol * 100 and np.linalg.norm(rhs) > 0:
-            from scipy.sparse.linalg import spsolve
-            progress.warn("Iterative solve did not converge; falling back to a direct solve")
-            x = spsolve(self.A.tocsc(), rhs)
+        if stalled:
+            progress.info(f"CG stopped improving after {best['it']} iterations at relative "
+                          f"residual {rel:.2e} (target {s.tol:.0e}; round-off limits this "
+                          "system)")
+        else:
+            progress.info(f"CG converged in {len(residuals) - 1} iterations, "
+                          f"relative residual {rel:.2e}")
+        if rel > s.tol * CG_ACCEPT_FACTOR:
+            progress.warn("Iterative solve did not converge; switching this system to a "
+                          "direct solve")
+            from scipy.sparse.linalg import factorized
+            progress.fraction(None)
+            # Kept for this system's later right-hand sides (power-tree passes).
+            self.lu = factorized(self.A.tocsc())
+            self.ml = None
+            x = self.lu(rhs)
             self.stats["method"] = "direct (fallback)"
         self.x_prev = np.asarray(x)
         return self.x_prev

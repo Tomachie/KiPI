@@ -1,5 +1,6 @@
 """The plugin must never block writing to a pipe its parent (KiCad) does not drain."""
 
+import os
 import subprocess
 import sys
 import textwrap
@@ -13,8 +14,11 @@ def _run_with_unread_pipes(code: str, tmp_path: Path, timeout: float = 60.0) -> 
     script = tmp_path / "child.py"
     status = tmp_path / "status.txt"
     script.write_text(textwrap.dedent(code), encoding="utf-8")
+    # Session logs go under tmp_path: in the real %TEMP%\kipi they would count toward
+    # KEEP_SESSIONS and push the user's own sessions out.
+    env = dict(os.environ, TEMP=str(tmp_path), TMP=str(tmp_path))
     # stdout/stderr are pipes that nobody reads, like KiCad's when it is busy.
-    p = subprocess.Popen([sys.executable, str(script), str(status)], cwd=ROOT,
+    p = subprocess.Popen([sys.executable, str(script), str(status)], cwd=ROOT, env=env,
                          stdin=subprocess.DEVNULL,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     t0 = time.time()
@@ -59,3 +63,49 @@ def test_detached_streams_absorb_native_and_python_writes(tmp_path):
         open(sys.argv[1], "w").write("done " + str(os.path.getsize(path) > 100_000))
     """, tmp_path)
     assert out == "done True"
+
+
+def test_watchdog_dumps_a_running_task_from_python(tmp_path):
+    out = _run_with_unread_pipes("""
+        import sys, threading, time
+        sys.path.insert(0, ".")
+        from kipi.gui import app
+        log = app.setup_logging()
+        stop = threading.Event()
+        def busy_solver_step():
+            while not stop.is_set():
+                sum(i * i for i in range(1000))   # keeps changing frames, like a solve
+        t = threading.Thread(target=busy_solver_step, name="worker")
+        t.start()
+        app.watchdog_start(seconds=0.2)
+        time.sleep(1.0)
+        app.watchdog_stop()
+        stop.set()
+        t.join()
+        text = log.with_suffix(".crash.log").read_text()
+        open(sys.argv[1], "w").write(f"{text.count('Task still running')} "
+                                     f"{'busy_solver_step' in text} {'Timeout' in text}")
+    """, tmp_path)
+    n, has_worker, native = out.split()
+    assert int(n) >= 2 and has_worker == "True" and native == "False"
+
+
+def test_watchdog_reports_a_stalled_ui_thread_with_its_stack(tmp_path):
+    out = _run_with_unread_pipes("""
+        import sys, time
+        sys.path.insert(0, ".")
+        from kipi.gui import app
+        log = app.setup_logging()
+        app.ui_alive()
+        app.watchdog_start(seconds=0.2, ui_stall_seconds=0.5)
+        def slow_slot():
+            time.sleep(1.5)              # the UI thread stuck in one call
+        slow_slot()
+        app.ui_alive()
+        time.sleep(0.5)
+        app.watchdog_stop()
+        text = log.read_text()
+        open(sys.argv[1], "w").write(f"{text.count('UI thread has not responded')} "
+                                     f"{'slow_slot' in text} {'responding again' in text}")
+    """, tmp_path)
+    assert out == "1 True True"

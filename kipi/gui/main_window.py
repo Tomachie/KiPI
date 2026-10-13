@@ -54,6 +54,11 @@ class MainWindow(QMainWindow):
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(50)
         self._render_timer.timeout.connect(self._timed_render)
+        from kipi.gui import app as kipi_app
+        self._ui_beat_timer = QTimer(self)   # lets the task watchdog spot a stalled UI
+        self._ui_beat_timer.setInterval(250)
+        self._ui_beat_timer.timeout.connect(kipi_app.ui_alive)
+        self._ui_beat_timer.start()
         self._checked_cache: Optional[frozenset] = None  # None = recompute from the list
         self._last_fraction_t = 0.0
         self._picked = None   # ("pad"|"via", id)
