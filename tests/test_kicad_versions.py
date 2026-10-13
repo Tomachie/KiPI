@@ -154,3 +154,24 @@ def test_old_kicad_is_named_in_the_log(version, warned):
     major, minor, patch = parse(version)
     _warn_old_kicad(NS(major=major, minor=minor, patch=patch), NS(warn=said.append))
     assert bool(said) == warned
+
+
+def test_kicad_9_0_7_without_layer_names():
+    """Reported on KiCad 9.0.7: "no handler available for request of type
+    kiapi.board.commands.GetBoardLayerName". The names come from the stackup instead."""
+    kicad = FakeKiCad("9.0.7")
+    snap = extract_board(kicad.board())
+    assert "GetBoardLayerName" in kicad.calls
+    assert [c.name for c in snap.stackup.copper] == ["F.Cu", "GND_PLANE", "In2.Cu", "B.Cu"]
+
+
+def test_unhandled_is_recognized_by_its_message_too():
+    class OtherStatus(FakeKiCad):
+        def send(self, cmd, response_type):
+            try:
+                return super().send(cmd, response_type)
+            except ApiError as e:
+                raise ApiError(str(e), code=ApiStatusCode.AS_BAD_REQUEST) from None
+
+    snap = extract_board(OtherStatus("9.0.0").board())
+    assert [c.name for c in snap.stackup.copper] == ["F.Cu", "GND_PLANE", "In2.Cu", "B.Cu"]

@@ -48,8 +48,9 @@ ADDED = {
 }
 GROUPS_ADDED = (10, 0, 0)          # KOT_PCB_GROUP in GetItems
 
-# Versions worth testing: each is the first with something KiPI uses, plus the latest.
-VERSIONS = ["9.0.0", "9.0.1", "9.0.3", "9.0.5", "9.0.8", "10.0.0", "10.0.1", "10.0.6"]
+# Versions worth testing: each is the first with something KiPI uses, the latest, and
+# 9.0.7 (the last without GetBoardLayerName, as reported by a user).
+VERSIONS = ["9.0.0", "9.0.1", "9.0.3", "9.0.5", "9.0.7", "9.0.8", "10.0.0", "10.0.1", "10.0.6"]
 
 
 def parse(version: str) -> Tuple[int, ...]:
@@ -212,8 +213,9 @@ class FakeKiCad:
         name = type(cmd).__name__
         self.calls.append(name)
         if self.version < ADDED.get(name, (0,)):
-            raise ApiError(f"no handler available for request of type {name}",
-                           code=ApiStatusCode.AS_UNHANDLED)
+            # Exactly what kipy raises for KiCad's reply (KICAD_API_SERVER::handleApiEvent).
+            raise ApiError("KiCad returned error: no handler available for request of type "
+                           f"{cmd.DESCRIPTOR.full_name}", code=ApiStatusCode.AS_UNHANDLED)
         handler = getattr(self, "_" + name, None)
         if handler is None:
             raise NotImplementedError(f"fake KiCad does not answer {name}")

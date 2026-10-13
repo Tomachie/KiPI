@@ -143,10 +143,16 @@ def _poly(pwh) -> Poly:
 # ---------------------------------------------------------------------------
 
 def _unsupported(e: Exception) -> bool:
-    """True if KiCad does not know the request: it is older than the command."""
+    """True if KiCad does not know the request: it is older than the command.
+
+    KiCad answers such a request with ``AS_UNHANDLED`` and the message "no handler
+    available for request of type ..." (``KICAD_API_SERVER::handleApiEvent``). Either is
+    taken as the sign, in case a release reports the status differently.
+    """
     from kipy.errors import ApiError
     from kipy.proto.common.envelope_pb2 import ApiStatusCode
-    return isinstance(e, ApiError) and e.code == ApiStatusCode.AS_UNHANDLED
+    return isinstance(e, ApiError) and (e.code == ApiStatusCode.AS_UNHANDLED
+                                        or "no handler available" in str(e))
 
 
 def _stackup_copper(stackup_layers) -> Dict[int, str]:
