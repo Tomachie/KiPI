@@ -24,8 +24,10 @@ def main() -> int:
         kicad, board = connect(progress=ProgressReporter())
     except ExtractionError as e:
         os.environ.setdefault("QT_API", "pyside6")
-        from qtpy.QtWidgets import QApplication, QMessageBox
-        _app = QApplication.instance() or QApplication(sys.argv)  # must outlive the box
+        from qtpy.QtWidgets import QMessageBox
+
+        from kipi.gui.identity import make_app
+        _app = make_app()  # must outlive the box
         QMessageBox.critical(None, "KiPI", f"{e}\n\nLog: {kipi_app.LOG_PATH}")
         return 1
     return run(kicad=kicad, board=board)

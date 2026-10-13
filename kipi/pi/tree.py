@@ -149,10 +149,12 @@ class VrmReport:
     p_in: Optional[float]
     v_ground_sense: Optional[float] = None   # at the ground sense pins, if any
     phases: List[PhaseReport] = field(default_factory=list)   # multi-phase VRMs only
+    current_limit_a: Optional[float] = None   # total output current limit, if one is set
+    passed: Optional[bool] = None             # |I out| within the limit
 
     def __setstate__(self, state):
-        # Results files saved before multi-phase VRMs have no phases.
-        self.__dict__.update({"phases": [], **state})
+        # Results files saved before multi-phase VRMs or current limits lack those fields.
+        self.__dict__.update({"phases": [], "current_limit_a": None, "passed": None, **state})
 
     @property
     def p_loss(self) -> Optional[float]:
@@ -498,13 +500,16 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         vis, iis = (v_in[v.name], i_in[v.name]) if has_in else ([None] * n, [None] * n)
         phases = [PhaseReport(k + 1, v_out[v.name][k], i_out[v.name][k], vis[k], iis[k])
                   for k in range(n)]
+        i_total = sum(i_out[v.name])
+        limit = v.current_limit_a
         out.vrms.append(VrmReport(
             v.name, v.kind, label_of(groups[v.output.net]), v.voltage,
-            float(np.mean(v_out[v.name])), v_sense.get(v.name), sum(i_out[v.name]),
+            float(np.mean(v_out[v.name])), v_sense.get(v.name), i_total,
             float(np.mean(vis)) if has_in else None, sum(iis) if has_in else None,
             sum(ph.p_out for ph in phases),
             sum(ph.p_in for ph in phases) if has_in else None,
-            v_gsense.get(v.name), phases if n > 1 else []))
+            v_gsense.get(v.name), phases if n > 1 else [], limit,
+            None if limit is None else abs(i_total) <= limit))
     out.solve_s = time.perf_counter() - t0
     progress.info(f"Power tree solved: {len(order)} rail(s), {len(ground_groups)} ground(s) "
                   f"in {out.solve_s:.2f} s")

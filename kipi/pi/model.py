@@ -64,6 +64,8 @@ class Vrm:
     # Phases 2..N of a multi-phase VRM (empty = single phase). Each phase carries
     # 1/N of the output current; sense and ground sense are shared by all phases.
     phases: List[VrmPhase] = field(default_factory=list)
+    # PASS if the total output current (all phases) is at most this many amps.
+    current_limit_a: Optional[float] = None
 
     def all_phases(self) -> List[VrmPhase]:
         return [VrmPhase(self.output, self.input, self.ground), *self.phases]
@@ -149,7 +151,8 @@ class PISetup:
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")),
                       ground_sense=pin(v.get("ground_sense")),
                       phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
-                                       pin(ph.get("ground"))) for ph in v.get("phases", [])])
+                                       pin(ph.get("ground"))) for ph in v.get("phases", [])],
+                      current_limit_a=v.get("current_limit_a"))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
@@ -278,6 +281,8 @@ def validate(setup: PISetup) -> List[str]:
                           "(that is what connects it into the power tree)")
         if v.kind == "smps" and not (0 < v.efficiency <= 1):
             errors.append(f"VRM {v.name}: efficiency must be between 0 and 1")
+        if v.current_limit_a is not None and not v.current_limit_a > 0:
+            errors.append(f"VRM {v.name}: the output current limit must be positive")
         if v.sense and groups[v.sense.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: sense pins must be on the output net (or nets "
                           "DC-connected to it)")

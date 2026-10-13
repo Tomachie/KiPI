@@ -23,7 +23,8 @@
         ]
       },
       "ground_sense": null,
-      "phases": []
+      "phases": [],
+      "current_limit_a": null
     },
     {
       "name": "U1",
@@ -136,7 +137,8 @@
             ]
           }
         }
-      ]
+      ],
+      "current_limit_a": null
     }
   ],
   "loads": [

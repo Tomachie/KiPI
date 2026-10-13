@@ -32,3 +32,24 @@ def test_ticking_nets_does_not_edit_the_selected_items(app):
     panel.load_list.lst.setCurrentRow(0)
     panel.set_nets(["VIN"])
     assert setup.to_dict() == before
+
+
+def test_vrm_current_limit_edits_and_shows_in_results(app):
+    from kipi.pi.tree import solve_tree
+    setup = two_phase()
+    panel = PIPanel()
+    panel.set_board(board(), setup, "test")
+    panel.vrm_list.lst.setCurrentRow(1)
+    ed = panel.vrm_list.editor
+    assert ed.i_limit.value() == 0 and ed.i_limit.text() == "no limit"
+    ed.i_limit.setValue(1.5)
+    assert setup.vrms[1].current_limit_a == 1.5
+    tree = solve_tree(board(), setup)
+    panel.show_results(tree, next(iter(tree.groups)))
+    t = panel.tbl_vrms
+    row = {t.item(r, 0).text(): r for r in range(t.rowCount())}
+    assert t.item(row["U1"], 8).text() == "1.5" and t.item(row["U1"], 9).text() == "FAIL"
+    assert t.item(row["J1"], 9).text() == ""
+    ed.i_limit.setValue(0)
+    assert setup.vrms[1].current_limit_a is None
+    panel.close()

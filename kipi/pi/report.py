@@ -141,9 +141,10 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
     out.append(_write(folder / f"{stem}_vrms.csv",
                       ["vrm", "type", "group", "v_set_V", "v_out_V", "v_sense_V",
                        "v_ground_sense_V", "i_out_A", "v_in_V", "i_in_A", "p_out_W", "p_in_W",
-                       "p_loss_W"],
+                       "p_loss_W", "i_limit_A", "result"],
                       [[v.name, v.kind, v.group, v.v_set, v.v_out, v.v_sense, v.v_ground_sense,
-                        v.i_out, v.v_in, v.i_in, v.p_out, v.p_in, v.p_loss]
+                        v.i_out, v.v_in, v.i_in, v.p_out, v.p_in, v.p_loss, v.current_limit_a,
+                        "" if v.passed is None else ("PASS" if v.passed else "FAIL")]
                        for v in tree.vrms]))
     if any(v.phases for v in tree.vrms):
         out.append(_write(folder / f"{stem}_vrm_phases.csv",

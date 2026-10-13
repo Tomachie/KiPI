@@ -205,15 +205,14 @@ def _install_excepthooks():
 
 def run(kicad=None, board=None, snapshot=None) -> int:
     os.environ.setdefault("QT_API", "pyside6")
-    from qtpy.QtWidgets import QApplication
-
+    from kipi.gui.identity import make_app, tag_window
     from kipi.gui.main_window import MainWindow
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("KiPI")
+    app = make_app()
     app.setStyle("Fusion")
     win = MainWindow(kicad=kicad, board=board, snapshot=snapshot)
     win.show()
+    tag_window(win)
     code = app.exec()
     task = getattr(win, "_task", None)
     if task is not None and task.isRunning():

@@ -275,6 +275,10 @@ class VrmEditor(_Editor):
         self.voltage = _spin(-1000, 1000, 3.3, 4, " V", 0.1)
         self.eff = _spin(1, 100, 90, 1, " %", 1)
         self.iq = _spin(0, 10000, 0, 3, " mA", 0.1)
+        self.i_limit = _spin(0, 10000, 0, 3, " A", 0.1)
+        self.i_limit.setSpecialValueText("no limit")
+        self.i_limit.setToolTip("PASS if the VRM's total output current (all phases) is at "
+                                "most this")
         self.input = self._picker(optional=True)
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
@@ -292,6 +296,7 @@ class VrmEditor(_Editor):
         f.addRow("Set voltage", self.voltage)
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
+        f.addRow("Output current limit", self.i_limit)
         f.addRow("Phases", self.n_phases)
         f.addRow("Edit phase", self.cmb_phase)
         f.addRow("Output pins", self.output)
@@ -299,7 +304,7 @@ class VrmEditor(_Editor):
         f.addRow("Ground pins", self.ground)
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
-        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq)
+        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq, self.i_limit)
         self.kind.currentIndexChanged.connect(self._kind_rows)
         self.n_phases.valueChanged.connect(self._phase_count_changed)
         self.cmb_phase.currentIndexChanged.connect(self._phase_selected)
@@ -359,6 +364,7 @@ class VrmEditor(_Editor):
         self.voltage.setValue(v.voltage)
         self.eff.setValue(v.efficiency * 100)
         self.iq.setValue(v.quiescent_a * 1e3)
+        self.i_limit.setValue(v.current_limit_a or 0.0)
         self.n_phases.setValue(len(v.phases) + 1)
         self._phase = 0
         self._phase_rows()
@@ -373,6 +379,7 @@ class VrmEditor(_Editor):
         v.voltage = self.voltage.value()
         v.efficiency = self.eff.value() / 100
         v.quiescent_a = self.iq.value() / 1e3
+        v.current_limit_a = self.i_limit.value() or None
         v.sense = self.sense.value()
         v.ground_sense = self.ground_sense.value()
         phases = v.all_phases()
@@ -783,7 +790,7 @@ class PIPanel(QWidget):
                                   "a remote-sensed VRM's output pins. The worst pin is the one "
                                   "furthest from the set point either way.")
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
-                                     "P in (W)", "Loss (W)"], sortable=True)
+                                     "P in (W)", "Loss (W)", "I limit (A)", ""], sortable=True)
         self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"],
                                       sortable=True)
         self.txt_notes = QTextBrowser(g_res)
@@ -1224,8 +1231,12 @@ class PIPanel(QWidget):
         r = 0
         for v in tree.vrms:                       # each VRM, then a row per phase under it
             kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases)} phases"
+            status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
             set_row(t, r, [v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
-                           f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g")])
+                           f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g"),
+                           f(v.current_limit_a, "g"), status])
+            if v.passed is not None:
+                t.item(r, 9).setForeground(QColor("#60d060" if v.passed else "#ff6060"))
             parent = r
             for p in v.phases:
                 r += 1
