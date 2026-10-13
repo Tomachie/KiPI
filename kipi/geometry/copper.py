@@ -19,7 +19,7 @@ import shapely
 from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from kipi.kicad_io.extract import _arc_points
+from kipi.kicad_io.convert import arc_points as _arc_points
 from kipi.model.board import BoardSnapshot, Poly
 from kipi.progress import NULL, ProgressReporter
 

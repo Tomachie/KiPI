@@ -105,8 +105,9 @@ def solve_electrothermal(snap: BoardSnapshot, setup: PISetup, thermal: ThermalSe
     for it in range(1, n + 1):
         progress.check_cancel()
         progress.stage(f"Electro-thermal iteration {it}/{n}")
-        sampler = None if it == 1 else model.sampler(temps)
-        tree = solve_tree(snap, setup, progress, temperature=sampler, mesh_cache=meshes)
+        # Iteration 1 solves the copper at ambient, not at the 20 degC reference.
+        tree = solve_tree(snap, setup, progress, temperature=model.sampler(temps),
+                          mesh_cache=meshes)
         xy, w = heat_sources(tree, snap, setup)
         heat = model.empty_heat()
         model.deposit(heat, xy, w)

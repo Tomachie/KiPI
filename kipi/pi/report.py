@@ -122,8 +122,7 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                        "result"],
                       [[l.name, l.group, l.current, l.nominal, l.v_supply, l.v_supply_min,
                         l.v_ground, l.v_effective, l.drop * 1e3, l.drop_pct, l.drop_worst * 1e3,
-                        l.drop_worst_pct, l.tolerance_pct,
-                        "" if l.passed is None else ("PASS" if l.passed else "FAIL")]
+                        l.drop_worst_pct, l.tolerance_pct, l.verdict]
                        for l in tree.loads]))
     out.append(_write(folder / f"{stem}_load_pin_groups.csv",
                       ["load", "pin_group", "current_A", "v_mean_V", "v_min_V"],
