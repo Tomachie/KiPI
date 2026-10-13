@@ -16,7 +16,7 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
 
 ![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
 
-**Status: 0.6.0 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
+**Status: 0.6.5 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
 
 ## Install
 
@@ -42,8 +42,9 @@ Open your board in the PCB editor and click the **KiPI** toolbar button. KiPI op
 own window and reads the board through the KiCad API; the log at the bottom streams each
 stage as it runs.
 
-* **Refill zones** (toolbar, on by default) refills every zone in KiCad before reading, so
-  the zone fills KiPI sees match your current routing. KiPI analyzes filled copper only.
+* **Refill zones** (toolbar, on by default) refills every zone in KiCad and waits for the fill
+  to finish before reading, so the zone fills KiPI sees match your current routing. KiPI
+  analyzes filled copper only.
 * **Load from KiCad** re-reads the board after you edit it, and reloads the saved PI setup
   (save first if you have unsaved changes).
 * **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
@@ -71,7 +72,9 @@ Below that:
   via in the PCB editor.
 
 Toolbar buttons set **Top / Bottom / Iso** views and save a **Screenshot…**. Drag to rotate,
-scroll to zoom and shift-drag (or middle-drag) to pan.
+scroll to zoom and shift-drag (or middle-drag) to pan. **About** shows the KiPI version and
+project links, and **Copy version info** copies the versions of KiPI, Python and its
+libraries for a bug report.
 
 ![Stackup cut along Y with 15× Z scale, showing the inner planes and via barrels](docs/images/stackup_cut.png)
 
@@ -91,6 +94,7 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Output pins, Set voltage | Where it drives, and to what voltage |
 | Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
+| Output current limit | Optional: the VRM PASSes if its total output current (all phases) is at most this. Leave at **no limit** to skip the check. |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
@@ -127,9 +131,12 @@ To try it without a design of your own, open the example board in
 
 **DC connections tab**: parts that pass DC from one net to another, such as sense
 resistors, ferrite beads, fuses, load switches and 0 Ω links. Give **Side A pins**,
-**Side B pins** and a **Resistance**. Nets joined this way are solved together as one group,
-and each group may hold only one VRM. A net with no connection to its VRM is reported, not
-guessed at.
+**Side B pins** and a **Resistance**. A new connection starts on a part that bridges the first
+two ticked nets, if there is one. When both sides are on the same resistor (reference `R…`),
+the resistance is read from its value field: `10m`, `0.005`, `4k7`, `0R1`, `5 mΩ` and the like
+all work, and anything after the value (`1% 0603`) is ignored. You can still type your own.
+Nets joined this way are solved together as one group, and each group may hold only one VRM.
+A net with no connection to its VRM is reported, not guessed at.
 
 **Mesh tab**: **Max edge** is the largest triangle edge in mm; smaller is more accurate and
 slower. **Via grading** controls how fast the mesh refines towards plated holes, and
@@ -192,8 +199,15 @@ solved, the ground under a load rises above 0 V, so a supply plane can read abov
 point even though a remotely sensed rail is exactly on target. The Loads tab's effective
 voltage (supply minus ground at the load) is the figure to compare with the set point.
 
-Click any point on the copper or any via to probe it. **Show copper** returns to the plain
-geometry view without any results.
+The color scale covers the copper layers that are shown: untick a layer under **Copper
+layers** and the colors stretch over the layers that remain, so one layer's outlier does not
+flatten the rest. (Current and power density clip at the 99.5th percentile, since pad corners
+spike; the probe still reports true values.)
+
+Click any point on the copper or any via to probe it: the Info box gives the voltage, its drop
+or boost from the set point, current and power density, and the pad or via hit. **Show
+copper** returns to the plain geometry view; pick the group again, or another field, to get
+the results back.
 
 ![Voltage across the +3.3V plane, with the Loads results table](docs/images/voltage.png)
 
@@ -208,7 +222,7 @@ Result tabs (click a column header to sort by it; click again to reverse):
 | Tab | Shows |
 |---|---|
 | Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, plus conversion loss, with a row per phase for multi-phase VRMs |
+| VRMs | Output and input voltage, current and power, conversion loss, and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
 | DC connections | Current and loss in each series part |
 | Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, DC connections and VRM conversion |
@@ -216,7 +230,8 @@ Result tabs (click a column header to sort by it; click again to reverse):
 
 **Export ▾** writes the tables as CSV, the 3D results as a ParaView `.vtm`, or **Save
 results…** as a `.kipi-results` file, which the toolbar's **Open results…** reloads without
-solving again. Results files are Python pickles, so only open ones you created.
+solving again (load the board first). Results files are Python pickles, so only open ones
+you created.
 
 ### Tips and troubleshooting
 
@@ -229,7 +244,9 @@ solving again. Results files are Python pickles, so only open ones you created.
   but very fine traces are not.
 * **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
   15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
-  task runs longer than a minute, a stack dump of every thread. Attach both to bug reports.
+  task runs longer than a minute, a stack dump of every thread. If the window stops
+  responding during a task, the log records where the UI thread was stuck. Attach both
+  files, and the **About** dialog's version info, to bug reports.
 
 ## Development
 
