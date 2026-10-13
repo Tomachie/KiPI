@@ -315,6 +315,54 @@ def _outline(board, progress) -> List[Poly]:
                  holes=[list(r.coords)[:-1] for r in g.interiors]) for g in geoms]
 
 
+def _kicad_busy(board) -> bool:
+    """True if the PCB editor cannot serve board requests right now.
+
+    ``Ping`` is answered even while a zone fill runs, so it cannot tell when the fill
+    is done. A cheap ``GetItems`` goes through the editor's busy check: it returns
+    ``AS_BUSY`` while the fill runs, or times out if the fill blocks the event loop.
+    """
+    from kipy.errors import ApiError
+    from kipy.proto.common.envelope_pb2 import ApiStatusCode
+    from kipy.proto.common.types import KiCadObjectType
+
+    try:
+        board.get_items(KiCadObjectType.KOT_PCB_GROUP)
+    except ApiError as e:
+        if e.code == ApiStatusCode.AS_BUSY:
+            return True
+        raise
+    except OSError:     # transport timeout (kipy raises ConnectionError)
+        return True
+    return False
+
+
+def refill_and_wait(board, progress: ProgressReporter = NULL, timeout_s: float = 600.0,
+                    grace_s: float = 3.0, poll_s: float = 0.25) -> None:
+    """Refill all zones in KiCad and return once the fill has finished.
+
+    KiCad only queues the refill when it acknowledges the request, so the editor is
+    briefly idle before the fill starts. kipy's own ``refill_zones(block=True)`` polls
+    with ``Ping``, which succeeds in that window (and during the fill), so it returned
+    before the fill and the following reads hit ``AS_BUSY`` or timed out. Here we wait
+    until we have seen the editor busy and then idle again, or, for a fill too quick
+    to catch, until it has stayed idle for ``grace_s``.
+    """
+    board.refill_zones(block=False)
+    t0 = time.perf_counter()
+    seen_busy = False
+    while True:
+        progress.check_cancel()
+        time.sleep(poll_s)
+        elapsed = time.perf_counter() - t0
+        if _kicad_busy(board):
+            seen_busy = True
+        elif seen_busy or elapsed >= grace_s:
+            return
+        if elapsed > timeout_s:
+            raise ExtractionError(f"KiCad was still filling zones after {timeout_s:.0f} s")
+
+
 def extract_board(board, refill_zones: bool = False,
                   progress: ProgressReporter = NULL) -> BoardSnapshot:
     """Pull everything KiPI needs from an open kipy ``Board``."""
@@ -322,7 +370,7 @@ def extract_board(board, refill_zones: bool = False,
 
     if refill_zones:
         with progress.timed("Refilling zones"):
-            board.refill_zones(block=True, max_poll_seconds=120.0)
+            refill_and_wait(board, progress)
 
     with progress.timed("Reading stackup"):
         stackup = extract_stackup(board, progress)
