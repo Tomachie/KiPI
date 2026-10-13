@@ -26,6 +26,7 @@ from kipi.gui.pi_panel import PIPanel
 from kipi.gui.worker import QtProgress, Task
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import classify_nets, sorted_nets
+from kipi.pi.tree import fmt_drop
 
 log = logging.getLogger("kipi")
 
@@ -684,8 +685,8 @@ class MainWindow(QMainWindow):
             self._show_group(first)
             for l in tree.loads:
                 verdict = "" if l.passed is None else (" PASS" if l.passed else " FAIL")
-                self.log(f"  {l.name}: {l.drop * 1e3:.3f} mV drop ({l.drop_pct:.3f} %) "
-                         f"at {l.current:g} A{verdict}")
+                self.log(f"  {l.name}: {fmt_drop(l.drop)} ({abs(l.drop_pct):.3f} %), worst pin "
+                         f"{fmt_drop(l.drop_worst)} at {l.current:g} A{verdict}")
 
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
@@ -791,6 +792,14 @@ class MainWindow(QMainWindow):
             f"<table cellspacing=4><tr><th align=left>Layer</th><th>Cu</th><th>z mm</th></tr>"
             f"{rows}</table><br><i>Left-click copper in the 3D view to identify it.</i>")
 
+    def _probe_deviation(self, dv: float, v_ref: float) -> str:
+        """A probed point against its reference: drop or boost from a rail's set point, or
+        how far a ground sits from its 0 V reference."""
+        group = self._tree.groups.get(self.viewer.result.net) if self._tree else None
+        if group is not None and group.kind == "ground":
+            return f"{abs(dv) * 1e3:.4f} mV {'above' if dv <= 0 else 'below'} 0 V"
+        return f"{fmt_drop(dv, '.4f')} (from {v_ref:g} V)"
+
     def _nearest_layer(self, z: float):
         st = self.snapshot.stackup
         return min(st.copper, key=lambda c: abs(c.z_mid_mm - z))
@@ -852,12 +861,12 @@ class MainWindow(QMainWindow):
             cu = min(layers, key=lambda c: abs(c.z_mid_mm - z))
             val = scene.probe(cu.id, x, y)
             if val is not None:
-                probe_html = (f"<b>V = {val['V']:.6f} V</b> &nbsp; drop "
-                              f"<b>{val['drop_mV']:.4f} mV</b><br>"
+                dev = self._probe_deviation(val["drop_mV"] * 1e-3, scene.v_ref)
+                probe_html = (f"<b>V = {val['V']:.6f} V</b> &nbsp; <b>{dev}</b><br>"
                               f"|J| = {val['J']:.3f} A/mm² &nbsp; P = {val['P']:.4g} mW/mm²")
                 self.statusBar().showMessage(
                     f"{cu.name}  x={x:.3f} y={y:.3f}  V={val['V']:.6f}  "
-                    f"drop={val['drop_mV']:.4f} mV  |J|={val['J']:.3f} A/mm²")
+                    f"{dev}  |J|={val['J']:.3f} A/mm²")
 
         best_via = via_obj      # chosen by on-screen distance in _on_click
 

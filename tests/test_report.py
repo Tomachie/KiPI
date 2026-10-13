@@ -55,7 +55,8 @@ def test_csv_export(solved, tmp_path):
     with open(tmp_path / "t_loads.csv", encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
     assert rows[0]["load"] == "U2" and rows[0]["result"] in ("PASS", "FAIL")
-    assert float(rows[0]["drop_mV"]) == pytest.approx(tree.loads[0].drop * 1e3, rel=1e-6)
+    assert rows[0]["mean_is"] == "drop"
+    assert float(rows[0]["mean_mV"]) == pytest.approx(tree.loads[0].drop * 1e3, rel=1e-6)
 
 
 def test_vtk_export_and_results_round_trip(solved, tmp_path):

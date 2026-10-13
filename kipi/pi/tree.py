@@ -53,6 +53,24 @@ class GroupResult:
     iterations: int = 1
 
 
+BOOST_EPS = 1e-12          # volts; smaller deviations read as a (zero) drop, not a boost
+
+
+def drop_or_boost(dv: float):
+    """Split ``dv`` = nominal - actual into (magnitude, "drop" | "boost").
+
+    A load can sit above its VRM's set point: a remote-sensed VRM raises its output pins
+    to hold a sense point further down the copper, so pins nearer the VRM see a boost.
+    """
+    return (-dv, "boost") if dv < -BOOST_EPS else (max(dv, 0.0), "drop")
+
+
+def fmt_drop(dv: float, fmt: str = ".3f", scale: float = 1e3, unit: str = " mV") -> str:
+    """``dv`` (volts, nominal - actual) as e.g. "1.234 mV drop" or "0.567 mV boost"."""
+    mag, kind = drop_or_boost(dv)
+    return f"{mag * scale:{fmt}}{unit} {kind}"
+
+
 @dataclass
 class LoadReport:
     name: str
@@ -63,11 +81,22 @@ class LoadReport:
     v_supply_min: float
     v_ground: Optional[float]  # mean over the ground pins (None if not modeled)
     v_effective: float        # supply - ground
-    drop: float               # nominal - effective, volts
-    tolerance_pct: Optional[float]
+    drop: float               # nominal - effective, volts (negative: a boost)
+    tolerance_pct: Optional[float]       # +/- % of nominal
     passed: Optional[bool]               # judged on the worst pin
-    v_worst: float = 0.0                 # lowest supply pin minus highest ground pin
-    pin_groups: List[tuple] = field(default_factory=list)  # (name, A, V mean, V min)
+    v_worst: float = 0.0                 # whichever of v_low / v_high is further from nominal
+    # (name, A, V mean, V min, V max) per pin group
+    pin_groups: List[tuple] = field(default_factory=list)
+    v_low: Optional[float] = None        # lowest supply pin minus highest ground pin
+    v_high: Optional[float] = None       # highest supply pin minus lowest ground pin
+
+    def __setstate__(self, state):
+        # Results files saved before boosts were reported: only the lowest pin is known,
+        # and pin groups have no highest pin.
+        state = {"v_low": state.get("v_worst"), "v_high": None, **state}
+        state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
+                               for g in state.get("pin_groups", [])]
+        self.__dict__.update(state)
 
     @property
     def drop_pct(self) -> float:
@@ -75,6 +104,7 @@ class LoadReport:
 
     @property
     def drop_worst(self) -> float:
+        """Nominal minus the worst pin, volts (negative: a boost)."""
         return self.nominal - self.v_worst
 
     @property
@@ -420,9 +450,13 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
                              f"(last change {change:.2e} V)")
     if tree_pass > 1:
         progress.info(f"Ground sense: converged in {tree_pass} power-tree passes")
+    set_point = {v.name: v.voltage for v in setup.vrms}
     for label, nets, kind, drv, mesh, sol, it in solved:
+        # Drop and boost on a rail are measured from its VRM's set point, not from the
+        # output pins (which remote sense moves); grounds from their 0 V reference.
+        ref = set_point[drv] if kind == "rail" else 0.0
         out.groups[label] = GroupResult(label, nets, kind, drv,
-                                        NetResult(mesh, sol, compute_fields(sol)), it)
+                                        NetResult(mesh, sol, compute_fields(sol, ref)), it)
     out.warnings.extend(pass_warnings)
 
     # ---------------------------------------------------------------- reports
@@ -434,26 +468,30 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
                   for pid in pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))]
         else:
             sp = pads(l.supply)
-        vs, vmin = _mean_v(sol, sp), _min_v(sol, sp)
-        vg = vg_max = None
+        vs, vmin, vmax = _mean_v(sol, sp), _min_v(sol, sp), _max_v(sol, sp)
+        vg = vg_min = vg_max = None
         if l.ground:
             gsol = ground_solutions[groups[l.ground.net]]
             gp = pads(l.ground)
-            vg, vg_max = _mean_v(gsol, gp), _max_v(gsol, gp)
+            vg, vg_min, vg_max = _mean_v(gsol, gp), _min_v(gsol, gp), _max_v(gsol, gp)
         eff = vs - (vg or 0.0)
-        worst = vmin - (vg_max or 0.0)
+        low = vmin - (vg_max or 0.0)
+        high = vmax - (vg_min or 0.0)
         nominal = driver[g].voltage
+        # The worst pin is the one furthest from nominal, below (drop) or above (boost).
+        worst = low if nominal - low >= high - nominal else high
         drop = nominal - eff
         passed = None
         if l.tolerance_pct is not None and nominal:
-            passed = 100.0 * (nominal - worst) / nominal <= l.tolerance_pct
+            passed = 100.0 * abs(nominal - worst) / nominal <= l.tolerance_pct
         pin_groups = []
         for grp in l.groups:
             gp_ids = pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))
             pin_groups.append((grp.name or ",".join(grp.pins), grp.current,
-                               _mean_v(sol, gp_ids), _min_v(sol, gp_ids)))
+                               _mean_v(sol, gp_ids), _min_v(sol, gp_ids), _max_v(sol, gp_ids)))
         out.loads.append(LoadReport(l.name, label_of(g), l.total_current(), nominal, vs, vmin,
-                                    vg, eff, drop, l.tolerance_pct, passed, worst, pin_groups))
+                                    vg, eff, drop, l.tolerance_pct, passed, worst, pin_groups,
+                                    low, high))
     for v in setup.vrms:
         n = len(v.phases) + 1
         has_in = v.name in v_in

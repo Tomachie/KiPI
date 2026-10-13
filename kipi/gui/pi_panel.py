@@ -26,6 +26,7 @@ from qtpy.QtWidgets import (
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
 from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
+from kipi.pi.tree import fmt_drop
 from kipi.viz.results import FIELDS
 
 NONE = "(none)"
@@ -420,9 +421,10 @@ class LoadEditor(_Editor):
         self.lbl_total = QLabel()
         self.ground = self._picker(optional=True)
         self.tol = _spin(0, 100, 0, 2, " %", 0.5)
+        self.tol.setPrefix("± ")
         self.tol.setSpecialValueText("no limit")
-        self.tol.setToolTip("PASS if the worst supply pin's drop is within this % of the "
-                            "VRM set voltage")
+        self.tol.setToolTip("PASS if every supply pin is within ± this % of the VRM set "
+                            "voltage: no pin drops below it or is boosted above it by more")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -431,7 +433,7 @@ class LoadEditor(_Editor):
         f.addRow(gb)
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
-        f.addRow("Max drop", self.tol)
+        f.addRow("Tolerance", self.tol)
         self._watch(self.name, self.current, self.tol, self.mode)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
@@ -773,8 +775,12 @@ class PIPanel(QWidget):
         row.addWidget(b_export)
         lr.addLayout(row)
         self.res_tabs = QTabWidget(g_res)
-        self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)", "Drop (mV)",
-                                      "Worst pin (mV)", "Worst %", "Limit %", ""])
+        self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
+                                      "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
+                                      "Tolerance %", ""])
+        self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
+                                  "a remote-sensed VRM's output pins. The worst pin is the one "
+                                  "furthest from the set point either way.")
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
                                      "P in (W)", "Loss (W)"])
         self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"])
@@ -1204,9 +1210,9 @@ class PIPanel(QWidget):
             status = "" if l.passed is None else ("PASS" if l.passed else "FAIL")
             color = None if l.passed is None else ("#60d060" if l.passed else "#ff6060")
             for c, text in enumerate([l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
-                                      f"{l.drop * 1e3:.3f}", f"{l.drop_worst * 1e3:.3f}",
-                                      f"{l.drop_worst_pct:.3f}",
-                                      "" if l.tolerance_pct is None else f"{l.tolerance_pct:g}",
+                                      fmt_drop(l.drop, unit=""), fmt_drop(l.drop_worst, unit=""),
+                                      f"{abs(l.drop_worst_pct):.3f}",
+                                      "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}",
                                       status]):
                 put(self.tbl_loads, r, c, text, color if c == 8 else None)
         f = lambda x, fmt: "" if x is None else format(x, fmt)
@@ -1249,9 +1255,11 @@ class PIPanel(QWidget):
         for l in tree.loads:
             if l.pin_groups:
                 notes.append(f"<b>{html.escape(l.name)}</b> pin groups:")
-                for name, amps, vmean, vmin in l.pin_groups:
+                for name, amps, vmean, vmin, vmax in l.pin_groups:
+                    span = (f"lowest pin {vmin:.5f} V" if vmax is None
+                            else f"pins {vmin:.5f} to {vmax:.5f} V")
                     notes.append(f"&nbsp;&nbsp;{html.escape(name)}: {amps:.4g} A, "
-                                 f"{vmean:.5f} V (lowest pin {vmin:.5f} V)")
+                                 f"{vmean:.5f} V, {fmt_drop(l.nominal - vmean)} ({span})")
         notes += [f"⚠ {html.escape(w)}" for w in tree.warnings]
         self.txt_notes.setHtml("<br>".join(notes))
         self._set_temperature_field(getattr(tree, "thermal", None) is not None)

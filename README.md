@@ -116,7 +116,10 @@ To try it without a design of your own, open the example board in
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
-* **Max drop** (%) is the PASS/FAIL limit. Each load is judged by its worst pin.
+* **Tolerance** (± %) is the PASS/FAIL limit. Each load is judged by its worst pin: the one
+  furthest from the VRM set point, below it (a **drop**) or above it (a **boost**). Boosts
+  happen with remote sense, where the VRM raises its output pins to hold a sense point
+  further down the copper, so pins nearer the VRM sit above the set point.
 
 | Loads tab | Thermal tab |
 |---|---|
@@ -204,7 +207,7 @@ Result tabs:
 
 | Tab | Shows |
 |---|---|
-| Loads | Each load's current, effective voltage, drop, worst pin and PASS/FAIL. Double-click to show its group. |
+| Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
 | VRMs | Output and input voltage, current and power, plus conversion loss, with a row per phase for multi-phase VRMs |
 | DC connections | Current and loss in each series part |
 | Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |

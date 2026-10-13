@@ -90,7 +90,7 @@ class Load:
     supply: PinRef
     current: float
     ground: Optional[PinRef] = None
-    tolerance_pct: Optional[float] = None   # pass if the worst pin's drop is within this %
+    tolerance_pct: Optional[float] = None   # pass if every pin is within +/- this % of nominal
     # Empty: ``current`` is split equally across the supply pins. Otherwise each group
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)

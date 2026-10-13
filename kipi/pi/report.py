@@ -22,6 +22,7 @@ from typing import Dict, List, Optional
 import numpy as np
 
 from kipi.model.board import BoardSnapshot
+from kipi.pi.tree import drop_or_boost
 
 RESULTS_FORMAT = 1
 
@@ -115,20 +116,28 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     out = []
+    # Deviations from nominal are written as a positive magnitude plus "drop" (below
+    # nominal) or "boost" (above it).
+    def dev(dv, pct):
+        mag, kind = drop_or_boost(dv)
+        return [mag * 1e3, abs(pct), kind]
+
     out.append(_write(folder / f"{stem}_loads.csv",
                       ["load", "group", "current_A", "nominal_V", "v_supply_mean_V",
-                       "v_supply_min_V", "v_ground_mean_V", "v_effective_V", "drop_mV",
-                       "drop_pct", "worst_pin_drop_mV", "worst_pin_drop_pct", "limit_pct",
+                       "v_supply_min_V", "v_ground_mean_V", "v_effective_V", "v_lowest_pin_V",
+                       "v_highest_pin_V", "mean_mV", "mean_pct", "mean_is", "worst_pin_V",
+                       "worst_pin_mV", "worst_pin_pct", "worst_pin_is", "tolerance_pct",
                        "result"],
                       [[l.name, l.group, l.current, l.nominal, l.v_supply, l.v_supply_min,
-                        l.v_ground, l.v_effective, l.drop * 1e3, l.drop_pct, l.drop_worst * 1e3,
-                        l.drop_worst_pct, l.tolerance_pct,
+                        l.v_ground, l.v_effective, l.v_low, l.v_high,
+                        *dev(l.drop, l.drop_pct), l.v_worst,
+                        *dev(l.drop_worst, l.drop_worst_pct), l.tolerance_pct,
                         "" if l.passed is None else ("PASS" if l.passed else "FAIL")]
                        for l in tree.loads]))
     out.append(_write(folder / f"{stem}_load_pin_groups.csv",
-                      ["load", "pin_group", "current_A", "v_mean_V", "v_min_V"],
-                      [[l.name, n, a, vm, vmin] for l in tree.loads
-                       for n, a, vm, vmin in l.pin_groups]))
+                      ["load", "pin_group", "current_A", "v_mean_V", "v_min_V", "v_max_V"],
+                      [[l.name, n, a, vm, vmin, vmax] for l in tree.loads
+                       for n, a, vm, vmin, vmax in l.pin_groups]))
     out.append(_write(folder / f"{stem}_vrms.csv",
                       ["vrm", "type", "group", "v_set_V", "v_out_V", "v_sense_V",
                        "v_ground_sense_V", "i_out_A", "v_in_V", "i_in_A", "p_out_W", "p_in_W",
