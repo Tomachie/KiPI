@@ -114,6 +114,21 @@ class TomachiePdnImporter:
         return v
 
     # ------------------------------------------------------------ sources
+    def _source_pins(self, src: dict, what: str):
+        """The source's output pins. A pin the file names by its pin name (``J9_VBUS``)
+        rather than its pad number is not found among the pads; the file also names the
+        part and the net it drives, so its pads on that board net are used, and said so."""
+        out = self.idx.pin_ref(src.get("pins", []), self.notes, what)
+        ref, net = src.get("refdes"), src.get("output_net")
+        if out is not None or not ref or not net:
+            return out
+        board_net = self.idx.board_net(net)
+        out = self.idx.part_on_net(ref, board_net) if board_net else None
+        if out is not None:
+            self.notes.append(f"{what}: using {ref}'s pads on its output net {board_net} "
+                              f"({', '.join(out.pins)})")
+        return out
+
     def _board_sources(self):
         for name, r in self.rails.items():
             src = r["source"]
@@ -122,10 +137,12 @@ class TomachiePdnImporter:
                 self.skipped_rails.add(name)
             elif src["role"] in SOURCE_ROLES:
                 v = self._voltage(r)
-                out = self.idx.pin_ref(src.get("pins", []), self.notes, f"Source of {name}")
+                out = self._source_pins(src, f"Source of {name}")
                 if v is None:
                     continue
                 if out is None:
+                    self.notes.append(f"Rail {name}: source {src.get('refdes') or '?'} not "
+                                      "found on the board; its loads are not imported")
                     self.skipped_rails.add(name)
                     continue
                 self.setup.vrms.append(Vrm(self._unique(f"{src.get('refdes') or name} {name}"),
@@ -161,8 +178,13 @@ class TomachiePdnImporter:
                 continue
             reg = self.regulators.get(src.get("refdes", ""))
             v = self._voltage(r)
-            out = self.idx.pin_ref(src.get("pins", []), self.notes, f"{src.get('refdes')} output")
+            out = self._source_pins(src, f"{src.get('refdes')} output")
             if v is None or out is None or reg is None:
+                if v is not None:
+                    why = ("not listed among the regulators" if reg is None else
+                           "output pins not found on the board")
+                    self.notes.append(f"Rail {name}: regulator {src.get('refdes') or '?'} "
+                                      f"{why}; its loads are not imported")
                 self.skipped_rails.add(name)
                 continue
             kind, eff = self._regulator_kind(reg, name)
