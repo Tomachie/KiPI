@@ -83,10 +83,10 @@ def test_load_that_draws_what_it_drives_is_not_known():
 
 def test_source_pin_missing_from_the_board_leaves_out_what_it_powered():
     pdn = copy.deepcopy(PDN)
-    pdn["rails"][0]["source"]["pins"] = ["J1_VBUS"]
+    pdn["rails"][0]["source"].update(refdes="J5", pins=["J5_1"])   # no J5 on the board
     setup, notes = run(pdn)
     assert setup.vrms == [] and setup.loads == []
-    assert any("J1_VBUS not on the board" in n for n in notes)
+    assert any("J5_1 not on the board" in n for n in notes)
     assert any("U1 +3V3" in n and "left out" in n for n in notes)
     assert validate(setup) == []
 
@@ -125,3 +125,20 @@ def test_regulator_quiescent_dropout_and_input_range():
     setup, _ = run(pdn)
     u1 = by_name(setup.vrms, "U1 +3V3")
     assert (u1.quiescent_a, u1.dropout_v, u1.vin_min, u1.vin_max) == (6.5e-6, 0.29, 1.6, 6.0)
+
+
+def test_source_pin_named_by_pin_name_uses_the_parts_pads_on_its_output_net():
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][0]["source"]["pins"] = ["J1_VBUS"]     # a pin name, not a pad number
+    setup, notes = run(pdn)
+    j1 = by_name(setup.vrms, "J1 VIN")
+    assert (j1.output.ref, j1.output.net, j1.output.pins) == ("J1", "VIN", ["1"])
+    assert any("J1_VBUS not on the board" in n for n in notes)
+    assert any("J1's pads on its output net VIN" in n for n in notes)
+
+
+def test_rail_whose_source_is_not_on_the_board_is_noted():
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["source"].update(pins=[], output_net="NOWHERE")
+    _, notes = run(pdn)
+    assert any(n.startswith("Rail +3V3: regulator U1 output pins not found") for n in notes)
