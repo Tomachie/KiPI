@@ -179,6 +179,11 @@ In the **Results** group, choose a **net group** and a **field** to show in 3D:
 * **Via current**
 * **Temperature** (with thermal on)
 
+Voltages are measured against the source's ground pins (0 V). When ground returns are
+solved, the ground under a load rises above 0 V, so a supply plane can read above its VRM's set
+point even though a remotely sensed rail is exactly on target. The Loads tab's effective
+voltage (supply minus ground at the load) is the figure to compare with the set point.
+
 Click any point on the copper or any via to probe it. **Show copper** returns to the plain
 geometry view without any results.
 
@@ -235,6 +240,11 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 `requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
 only in `requirements-dev.txt`.
 
+CI runs ruff and the test suite on Windows and Linux for every push and pull request. The
+tests also solve the example board and check that its committed setup still matches
+`make_board.py`. After changing the generator, rerun
+`python examples/multiphase_buck/make_board.py` and commit both output files.
+
 ### Layout
 
 | Path | Purpose |
@@ -251,6 +261,7 @@ only in `requirements-dev.txt`.
 | `kipi/viz/` | PyVista mesh building and batching, result meshes (no Qt) |
 | `kipi/gui/` | PySide6 main window, embedded 3D viewer, worker threads |
 | `kipi/progress.py` | Progress/log reporting used by every pipeline stage |
+| `examples/` | Example boards as snapshots with their PI setups, and the scripts that generate them |
 
 ## License
 
