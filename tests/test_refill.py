@@ -38,10 +38,25 @@ def test_waits_past_idle_window_until_fill_done():
     assert b.refilled and b.polls == 6
 
 
-def test_quick_fill_returns_after_grace():
+class FakeClock:
+    """Stands in for ``time`` in extract, so the grace period does not depend on how
+    long a sleep really takes on a loaded CI runner."""
+
+    def __init__(self):
+        self.now = 0.0
+
+    def sleep(self, s):
+        self.now += s
+
+    def perf_counter(self):
+        return self.now
+
+
+def test_quick_fill_returns_after_grace(monkeypatch):
+    monkeypatch.setattr("kipi.kicad_io.extract.time", FakeClock())
     b = FakeBoard([])
-    refill_and_wait(b, poll_s=0.01, grace_s=0.05)
-    assert b.polls >= 2
+    refill_and_wait(b, poll_s=1, grace_s=5)
+    assert b.polls == 5
 
 
 def test_other_api_errors_propagate():

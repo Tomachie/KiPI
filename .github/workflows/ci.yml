@@ -11,9 +11,9 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -49,9 +49,9 @@ jobs:
       QT_QPA_PLATFORM: offscreen
       PYVISTA_OFF_SCREEN: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
           cache: pip
@@ -86,22 +86,25 @@ jobs:
   # KiCad installs the plugin's dependencies with pip, and users rarely have a compiler, so
   # every dependency needs a binary wheel for the Python their KiCad uses. Python 3.14
   # (Ubuntu 26.04, Fedora 43) is not covered yet: triangle and pyamg publish no 3.14 wheels.
-  # This job turns green when they do; until then it is informational.
+  # Until they do, a missing wheel is reported as a warning rather than failing the job.
   wheels:
     name: Binary wheels (Python ${{ matrix.python }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: true
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         python: ["3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
       - name: Install with binary wheels only
+        shell: bash
         run: |
           python -m pip install --upgrade pip
-          pip install --only-binary=:all: -r requirements.txt
+          if ! pip install --only-binary=:all: -r requirements.txt 2>&1 | tee pip.log; then
+            missing=$(grep -o 'No matching distribution found for [^ ]*' pip.log | sed 's/.* //' | sort -u | tr '\n' ' ')
+            echo "::warning title=No Python ${{ matrix.python }} wheels::${missing:-see the log}"
+          fi
