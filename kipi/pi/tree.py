@@ -61,7 +61,7 @@ class LoadReport:
     nominal: float            # set point of the VRM driving the group
     v_supply: float           # mean over the supply pins
     v_supply_min: float
-    v_ground: Optional[float]  # mean over the ground pins (None if not modelled)
+    v_ground: Optional[float]  # mean over the ground pins (None if not modeled)
     v_effective: float        # supply - ground
     drop: float               # nominal - effective, volts
     tolerance_pct: Optional[float]

@@ -23,7 +23,7 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
 * **Mesh.** Use `triangle` (Shewchuk; win/cp311 wheels exist) with quality and max-area constraints,
   refined near pads, vias and narrow necks. Conforming triangles resolve thin traces cheaply
   and stay coarse in planes.
-* **Element.** Sheet conductance σt. The P1 stiffness is σt·(bbᵀ+ccᵀ)/(4A), vectorised in numpy.
+* **Element.** Sheet conductance σt. The P1 stiffness is σt·(bbᵀ+ccᵀ)/(4A), vectorized in numpy.
 * **Vias / PTH.** Punch the drill hole in each layer mesh and tie the hole-edge nodes to a barrel
   node with the barrel resistance ρh / (π(d·tp − tp²)).
 * **Pads.** Each pad is an equipotential terminal region (star coupling, as in padne).

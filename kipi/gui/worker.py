@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from qtpy.QtCore import QObject, QThread, Signal
 
-from kipi.progress import Cancelled, ProgressReporter
+from kipi.progress import Canceled, ProgressReporter
 
 
 class QtProgress(QObject, ProgressReporter):
@@ -44,7 +44,7 @@ class Task(QThread):
 
     done = Signal(object)
     failed = Signal(str)
-    cancelled = Signal()
+    canceled = Signal()
 
     def __init__(self, fn: Callable[[ProgressReporter], Any], progress: QtProgress, parent=None):
         super().__init__(parent)
@@ -54,9 +54,9 @@ class Task(QThread):
     def run(self):
         try:
             result = self._fn(self.progress)
-        except Cancelled:
-            self.progress.warn("Cancelled")
-            self.cancelled.emit()
+        except Canceled:
+            self.progress.warn("Canceled")
+            self.canceled.emit()
         except Exception as e:  # noqa: BLE001 - surface every failure in the log
             self.progress.error(f"{type(e).__name__}: {e}")
             self.failed.emit(traceback.format_exc())

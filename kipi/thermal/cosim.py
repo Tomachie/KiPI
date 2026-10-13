@@ -26,7 +26,7 @@ from kipi.thermal.model import BoardThermalModel, ThermalSettings
 @dataclass
 class ThermalResult:
     settings: ThermalSettings
-    x: np.ndarray                 # grid cell centres, KiCad mm
+    x: np.ndarray                 # grid cell centers, KiCad mm
     y: np.ndarray
     temps: np.ndarray             # (ny, nx) degC, NaN outside the board
     history: List[dict] = field(default_factory=list)   # per iteration: t_max, dt_max

@@ -131,7 +131,7 @@ def _thermal_map(th, outline) -> str:
 
 
 def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
-    """Interactive 3D view of one group: copper coloured by voltage, plus vias."""
+    """Interactive 3D view of one group: copper colored by voltage, plus vias."""
     import plotly.graph_objects as go
     import plotly.io as pio
     import pyvista as pv
@@ -139,9 +139,9 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
     st = snap.stackup
     total = sum(len(lr.tris) for lr in scene.layers.values()) or 1
     keep = min(1.0, TRIANGLE_BUDGET / total)
-    # Colour range from the 1st-99th percentile of node voltages: a small high-voltage
+    # Color range from the 1st-99th percentile of node voltages: a small high-voltage
     # net (e.g. a regulator's switch node in the same group) would otherwise flatten the
-    # planes into one colour. Hover still shows exact values.
+    # planes into one color. Hover still shows exact values.
     allv = np.concatenate([lr.node_v[np.isfinite(lr.node_v)] for lr in scene.layers.values()])
     vmin, vmax = (np.percentile(allv, [1, 99]) if len(allv) else scene.ranges["voltage"])
     vmin, vmax = float(vmin), float(max(vmax, vmin + 1e-9))
@@ -331,7 +331,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         parts.append(f"<p>{role}; nets: {_e(', '.join(g.nets))}.</p>")
         parts.append(_plotly_3d(scene, snap, f"plot{gi}"))
         parts.append("<p class='note'>Drag to rotate, scroll to zoom, double-click to reset; "
-                     "hover for values. The 3D mesh is simplified for the report, and its colour "
+                     "hover for values. The 3D mesh is simplified for the report, and its color "
                      "scale spans the 1st–99th percentile of voltages (the maps below are "
                      "scaled per layer).</p>")
         rows = []

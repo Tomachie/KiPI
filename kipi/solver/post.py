@@ -1,6 +1,6 @@
 """Derived quantities from a :class:`~kipi.solver.fem.Solution`.
 
-Units: volts, amps, watts, millimetres. Current density is reported per unit
+Units: volts, amps, watts, millimeters. Current density is reported per unit
 cross-section (A/mm^2) and is uniform through the copper thickness in this 2.5D
 model.
 """

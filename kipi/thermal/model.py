@@ -12,7 +12,7 @@ the KiCad stackup (see :mod:`kipi.thermal.materials`).
 Through the thickness the board is taken as isothermal: for FR4 the through-plane
 resistance t/k (~0.005 K m^2/W for 1.6 mm) is about a tenth of the convective 1/(2h),
 so every layer sees the same temperature at a point. Heat from all nets and layers
-lands on the same grid, so neighbouring planes heat each other.
+lands on the same grid, so neighboring planes heat each other.
 
 Convection per face: h = 10 + 3.8 v W/(m^2 K), v the airflow speed in m/s (natural
 convection plus radiation at v = 0; a flat-plate forced-convection fit above that).
@@ -73,11 +73,11 @@ class BoardThermalModel:
         from kipi.thermal.materials import laminate_conductance
         g_lam, self.dielectrics = laminate_conductance(st, settings.laminate_k_w_mk or None)
         for material, t, info in self.dielectrics:
-            note = " (not recognised; assumed FR4)" if info.assumed else ""
+            note = " (not recognized; assumed FR4)" if info.assumed else ""
             progress.info(f"  dielectric {material or '(unnamed)'} {t:.3f} mm: {info.matched}, "
                           f"k = {info.k_w_mk:g} W/m·K{note}")
             if info.assumed:
-                progress.warn(f"Dielectric material {material!r} not recognised; using FR4 "
+                progress.warn(f"Dielectric material {material!r} not recognized; using FR4 "
                               f"({info.k_w_mk:g} W/m·K). Set 'Laminate k' in the Thermal tab "
                               "to override.")
         g = np.full(X.shape, g_lam)
@@ -96,7 +96,7 @@ class BoardThermalModel:
         n = int(self.inside.sum())
         rows, cols, vals = [], [], []
         diag = np.zeros(n)
-        for di, dj in ((0, 1), (1, 0)):          # right and down neighbours
+        for di, dj in ((0, 1), (1, 0)):          # right and down neighbors
             a = idx[: ny - di, : nx - dj]
             b = idx[di:, dj:]
             ga = g[: ny - di, : nx - dj]

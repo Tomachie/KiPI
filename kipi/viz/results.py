@@ -58,7 +58,7 @@ class ResultScene:
     vias: Optional[pv.PolyData]
     ranges: Dict[str, Tuple[float, float]]   # field -> (min, max) over all layers
     via_range: Tuple[float, float] = (0.0, 0.0)
-    # Plated holes for click selection: (N, 2, 3) top/bottom centre points in KiCad
+    # Plated holes for click selection: (N, 2, 3) top/bottom center points in KiCad
     # coordinates (x, y down, z up) and the owning via/pad id of each.
     via_segments: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 3)))
     via_ids: List[str] = field(default_factory=list)

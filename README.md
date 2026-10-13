@@ -7,7 +7,7 @@
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin:
+KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin:
 
 1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements (beads, resistors, load switches).
 2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
@@ -43,7 +43,7 @@ own window and reads the board through the KiCad API; the log at the bottom stre
 stage as it runs.
 
 * **Refill zones** (toolbar, on by default) refills every zone in KiCad before reading, so
-  the zone fills KiPI sees match your current routing. KiPI analyses filled copper only.
+  the zone fills KiPI sees match your current routing. KiPI analyzes filled copper only.
 * **Load from KiCad** re-reads the board after you edit it, and reloads the saved PI setup
   (save first if you have unsaved changes).
 * **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
@@ -51,7 +51,7 @@ stage as it runs.
 
 ### 2. Pick the nets
 
-The **Board** panel on the left lists every net. Tick the nets you want to analyse: they are
+The **Board** panel on the left lists every net. Tick the nets you want to analyze: they are
 drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** filters the
 list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
 the filter box to find a net.
@@ -59,7 +59,7 @@ the filter box to find a net.
 Below that:
 
 * **Copper layers** toggles layers in the view.
-* **Display** colours copper by layer or by net, exaggerates the stackup (**Z scale**), shows
+* **Display** colors copper by layer or by net, exaggerates the stackup (**Z scale**), shows
   or hides vias, pads and the board, and cuts the view along X, Y or Z (**Cut**, slider,
   **Flip**) to look inside the stackup.
 * **Info** shows whatever you last clicked in 3D. **Select in KiCad** selects that pad or
@@ -144,7 +144,7 @@ the board and the warmer copper become more resistive. Set:
 * **Grid**, the thermal cell size: *auto* gives about 250 cells across the board.
 * **Laminate k**: *from stackup* looks up the in-plane conductivity from each dielectric's
   material in your KiCad stackup (FR4, prepreg types, polyimide, Kapton, PTFE, Rogers,
-  ceramic, aluminium…). Unrecognised names fall back to FR4 with a warning. Enter a value
+  ceramic, aluminum…). Unrecognized names fall back to FR4 with a warning. Enter a value
   here to override.
 
 The setup is saved as `<board>.kipi-setup.json` next to the board when you click **Save** at
@@ -212,7 +212,7 @@ solving again. Results files are Python pickles, so only open ones you created.
 * **Unexpected drop:** compare the board view with KiCad. Thermal reliefs, necked traces and
   via counts dominate DC drop, and the Current density view with Arrows makes the bottleneck
   obvious.
-* **Slow solves:** raise **Max edge**, or analyse fewer nets at a time. Large planes are cheap
+* **Slow solves:** raise **Max edge**, or analyze fewer nets at a time. Large planes are cheap
   but very fine traces are not.
 * **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
   15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
