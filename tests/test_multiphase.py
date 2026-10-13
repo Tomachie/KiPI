@@ -7,6 +7,10 @@ The board is three 1 mm wide, 20 mm long strips, so every drop is a strip resist
     GND  (B, y 0..1):  J1.2 at 0..1, U2.2 at 5..6, Q1.2 at 9..10, Q2.2 at 19..20
 """
 
+import importlib.util
+import json
+from pathlib import Path
+
 import pytest
 from shapely.geometry import box
 
@@ -206,10 +210,25 @@ def test_results_saved_before_phases_still_load():
     assert old.phases == []
 
 
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "multiphase_buck"
+
+
+def test_example_setup_matches_its_generator():
+    # Catches a generator change that was not regenerated, and GUI autosaves of edits
+    # made while trying the example. (The board is not compared: zone fills come from
+    # shapely, whose output can differ slightly between versions and platforms.)
+    spec = importlib.util.spec_from_file_location("make_board", EXAMPLE / "make_board.py")
+    make_board = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(make_board)
+    committed = json.loads((EXAMPLE / "multiphase_buck.kipi-setup.json").read_text("utf-8"))
+    assert make_board.make_setup().to_dict() == committed, (
+        "examples/multiphase_buck/multiphase_buck.kipi-setup.json differs from "
+        "make_board.py; run `python examples/multiphase_buck/make_board.py`")
+
+
 def test_example_board_solves():
-    from pathlib import Path
     from kipi.kicad_io.snapshot import load
-    folder = Path(__file__).resolve().parents[1] / "examples" / "multiphase_buck"
+    folder = EXAMPLE
     snap = load(folder / "multiphase_buck.kipi.json.gz")
     s = PISetup.load(folder / "multiphase_buck.kipi-setup.json")
     tree = solve_tree(snap, s)
