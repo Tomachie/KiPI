@@ -111,6 +111,7 @@ def solve_electrothermal(snap: BoardSnapshot, setup: PISetup, thermal: ThermalSe
         heat = model.empty_heat()
         model.deposit(heat, xy, w)
         heat_total = float(w.sum())
+        progress.info(f"Solving the board temperature for {heat_total * 1e3:.1f} mW of losses")
         new = model.solve(heat)
         dt = float(np.nanmax(np.abs(new - temps)))
         temps = new

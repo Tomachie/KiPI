@@ -632,6 +632,8 @@ class MainWindow(QMainWindow):
             with progress.timed("Building result views"):
                 temp = tree.thermal.sampler() if tree.thermal is not None else None
                 for name, g in tree.groups.items():
+                    progress.check_cancel()
+                    progress.info(f"  {name}: {g.result.mesh.n_tris} triangles")
                     scenes[name] = build_result_scene(snap, g.result, temperature=temp)
             if report_path is not None:
                 from kipi.report.html import write_report
