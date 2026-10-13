@@ -113,6 +113,8 @@ To try it without a design of your own, open the example board in
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
+* **Heat** (optional, W) is what the part dissipates, for the thermal solve. Not set, it is
+  all the power it takes from its supply pins.
 * **Max drop** (%) is the PASS/FAIL limit, in both directions: the pin furthest below the
   set voltage, and the pin furthest above it (remote sense can lift a load above it). A
   load on a net group whose solve did not converge shows **NOT CONVERGED** instead of a result.
@@ -139,7 +141,11 @@ rolled-annealed foil. Leave it at **default** to use the value above. Layer thic
 from the KiCad board stackup. **Thickness unit** shows them in µm, mil or oz (1 oz = 35 µm).
 
 **Thermal tab** (off by default): tick **Electro-thermal co-simulation** to make losses heat
-the board and the warmer copper become more resistive. Set:
+the board and the warmer copper become more resistive. The heat is the copper and via
+losses, the DC connections, each VRM's conversion loss, and each load: by default all the
+power it takes from its supply pins (V x I), spread over the pads of its footprint. A load's
+**Heat** field replaces that for a part that passes power on (a load switch, an LED or
+motor driver). The Notes tab and the report list the heat by source. Set:
 
 * **Ambient** temperature.
 * **Iterations**: three is usually enough. The Notes tab shows how much each iteration
