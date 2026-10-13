@@ -176,8 +176,7 @@ class PISetup:
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
             html_report=bool(d.get("html_report", False)),
             nets=list(d["nets"]) if d.get("nets") is not None else None,
-            settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
-                                      if k in known}),
+            settings=_settings(d.get("settings", {}), known),
         )
 
     def save(self, path) -> Path:
@@ -188,6 +187,16 @@ class PISetup:
     @staticmethod
     def load(path) -> "PISetup":
         return PISetup.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def _settings(d: dict, known) -> SolveSettings:
+    """Solve settings from a setup file. A file from before via rules carries one
+    "plating_mm" for every hole: it becomes the plating of every default rule."""
+    s = SolveSettings(**{k: v for k, v in d.items() if k in known})
+    if "plating_mm" in d and "via_rules" not in d:
+        for r in s.via_rules:
+            r.plating_mm = float(d["plating_mm"])
+    return s
 
 
 def setup_path(board_file_or_name: str, project_dir: str) -> Path:
@@ -275,6 +284,8 @@ def validate(setup: PISetup) -> List[str]:
     """Problems that make the setup unsolvable (empty list = OK)."""
     errors: List[str] = []
     names = [x.name for x in [*setup.vrms, *setup.loads, *setup.links]]
+    from kipi.solver.via_barrel import rule_errors
+    errors.extend(rule_errors(setup.settings.via_rules))
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         errors.append(f"Names must be unique: {', '.join(dupes)}")
