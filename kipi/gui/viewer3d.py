@@ -48,6 +48,32 @@ def _bar_args(title: str, fmt: str) -> dict:
                 n_labels=6)
 
 
+def _copper_clim(scene: ResultScene, field: str, hidden=()) -> Tuple[float, float, bool]:
+    """Color limits ``(lo, hi, log_scale)`` for a copper field over the layers not in
+    ``hidden``, so hiding a layer with an outlier spreads the scale over what is left.
+    With every layer hidden the scale covers all of them."""
+    arr, assoc, _, _ = FIELDS[field]
+    shown = ([lr for lid, lr in scene.layers.items() if lid not in hidden]
+             or list(scene.layers.values()))
+    data = [(lr.mesh.point_data if assoc == "point" else lr.mesh.cell_data)[arr]
+            for lr in shown]
+    vals = np.concatenate([d[np.isfinite(d)] for d in data]) if data else np.zeros(0)
+    if not len(vals):
+        lo, hi = scene.ranges[field]
+    else:
+        lo, hi = float(vals.min()), float(vals.max())
+        if field in ("current_density", "power_density"):
+            # Hot spots at pad corners dwarf everything else; clip the scale at the
+            # 99.5th percentile (the probe still reports true values).
+            hi = float(np.percentile(vals, 99.5))
+    if hi <= lo:
+        hi = lo + 1e-12
+    log_scale = field == "power_density"
+    if log_scale:
+        lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
+    return lo, hi, log_scale
+
+
 def _chunk_actor(category) -> vtkActor:
     """A bare VTK actor colored by the chunk's per-cell ``rgb`` array.
 
@@ -225,6 +251,7 @@ class Viewer3D(QWidget):
 
     def set_layer_visible(self, layer_id: int, visible: bool):
         (self._hidden_layers.discard if visible else self._hidden_layers.add)(layer_id)
+        self._rescale_result()
         self._apply_visibility()
 
     def set_feature_visible(self, feature: str, visible: bool):
@@ -423,22 +450,9 @@ class Viewer3D(QWidget):
     def _draw_copper_result(self, scene, arr, assoc, title):
         """Copper colored by a field; vias drawn plain for context."""
         p = self.plotter
-        lo, hi = scene.ranges[self._result_field]
-        if self._result_field in ("current_density", "power_density"):
-            # Hot spots at pad corners dwarf everything else; clip the scale at the
-            # 99.5th percentile (the probe still reports true values).
-            vals = np.concatenate([
-                lr.mesh.cell_data[arr][np.isfinite(lr.mesh.cell_data[arr])]
-                for lr in scene.layers.values()])
-            if len(vals):
-                hi = float(np.percentile(vals, 99.5))
-        if hi <= lo:
-            hi = lo + 1e-12
+        lo, hi, log_scale = _copper_clim(scene, self._result_field, self._hidden_layers)
         cmap = "turbo" if assoc == "point" else "inferno"
-        log_scale = self._result_field == "power_density"
-        if log_scale:
-            lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
-        bar = _bar_args(title, _bar_format(lo, hi, log_scale))
+        bar =_bar_args(title, _bar_format(lo, hi, log_scale))
         first = True
         for lid, lr in scene.layers.items():
             actor = p.add_mesh(lr.mesh, scalars=arr, preference=assoc, cmap=cmap,
@@ -476,6 +490,21 @@ class Viewer3D(QWidget):
             scalar_bar_args=_bar_args(title, _bar_format(lo, hi, False)))
         self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         self._style_bar(title)
+
+    def _rescale_result(self):
+        """Refit the copper color scale to the layers now shown."""
+        scene = self._result
+        if scene is None or FIELDS[self._result_field][1] == "via" or not self._result_actors:
+            return
+        lo, hi, log_scale = _copper_clim(scene, self._result_field, self._hidden_layers)
+        for actor in self._result_actors.values():
+            mapper = actor.GetMapper()
+            mapper.SetScalarRange(lo, hi)
+            mapper.GetLookupTable().SetRange(lo, hi)
+        bars = self.plotter.scalar_bars
+        for title in self._scalar_bars:
+            if title in bars:
+                bars[title].SetLabelFormat(_bar_format(lo, hi, log_scale))
 
     def _style_bar(self, title):
         """Tick values to the left of the bar, where they stay inside the view, and the
