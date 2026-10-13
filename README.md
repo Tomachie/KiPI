@@ -19,7 +19,7 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 9 and 10 IPC 
 
 ![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
 
-**Status: 0.6.5 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
+**Status: 0.6.5 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Results have been found to be in line with what Hyperlynx PI produces by myself and other users. The solver itself will yield close results to professional tools, it's the modelling of vias, power supplies, and the bridging of layers that's the difficult part. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
 
 ## Install
 
