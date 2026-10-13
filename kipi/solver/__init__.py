@@ -36,7 +36,8 @@ def run(snap: BoardSnapshot, problem: NetProblem,
     with progress.timed("Post-processing"):
         fields = compute_fields(sol)
         sm = fields.summary
-        progress.info(f"Max drop {sm['max_drop'] * 1e3:.3f} mV, peak current density "
+        boost = f", max boost {sm['max_boost'] * 1e3:.3f} mV" if sm["max_boost"] > 0 else ""
+        progress.info(f"Max drop {sm['max_drop'] * 1e3:.3f} mV{boost}, peak current density "
                       f"{sm['j_max']:.2f} A/mm^2, copper loss {sm['power_loss'] * 1e3:.3f} mW "
                       f"(energy balance error {sm['energy_balance_error']:.1e})")
     return NetResult(mesh, sol, fields)

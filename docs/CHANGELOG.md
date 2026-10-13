@@ -4,6 +4,92 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
+## 0.6.5 (2026-10-13): Drop and boost, limits and fixes
+
+### Added
+- **Drop and boost.** A load can sit above its VRM's set point as well as below it: with
+  remote sense, the VRM raises its output pins to hold a sense point further down the
+  copper. Results now report each deviation as a drop or a boost, and the worst pin is the
+  one furthest from the set point either way.
+  - The load's PASS/FAIL limit is now a **Tolerance** (± %) rather than a maximum drop.
+  - The probe, Loads table, CSV export and HTML report all say "drop" or "boost".
+  - The loads CSV gives each deviation as a magnitude plus a `drop`/`boost` column, and
+    adds the lowest and highest pin voltages.
+- **VRM output current limit.** An optional limit per VRM, covering all its phases, with
+  PASS/FAIL in the VRMs results tab, the CSV export and the HTML report.
+- **Sortable results tables.** Click a column header to sort by it, and click again to
+  reverse. Numbers sort by value, and each multi-phase VRM keeps its phase rows under it.
+- **Resistor values for DC connections.** A new DC connection starts on a part that bridges
+  the two nets, such as a sense resistor. When both sides are on the same resistor, its
+  resistance is read from its value field, e.g. `10m`, `4k7`, `0R1` or `5 mΩ`.
+- **Ticked nets are saved with the setup.** The nets ticked in the Board panel are restored
+  when the board is next opened. **Load from KiCad** on a board that is already open keeps
+  the current ticks. Only a board with no saved choice starts with a guess.
+- **About dialog** (toolbar), with the version, author, project links and the versions of
+  the libraries KiPI is running on, ready to copy into a bug report.
+- **KiPI's own taskbar entry.** On Windows, macOS and Linux, KiPI shows with its name and
+  icon instead of as the Python interpreter that KiCad starts it with.
+- **Progress messages** before long steps: meshing large planes, joining layers through
+  many plated holes, mapping copper for the thermal model, and solving the board
+  temperature.
+- **KiCad 9 support**, confirmed on KiCad 9.0.7. Boards are read from KiCad 9.0.0 onwards.
+  Where a KiCad 9 release lacks a request, KiPI takes the layers and their names from the
+  stackup instead, and zone refills wait on a request KiCad 9 answers. Before 9.0.3, plated pads are kept on
+  every layer, because KiCad cannot say which layers have their copper.
+- **README badges** for the supported KiCad versions, platforms and Python versions.
+- **Install notes for macOS and Linux:** plugin folders, and which Python each platform's
+  KiCad runs plugins with (macOS needs a newer Python than the one KiCad bundles).
+
+### Changed
+- **The color scale fits the layers shown.** Hiding a copper layer rescales the result
+  colors to the layers left, so one layer's outlier no longer flattens the rest.
+- **Color bar labels** sit to the left of the bar, below the title, with enough decimals to
+  tell the ticks apart (a 3.3 V rail that sags 0.4 mV no longer reads "3.3" on every tick).
+- **Faster meshing of boards with many through-hole pads.** Each layer's drill holes are
+  merged once, rather than once per pad.
+- **The watchdog** dumps thread stacks from Python rather than from faulthandler's timer, and
+  logs the UI thread's stack if the window stops responding during a task.
+- **kicad-python 0.7.1 or later** is required. 0.7.0 was only published as a source package
+  that does not build.
+- Net codes are read without kicad-python's deprecated `Net.code`, which KiCad is dropping
+  from the API.
+
+### Fixed
+- **Refill zones** could return before KiCad had finished filling, so the reads that followed
+  failed with `AS_BUSY` or timed out. KiPI now waits until the fill has finished.
+- **Electro-thermal and large solves could hang or crash.**
+  - The faulthandler timer could kill a solve that was still running. Stack dumps now come
+    from a Python thread instead.
+  - Conjugate gradients could diverge at the round-off floor on large boards. It now stops
+    when it stops improving and keeps its best result, and falls back to a direct solve if
+    that result is not good enough.
+  - Warm-started re-solves that already meet the tolerance skip CG entirely.
+- **Changing the via current limit** froze the window for up to a minute on large boards.
+  PASS/FAIL now updates in place.
+- **Loads on negative rails** always passed. Tolerance and drop percentages now use the size
+  of the set point.
+- **"Show copper"** had no direct way back to the results. Picking the same group again,
+  changing the result field, or double-clicking a via row now shows them.
+- **Open results…** crashed when no board was loaded. It now asks for the board first.
+- **Clicking a pad** in the results of a group that joins several nets did not identify it.
+- **Slotted plated holes** were cut along the board's x or y axis, ignoring the pad's
+  rotation, so a rotated slot could cut through copper outside its pad. Pad rotation is now
+  read from KiCad and saved in snapshots. Snapshots from older versions take the slot's
+  direction from the long axis of the pad's copper.
+- **Terminal currents in power-tree results.** VRM input, phase and ground-return terminals
+  reported 0 A, so per-group KCL and energy-balance checks were wrong. They now report the
+  currents the solve used. No result shown in the GUI or the report was affected.
+- CI runs on every branch, whatever its name, and the window tests run on Linux without an
+  OpenGL context.
+
+### Development
+- **Tests against every KiCad API version.** A fake KiCad answers the IPC API's own
+  messages as each release from 9.0.0 to 10.0.6 does, and the tests extract a board from
+  each one through kicad-python's real `Board`.
+- **CI covers more platforms:** macOS, Python 3.10 to 3.13 on Linux, and the oldest allowed
+  kicad-python. A job that does not block CI shows whether every dependency has prebuilt
+  packages for Python 3.14 yet.
+
 ## 0.6.0 (2026-10-12): Quality of life
 
 ### Added

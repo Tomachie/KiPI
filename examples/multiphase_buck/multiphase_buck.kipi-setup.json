@@ -23,7 +23,8 @@
         ]
       },
       "ground_sense": null,
-      "phases": []
+      "phases": [],
+      "current_limit_a": null
     },
     {
       "name": "U1",
@@ -136,7 +137,8 @@
             ]
           }
         }
-      ]
+      ],
+      "current_limit_a": null
     }
   ],
   "loads": [
@@ -182,5 +184,10 @@
     "laminate_k_w_mk": 0.0
   },
   "html_report": false,
+  "nets": [
+    "VIN",
+    "VCORE",
+    "GND"
+  ],
   "format_version": 1
 }

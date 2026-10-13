@@ -110,8 +110,11 @@ class Pad:
     number: str
     position: Point
     pad_type: str           # "pth", "smd", "npth", "edge", "unknown"
-    drill_mm: Tuple[float, float] = (0.0, 0.0)
+    drill_mm: Tuple[float, float] = (0.0, 0.0)   # x, y in the pad's own frame (unrotated)
     shapes: Dict[int, List[Poly]] = field(default_factory=dict)  # layer id -> copper shape
+    # Pad orientation on the board, degrees counter-clockwise as KiCad shows it (footprint
+    # rotation included). None in snapshots saved before it was recorded.
+    angle_deg: Optional[float] = None
 
     @property
     def layers(self) -> List[int]:

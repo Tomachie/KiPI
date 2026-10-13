@@ -81,6 +81,8 @@ class BoardThermalModel:
                               f"({info.k_w_mk:g} W/m·K). Set 'Laminate k' in the Thermal tab "
                               "to override.")
         g = np.full(X.shape, g_lam)
+        progress.info(f"  Mapping the copper of {len(st.copper)} layers onto a {nx} x {ny} "
+                      "grid...")
         for cu in st.copper:
             copper = _layer_copper(snap, cu.id)
             if copper is None:

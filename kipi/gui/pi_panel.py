@@ -10,6 +10,7 @@ import copy
 import html
 import math
 import re
+from contextlib import contextmanager
 from functools import partial
 from typing import Callable, Dict, List, Optional
 
@@ -24,7 +25,10 @@ from qtpy.QtWidgets import (
 
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
+from kipi.model.parts import resistor_ohms
 from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
+from kipi.gui.sortable import make_sortable, reset_sort, set_row
+from kipi.pi.tree import fmt_drop
 from kipi.viz.results import FIELDS
 
 NONE = "(none)"
@@ -272,6 +276,10 @@ class VrmEditor(_Editor):
         self.voltage = _spin(-1000, 1000, 3.3, 4, " V", 0.1)
         self.eff = _spin(1, 100, 90, 1, " %", 1)
         self.iq = _spin(0, 10000, 0, 3, " mA", 0.1)
+        self.i_limit = _spin(0, 10000, 0, 3, " A", 0.1)
+        self.i_limit.setSpecialValueText("no limit")
+        self.i_limit.setToolTip("PASS if the VRM's total output current (all phases) is at "
+                                "most this")
         self.input = self._picker(optional=True)
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
@@ -289,6 +297,7 @@ class VrmEditor(_Editor):
         f.addRow("Set voltage", self.voltage)
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
+        f.addRow("Output current limit", self.i_limit)
         f.addRow("Phases", self.n_phases)
         f.addRow("Edit phase", self.cmb_phase)
         f.addRow("Output pins", self.output)
@@ -296,7 +305,7 @@ class VrmEditor(_Editor):
         f.addRow("Ground pins", self.ground)
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
-        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq)
+        self._watch(self.name, self.kind, self.voltage, self.eff, self.iq, self.i_limit)
         self.kind.currentIndexChanged.connect(self._kind_rows)
         self.n_phases.valueChanged.connect(self._phase_count_changed)
         self.cmb_phase.currentIndexChanged.connect(self._phase_selected)
@@ -356,6 +365,7 @@ class VrmEditor(_Editor):
         self.voltage.setValue(v.voltage)
         self.eff.setValue(v.efficiency * 100)
         self.iq.setValue(v.quiescent_a * 1e3)
+        self.i_limit.setValue(v.current_limit_a or 0.0)
         self.n_phases.setValue(len(v.phases) + 1)
         self._phase = 0
         self._phase_rows()
@@ -370,6 +380,7 @@ class VrmEditor(_Editor):
         v.voltage = self.voltage.value()
         v.efficiency = self.eff.value() / 100
         v.quiescent_a = self.iq.value() / 1e3
+        v.current_limit_a = self.i_limit.value() or None
         v.sense = self.sense.value()
         v.ground_sense = self.ground_sense.value()
         phases = v.all_phases()
@@ -419,9 +430,10 @@ class LoadEditor(_Editor):
         self.lbl_total = QLabel()
         self.ground = self._picker(optional=True)
         self.tol = _spin(0, 100, 0, 2, " %", 0.5)
+        self.tol.setPrefix("± ")
         self.tol.setSpecialValueText("no limit")
-        self.tol.setToolTip("PASS if the worst supply pin's drop is within this % of the "
-                            "VRM set voltage")
+        self.tol.setToolTip("PASS if every supply pin is within ± this % of the VRM set "
+                            "voltage: no pin drops below it or is boosted above it by more")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -430,7 +442,7 @@ class LoadEditor(_Editor):
         f.addRow(gb)
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
-        f.addRow("Max drop", self.tol)
+        f.addRow("Tolerance", self.tol)
         self._watch(self.name, self.current, self.tol, self.mode)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
@@ -563,10 +575,19 @@ class LinkEditor(_Editor):
         if typed == k.side_a.ref and new_a.ref != k.side_a.ref:
             typed = new_a.ref
             self.name.setText(typed)
+        parts = (k.side_a.ref, k.side_b.ref)
         k.name = typed
         k.side_a = new_a
         k.side_b = self.b.value() or k.side_b
         k.resistance = self.r.value() / 1e3
+        # Both sides just became the same resistor: take its resistance from its value.
+        if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
+            ohms = resistor_ohms(self.panel.snapshot, k.side_a.ref)
+            if ohms is not None:
+                k.resistance = ohms
+                self.r.blockSignals(True)
+                self.r.setValue(ohms * 1e3)
+                self.r.blockSignals(False)
 
 
 class ItemList(QWidget):
@@ -772,17 +793,22 @@ class PIPanel(QWidget):
         row.addWidget(b_export)
         lr.addLayout(row)
         self.res_tabs = QTabWidget(g_res)
-        self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)", "Drop (mV)",
-                                      "Worst pin (mV)", "Worst %", "Limit %", ""])
+        self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
+                                      "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
+                                      "Tolerance %", ""], sortable=True)
+        self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
+                                  "a remote-sensed VRM's output pins. The worst pin is the one "
+                                  "furthest from the set point either way.")
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
-                                     "P in (W)", "Loss (W)"])
-        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"])
+                                     "P in (W)", "Loss (W)", "I limit (A)", ""], sortable=True)
+        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"],
+                                      sortable=True)
         self.txt_notes = QTextBrowser(g_res)
         self.res_tabs.addTab(self.tbl_loads, "Loads")
         self.res_tabs.addTab(self.tbl_vrms, "VRMs")
         self.res_tabs.addTab(self.tbl_links, "DC connections")
         self.res_tabs.addTab(self._vias_tab(), "Vias")
-        self.tbl_losses = self._table(["Group"])
+        self.tbl_losses = self._table(["Group"], sortable=True)
         self.res_tabs.addTab(self.tbl_losses, "Losses")
         self.res_tabs.addTab(self.txt_notes, "Notes")
         self.tbl_loads.cellDoubleClicked.connect(self._row_to_group)
@@ -832,7 +858,7 @@ class PIPanel(QWidget):
         row.addWidget(QLabel("double-click a row to show it"))
         v.addLayout(row)
         self.tbl_vias = self._table(["Group", "Via / pad", "x (mm)", "y (mm)", "Drill (mm)",
-                                     "I (mA)", "P (mW)", ""])
+                                     "I (mA)", "P (mW)", ""], sortable=True)
         self.tbl_vias.cellDoubleClicked.connect(self._via_row_clicked)
         v.addWidget(self.tbl_vias)
         return w
@@ -840,7 +866,7 @@ class PIPanel(QWidget):
     def _via_limit_changed(self, value):
         self.setup.via_current_limit_a = (value / 1e3) or None
         if getattr(self, "_tree", None) is not None:
-            self._fill_vias()
+            self._set_via_status()      # the rows and their order do not depend on the limit
 
     def _via_row_clicked(self, row, _col):
         it = self.tbl_vias.item(row, 0)
@@ -849,20 +875,32 @@ class PIPanel(QWidget):
 
     def _fill_vias(self, max_rows: int = 500):
         from kipi.pi.report import via_rows
-        rows = via_rows(self._tree, self.snapshot, self.setup.via_current_limit_a)[:max_rows]
+        rows = via_rows(self._tree, self.snapshot)[:max_rows]
         t = self.tbl_vias
-        t.setRowCount(len(rows))
-        for r, v in enumerate(rows):
-            status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
-            color = None if v.passed is None else ("#60d060" if v.passed else "#ff6060")
-            for c, text in enumerate([v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
-                                      f"{v.drill_mm:.3f}", f"{v.current * 1e3:.2f}",
-                                      f"{v.power * 1e3:.4f}", status]):
-                it = QTableWidgetItem(text)
-                if c == 7 and color:
-                    it.setForeground(QColor(color))
-                t.setItem(r, c, it)
-            t.item(r, 0).setData(Qt.UserRole, v.owner_id)
+        reset_sort(t)
+        with _bulk_fill(t):
+            t.setRowCount(len(rows))
+            for r, v in enumerate(rows):
+                set_row(t, r, [v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
+                               f"{v.drill_mm:.3f}", (f"{v.current * 1e3:.2f}", v.current * 1e3),
+                               (f"{v.power * 1e3:.4f}", v.power * 1e3), ""])
+                t.item(r, 0).setData(Qt.UserRole, v.owner_id)
+        self._set_via_status()
+
+    def _set_via_status(self):
+        """PASS / FAIL against the current limit, without rebuilding the table."""
+        limit = self.setup.via_current_limit_a
+        t = self.tbl_vias
+        with _bulk_fill(t):
+            for r in range(t.rowCount()):           # rows may have been sorted
+                current = t.item(r, 5).key / 1e3
+                it = t.item(r, 7)
+                if limit is None:
+                    it.setText("")
+                    continue
+                ok = current <= limit
+                it.setText("PASS" if ok else "FAIL")
+                it.setForeground(QColor("#60d060" if ok else "#ff6060"))
 
     def _fill_losses(self):
         from kipi.pi.report import loss_rows
@@ -872,6 +910,7 @@ class PIPanel(QWidget):
         headers = ["Group", *[f"{n} (mW)" for n in layers], "Vias (mW)", "DC parts (mW)",
                    "Total (mW)"]
         t = self.tbl_losses
+        reset_sort(t)
         t.setColumnCount(len(headers))
         t.setHorizontalHeaderLabels(headers)
         vrm_rows = [v for v in self._tree.vrms if v.p_loss is not None]
@@ -881,22 +920,24 @@ class PIPanel(QWidget):
             cells = [row.group, *[f"{row.by_layer.get(n, 0.0) * 1e3:.3f}" for n in layers],
                      f"{row.vias * 1e3:.3f}", f"{row.links * 1e3:.3f}", f"{row.total * 1e3:.3f}"]
             total += row.total
-            for c, text in enumerate(cells):
-                t.setItem(r, c, QTableWidgetItem(text))
+            set_row(t, r, cells)
+        # The total and VRM conversion rows stay at the bottom whatever the sort.
+        blank = [""] * (len(headers) - 2)
         r = len(rows)
-        t.setItem(r, 0, QTableWidgetItem("All copper + parts"))
-        t.setItem(r, len(headers) - 1, QTableWidgetItem(f"{total * 1e3:.3f}"))
+        set_row(t, r, ["All copper + parts", *blank, f"{total * 1e3:.3f}"], pin=1)
         for k, v in enumerate(vrm_rows, start=r + 1):
-            t.setItem(k, 0, QTableWidgetItem(f"VRM {v.name} (conversion)"))
-            t.setItem(k, len(headers) - 1, QTableWidgetItem(f"{v.p_loss * 1e3:.3f}"))
+            set_row(t, k, [f"VRM {v.name} (conversion)", *blank, f"{v.p_loss * 1e3:.3f}"],
+                    pin=1, sub=k)
 
-    def _table(self, headers) -> QTableWidget:
+    def _table(self, headers, sortable: bool = False) -> QTableWidget:
         t = QTableWidget(0, len(headers), self)
         t.setHorizontalHeaderLabels(headers)
         t.verticalHeader().setVisible(False)
         t.setEditTriggers(QAbstractItemView.NoEditTriggers)
         t.setSelectionBehavior(QAbstractItemView.SelectRows)
         t.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        if sortable:
+            make_sortable(t)
         return t
 
     def _settings_tab(self) -> QWidget:
@@ -1135,9 +1176,15 @@ class PIPanel(QWidget):
         if net is None:
             return None
         other = self._nets[1] if len(self._nets) > 1 else net
-        ref = self._first_part(net)
+        ref, ref_b = self._first_part(net), self._first_part(other)
+        # Prefer a part that bridges the two nets, e.g. a sense resistor between them.
+        on_other = {r for r, _, _ in parts_on_net(self.snapshot, other)} if other != net else set()
+        bridge = next((r for r, _, _ in parts_on_net(self.snapshot, net) if r in on_other), None)
+        if bridge:
+            ref = ref_b = bridge
+        ohms = resistor_ohms(self.snapshot, ref) if bridge else None
         return DcLink(_unique(ref or "R1", [x.name for x in self.setup.links]),
-                      PinRef(ref, net), PinRef(self._first_part(other), other), 0.0)
+                      PinRef(ref, net), PinRef(ref_b, other), ohms or 0.0)
 
     @staticmethod
     def _describe_vrm(v: Vrm) -> str:
@@ -1180,42 +1227,47 @@ class PIPanel(QWidget):
                                f'{html.escape(message).replace(chr(10), "<br>")}</span>')
 
     def show_results(self, tree, initial_group: str):
-        def put(t, r, c, text, color=None):
-            it = QTableWidgetItem(text)
-            if color:
-                it.setForeground(QColor(color))
-            t.setItem(r, c, it)
-
-        self.tbl_loads.setRowCount(len(tree.loads))
+        for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links):
+            reset_sort(t)                         # new results show in their natural order
+        t = self.tbl_loads
+        t.setRowCount(len(tree.loads))
         for r, l in enumerate(tree.loads):
             status = "" if l.passed is None else ("PASS" if l.passed else "FAIL")
-            color = None if l.passed is None else ("#60d060" if l.passed else "#ff6060")
-            for c, text in enumerate([l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
-                                      f"{l.drop * 1e3:.3f}", f"{l.drop_worst * 1e3:.3f}",
-                                      f"{l.drop_worst_pct:.3f}",
-                                      "" if l.tolerance_pct is None else f"{l.tolerance_pct:g}",
-                                      status]):
-                put(self.tbl_loads, r, c, text, color if c == 8 else None)
+            # Drop and boost sort as one signed value: largest boost ... largest drop.
+            set_row(t, r, [l.name, l.group, f"{l.current:.4g}", f"{l.v_effective:.5f}",
+                           (fmt_drop(l.drop, unit=""), l.drop * 1e3),
+                           (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
+                           (f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
+                           "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}", status])
+            if l.passed is not None:
+                t.item(r, 8).setForeground(QColor("#60d060" if l.passed else "#ff6060"))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
-        rows = []                # each VRM, then one indented row per phase if multi-phase
-        for v in tree.vrms:
+        t = self.tbl_vrms
+        t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))
+        r = 0
+        for v in tree.vrms:                       # each VRM, then a row per phase under it
             kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases)} phases"
-            rows.append([v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
-                         f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g")])
-            rows.extend([f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
-                         f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
-                         f(p.p_loss, ".4g")] for p in v.phases)
-        self.tbl_vrms.setRowCount(len(rows))
-        for r, row in enumerate(rows):
-            for c, text in enumerate(row):
-                put(self.tbl_vrms, r, c, text, "#a0a0a0" if row[0].startswith(" ") else None)
+            status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
+            set_row(t, r, [v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
+                           f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g"),
+                           f(v.current_limit_a, "g"), status])
+            if v.passed is not None:
+                t.item(r, 9).setForeground(QColor("#60d060" if v.passed else "#ff6060"))
+            parent = r
+            for p in v.phases:
+                r += 1
+                set_row(t, r, [f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
+                               f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
+                               f(p.p_loss, ".4g")], parent_row=parent, sub=p.index)
+                for c in range(t.columnCount()):
+                    t.item(r, c).setForeground(QColor("#a0a0a0"))
+            r += 1
         rows = [(g.name, s) for g in tree.groups.values() for s in g.result.fields.series]
         self.tbl_links.setRowCount(len(rows))
         for r, (gname, s) in enumerate(rows):
             cur = "" if math.isnan(s.current) else f"{s.current:.4g}"
-            for c, text in enumerate([s.name, gname, f"{s.resistance * 1e3:g}", cur,
-                                      f"{s.power * 1e3:.3f}"]):
-                put(self.tbl_links, r, c, text)
+            set_row(self.tbl_links, r, [s.name, gname, f"{s.resistance * 1e3:g}", cur,
+                                        f"{s.power * 1e3:.3f}"])
         notes = [f"Solved {len(tree.groups)} net group(s) in {tree.solve_s:.2f} s:"]
         th = getattr(tree, "thermal", None)
         if th is not None:
@@ -1236,9 +1288,11 @@ class PIPanel(QWidget):
         for l in tree.loads:
             if l.pin_groups:
                 notes.append(f"<b>{html.escape(l.name)}</b> pin groups:")
-                for name, amps, vmean, vmin in l.pin_groups:
+                for name, amps, vmean, vmin, vmax in l.pin_groups:
+                    span = (f"lowest pin {vmin:.5f} V" if vmax is None
+                            else f"pins {vmin:.5f} to {vmax:.5f} V")
                     notes.append(f"&nbsp;&nbsp;{html.escape(name)}: {amps:.4g} A, "
-                                 f"{vmean:.5f} V (lowest pin {vmin:.5f} V)")
+                                 f"{vmean:.5f} V, {fmt_drop(l.nominal - vmean)} ({span})")
         notes += [f"⚠ {html.escape(w)}" for w in tree.warnings]
         self.txt_notes.setHtml("<br>".join(notes))
         self._set_temperature_field(getattr(tree, "thermal", None) is not None)
@@ -1257,3 +1311,18 @@ class PIPanel(QWidget):
         it = self.tbl_loads.item(row, 1)
         if it:
             self.cmb_group.setCurrentText(it.text())
+
+
+@contextmanager
+def _bulk_fill(t: QTableWidget):
+    """Fill a table with its columns' resize-to-contents paused.
+
+    With it on, Qt re-measures every row each time one cell changes, which made a few
+    thousand cell updates on a visible table take about a minute.
+    """
+    header = t.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    try:
+        yield
+    finally:
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)

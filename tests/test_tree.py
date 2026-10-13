@@ -216,6 +216,50 @@ def test_per_pin_group_currents():
     assert eq.v_worst == pytest.approx(v_mid - 0.5 * R(4), rel=1e-9)
 
 
+def _sensed_at_end(*loads):
+    """board_two_pin() with U1 sensing at U2's end pin (x 21) and the given loads."""
+    s = setup("ldo", sense=True)
+    s.loads[:] = loads
+    return solve_tree(board_two_pin(), s)
+
+
+def test_pins_before_the_sense_point_are_boosted():
+    from kipi.pi.tree import fmt_drop
+    boost = 1.0 * R(4)               # END's 1 A flows from the mid pin (x 17) to the end (x 21)
+    pct = 100 * boost / 3.3
+    for tol, ok in ((0.9 * pct, False), (1.1 * pct, True)):
+        res = _sensed_at_end(Load("END", PinRef("U2", "+3V3", ["1"]), 1.0),
+                                Load("MID", PinRef("U2", "+3V3", ["3"]), 0.2, tolerance_pct=tol))
+        mid = by_name(res.loads, "MID")
+        assert by_name(res.loads, "END").v_supply == pytest.approx(3.3, abs=1e-9)
+        assert mid.v_supply == pytest.approx(3.3 + boost, rel=1e-9)
+        assert mid.v_worst == mid.v_high == mid.v_low       # one pin
+        assert mid.drop == pytest.approx(-boost, rel=1e-6)
+        assert mid.drop_worst_pct == pytest.approx(-pct, rel=1e-6)
+        assert fmt_drop(mid.drop) == f"{boost * 1e3:.3f} mV boost"
+        assert mid.passed is ok                             # judged on +/- the tolerance
+
+
+def test_worst_pin_is_furthest_from_nominal_either_way():
+    # One load on both pins, sensed at the end pin: the end sits at 3.3 V, the mid pin above.
+    res = _sensed_at_end(Load("U2", PinRef("U2", "+3V3", ["1", "3"]), 1.0, tolerance_pct=1.0))
+    ld = by_name(res.loads, "U2")
+    assert ld.v_low == pytest.approx(3.3, abs=1e-9)
+    assert ld.v_high == pytest.approx(3.3 + 0.5 * R(4), rel=1e-9)
+    assert ld.v_worst == ld.v_high and ld.drop_worst < 0
+
+
+def test_results_saved_before_boosts_still_load():
+    import pickle
+    from kipi.pi.tree import LoadReport
+    old = LoadReport("U2", "+3V3", 1.0, 3.3, 3.29, 3.28, None, 3.29, 0.01, 1.0, True, 3.28,
+                     [("a", 1.0, 3.29, 3.28)])
+    del old.v_low, old.v_high                               # as a file from before them
+    back = pickle.loads(pickle.dumps(old))
+    assert back.v_low == 3.28 and back.v_high is None
+    assert back.pin_groups == [("a", 1.0, 3.29, 3.28, None)]
+
+
 def test_pin_group_validation():
     from kipi.pi.model import PinGroup
     s = setup()
@@ -226,3 +270,33 @@ def test_pin_group_validation():
     s.loads[0].supply = PinRef("U2", "+3V3", ["1"])
     s.loads[0].groups = [PinGroup(["3"], 0.5)]
     assert any("not among its supply pins" in e for e in validate(s))
+
+
+def test_negative_rail_is_judged_on_its_magnitude():
+    # -3.3 V rail; the load returns 1 A, so it sits R(8) * 1 A (~3.9 mV, 0.12 %) off.
+    s = setup()
+    s.vrms = [Vrm("U1", PinRef("U1", "+3V3", ["2"]), -3.3, "source")]
+    s.loads[0].current = -1.0
+    for tol, verdict in ((0.1, False), (0.2, True)):
+        s.loads[0].tolerance_pct = tol
+        ld = by_name(solve_tree(board(), s).loads, "U2")
+        assert abs(ld.nominal - ld.v_worst) == pytest.approx(R(8), rel=1e-6)
+        assert ld.passed is verdict
+    assert abs(ld.drop_worst_pct) == pytest.approx(100 * R(8) / 3.3, rel=1e-6)
+    assert math.copysign(1, ld.drop_worst_pct) == math.copysign(1, ld.drop_worst)
+
+
+def test_terminals_report_the_currents_the_tree_solved_with():
+    # VRM input, phase and ground-return loads start at 0 A and get their currents per
+    # solve; the per-group summaries must balance with those.
+    res = solve_tree(board(), setup("smps", eff=0.85, iq=0.01, ground=True))
+    for g in res.groups.values():
+        sm = g.result.fields.summary
+        assert sm["kcl_error"] < 1e-9, g.name
+        assert sm["energy_balance_error"] < 1e-6, g.name
+    u1 = by_name(res.vrms, "U1")
+    vin = res.groups["VIN"].result.fields
+    assert by_name(vin.terminals, "U1 (input)").current == pytest.approx(u1.i_in, rel=1e-12)
+    gnd = res.groups["GND"].result.fields
+    assert by_name(gnd.terminals, "U1 (gnd)").current == pytest.approx(u1.i_out - u1.i_in,
+                                                                         rel=1e-12)

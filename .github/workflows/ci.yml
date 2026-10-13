@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, "feature/**"]
+    branches: ["**"]   # every branch, whatever it is named (e.g. v0.6.5)
   pull_request:
   workflow_dispatch:
 
@@ -11,9 +11,9 @@ jobs:
     name: Lint (ruff)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
@@ -25,23 +25,35 @@ jobs:
         run: ruff check --output-format=github .
 
   test:
-    name: Tests (${{ matrix.os }})
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }}${{ matrix.kipy && format(', kicad-python {0}', matrix.kipy) || '' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        # Windows is the primary target; Linux catches path/platform assumptions.
-        os: [windows-latest, ubuntu-latest]
+        # The Python each platform's KiCad runs plugins with:
+        # - Windows: KiCad's own Python 3.11.
+        # - Linux: the system Python (3.10 on Ubuntu 22.04, 3.12 on 24.04, 3.13 on
+        #   Debian 13 and Fedora 42). 3.10 is also plugin.json's min_version.
+        # - macOS: KiCad bundles Python 3.9, which is too old for KiPI, so users point
+        #   KiCad at a newer Python (README).
+        include:
+          - { os: windows-latest, python: "3.11" }
+          - { os: ubuntu-latest,  python: "3.10" }
+          - { os: ubuntu-latest,  python: "3.11" }
+          - { os: ubuntu-latest,  python: "3.12" }
+          - { os: ubuntu-latest,  python: "3.13" }
+          - { os: macos-latest,   python: "3.12" }
+          # The oldest kicad-python requirements.txt allows: the API calls must exist there too.
+          - { os: ubuntu-latest,  python: "3.11", kipy: "0.7.1" }
     env:
       QT_QPA_PLATFORM: offscreen
       PYVISTA_OFF_SCREEN: "true"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # KiCad 10 bundles Python 3.11, so test against the interpreter plugins really run on.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           cache: pip
           cache-dependency-path: requirements*.txt
 
@@ -58,6 +70,10 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Pin kicad-python
+        if: matrix.kipy
+        run: pip install "kicad-python==${{ matrix.kipy }}"
+
       - name: Validate plugin manifest
         run: python -m kipy.packaging validate .
 
@@ -66,3 +82,29 @@ jobs:
 
       - name: Run tests
         run: python -m pytest -v
+
+  # KiCad installs the plugin's dependencies with pip, and users rarely have a compiler, so
+  # every dependency needs a binary wheel for the Python their KiCad uses. Python 3.14
+  # (Ubuntu 26.04, Fedora 43) is not covered yet: triangle and pyamg publish no 3.14 wheels.
+  # Until they do, a missing wheel is reported as a warning rather than failing the job.
+  wheels:
+    name: Binary wheels (Python ${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.14"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install with binary wheels only
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if ! pip install --only-binary=:all: -r requirements.txt 2>&1 | tee pip.log; then
+            missing=$(grep -o 'No matching distribution found for [^ ]*' pip.log | sed 's/.* //' | sort -u | tr '\n' ' ')
+            echo "::warning title=No Python ${{ matrix.python }} wheels::${missing:-see the log}"
+          fi

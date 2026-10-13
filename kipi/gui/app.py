@@ -11,6 +11,7 @@ import threading
 import time
 import traceback
 from pathlib import Path
+from typing import Optional
 
 LOG_DIR = Path(tempfile.gettempdir()) / "kipi"
 LOG_PATH = LOG_DIR / "kipi.log"          # replaced per session by setup_logging()
@@ -99,18 +100,87 @@ def _prune_old_logs():
         pass
 
 
-def watchdog_start(seconds: float = 60.0):
+_watchdog_stop: Optional[threading.Event] = None
+_ui_beat: Optional[float] = None     # time.monotonic() of the UI thread's last heartbeat
+
+
+def ui_alive():
+    """Heartbeat from the UI thread (a QTimer), so the watchdog can tell when it stalls."""
+    global _ui_beat
+    _ui_beat = time.monotonic()
+
+
+def watchdog_start(seconds: float = 60.0, native_seconds: float = 300.0,
+                   ui_stall_seconds: float = 3.0):
     """Dump every thread's stack to the crash log every ``seconds`` until stopped.
 
     Called when a background task starts, so a task that never finishes leaves a
-    record of exactly where it is stuck.
+    record of exactly where it is stuck. The dumps come from a Python thread holding
+    the GIL (``sys._current_frames``): faulthandler's own timer walks the other
+    threads' frames without the GIL, and doing that every minute to a solve that is
+    running (not stuck) can access-violate and kill the process. faulthandler stays
+    as a dead man's switch, re-armed by every Python dump, so it only fires when no
+    Python code has run for ``native_seconds`` (a thread stuck in native code with
+    the GIL held, whose frames are then not changing).
+
+    While the task runs, a UI thread that has not sent :func:`ui_alive` for
+    ``ui_stall_seconds`` (Windows calls the window "Not Responding" after 5 s) is
+    logged once per stall, with the UI thread's stack.
     """
-    if _crash_file is not None:
-        faulthandler.dump_traceback_later(seconds, repeat=True, file=_crash_file)
+    global _watchdog_stop
+    watchdog_stop()
+    if _crash_file is None:
+        return
+    stop = threading.Event()
+
+    def run():
+        t0 = time.perf_counter()
+        next_dump = seconds
+        ui_reported = False
+        while not stop.wait(min(1.0, seconds)):
+            if _ui_beat is not None:
+                lag = time.monotonic() - _ui_beat
+                if lag > ui_stall_seconds and not ui_reported:
+                    ui_reported = True
+                    frame = sys._current_frames().get(threading.main_thread().ident)
+                    stack = "".join(traceback.format_stack(frame)) if frame else "(none)\n"
+                    log.warning("UI thread has not responded for %.1f s; it is at:\n%s",
+                                lag, stack)
+                elif lag <= ui_stall_seconds and ui_reported:
+                    ui_reported = False
+                    log.info("UI thread responding again")
+            elapsed = time.perf_counter() - t0
+            if elapsed >= next_dump:
+                next_dump += seconds
+                _dump_python_stacks(elapsed)
+                faulthandler.dump_traceback_later(native_seconds, file=_crash_file)
+
+    faulthandler.dump_traceback_later(native_seconds, file=_crash_file)
+    threading.Thread(target=run, name="kipi-watchdog", daemon=True).start()
+    _watchdog_stop = stop
 
 
 def watchdog_stop():
+    global _watchdog_stop
+    if _watchdog_stop is not None:
+        _watchdog_stop.set()
+        _watchdog_stop = None
     faulthandler.cancel_dump_traceback_later()
+
+
+def _dump_python_stacks(elapsed: float):
+    names = {t.ident: t.name for t in threading.enumerate()}
+    me = threading.get_ident()
+    lines = [f"Task still running after {elapsed:.0f} s ({time.strftime('%H:%M:%S')}):\n"]
+    for ident, frame in sys._current_frames().items():
+        if ident != me:
+            lines.append(f"Thread {names.get(ident, ident)} (most recent call last):\n")
+            lines += traceback.format_stack(frame)
+    try:
+        _crash_file.write("".join(lines) + "\n")
+        _crash_file.flush()
+    except (OSError, ValueError):
+        pass
 
 
 def _install_excepthooks():
@@ -135,15 +205,14 @@ def _install_excepthooks():
 
 def run(kicad=None, board=None, snapshot=None) -> int:
     os.environ.setdefault("QT_API", "pyside6")
-    from qtpy.QtWidgets import QApplication
-
+    from kipi.gui.identity import make_app, tag_window
     from kipi.gui.main_window import MainWindow
 
-    app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("KiPI")
+    app = make_app()
     app.setStyle("Fusion")
     win = MainWindow(kicad=kicad, board=board, snapshot=snapshot)
     win.show()
+    tag_window(win)
     code = app.exec()
     task = getattr(win, "_task", None)
     if task is not None and task.isRunning():

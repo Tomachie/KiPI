@@ -170,7 +170,7 @@ def make_setup() -> PISetup:
              sense=PinRef("U10", "VCORE", ["C3"]), ground_sense=gnd("U10", ["C4"]),
              phases=phases[1:])
     load = Load("U10", PinRef("U10", "VCORE"), 40.0, ground=gnd("U10"), tolerance_pct=3.0)
-    return PISetup([j1, u1], [load], [], SolveSettings())
+    return PISetup([j1, u1], [load], [], SolveSettings(), nets=["VIN", "VCORE", "GND"])
 
 
 if __name__ == "__main__":

@@ -62,6 +62,31 @@ The same approach as atx/padne (GPL-3.0). Its FEM core is about 40 lines on SciP
 * Requests go through KiCad's UI thread, so expect `AS_BUSY` and retry. Use one connection per process.
 * From 10.0.1, plugin stdout/stderr shows in the KiCad status bar.
 
+## KiCad 9 compatibility (confirmed on KiCad 9.0.7)
+
+KiCad 9 runs the same IPC plugins (`plugin.json`, `KICAD_API_SOCKET` / `KICAD_API_TOKEN`)
+and speaks the same protobuf API, but some requests arrived during 9.0.x. The kicad-python
+version does not matter: it is only the client, and the newest one works with an older
+KiCad. What matters is whether that KiCad has a handler for each request.
+
+| Request KiPI sends | First KiCad | What KiPI does on an older one |
+|---|---|---|
+| `GetNetClassForNets` | 9.0.1 | Leaves net classes empty |
+| `CheckPadstackPresenceOnLayers` | 9.0.3 | Keeps pads on every layer, and warns |
+| `GetBoardEnabledLayers` | 9.0.5 | Takes the copper layers from the stackup |
+| `GetBoardLayerName` | 9.0.8 | Takes the names from the stackup's `user_name`, then the canonical names |
+| `GetItems` for `KOT_PCB_GROUP` (refill busy probe) | 10.0.0 | Asks for text, then tracks |
+
+* A request with no handler comes back as `AS_UNHANDLED` with the message "no handler
+  available for request of type kiapi.board.commands.<Name>"
+  (`KICAD_API_SERVER::handleApiEvent`, `common/api/api_server.cpp`). `_unsupported()` in
+  `extract.py` checks for either, and only then falls back. Any other error is raised.
+* KiCad checks for busy before it looks at the item types, so the refill probe still sees
+  `AS_BUSY` on KiCad 9.
+* The first KiCad for each request is taken from kicad-python's `versionadded` notes.
+  `tests/kicad_fake.py` encodes this table (`ADDED`), and `tests/test_kicad_versions.py`
+  extracts a board from every version listed there.
+
 ## GUI / 3D
 
 * KiCad 10 plugins are separate processes, so the GUI toolkit is not tied to wx.

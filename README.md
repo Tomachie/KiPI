@@ -2,12 +2,15 @@
   <img src="resources/kipi_256.png" alt="KiPI logo" width="128">
 </p>
 
-# KiPI — DC power integrity for KiCad 10
+# KiPI — DC power integrity for KiCad
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![KiCad 9.0+](https://img.shields.io/badge/KiCad-9.0%2B-314cb0.svg?logo=kicad&logoColor=white)](#requirements)
+[![Platform: Windows | Linux | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
+[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-3776ab.svg?logo=python&logoColor=white)](#requirements)
 
-KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin:
+KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 9 and 10 IPC plugin:
 
 1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements (beads, resistors, load switches).
 2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
@@ -16,17 +19,49 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
 
 ![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
 
-**Status: 0.6.0 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
+**Status: 0.6.5 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
 
 ## Install
 
+### Requirements
+
+* **KiCad 9.0 or later.** Developed on KiCad 10.0.7 and confirmed on KiCad 9.0.7. The tests
+  also check the API of every release from 9.0.0 to 10.0.6. On KiCad 9, KiPI works around
+  the requests that release does not have yet, with two limits on the oldest releases:
+  * Before 9.0.3, KiCad cannot say which layers a plated pad has copper on, so pads are kept
+    on every layer, including inner layers where KiCad removed unconnected pads. KiPI
+    warns about this in its log.
+  * KiCad 9.0.0 cannot report net classes.
+* **Python 3.10 to 3.13**, the one KiCad runs plugins with. KiCad installs KiPI's
+  dependencies with pip, and some of them (Triangle, PyAMG) have no prebuilt packages for
+  Python 3.14 yet.
+  * **Windows:** KiCad's own Python 3.11. Nothing to do.
+  * **Linux:** KiCad uses the system Python. Ubuntu 22.04 and 24.04, Debian 13 and Fedora 42
+    work. Ubuntu 26.04 and Fedora 43 ship Python 3.14: until those packages exist, pip has
+    to compile them, which needs a C/C++ compiler and the Python headers
+    (`sudo apt install build-essential python3-dev`).
+  * **macOS:** KiCad bundles Python 3.9, which is too old. Install Python 3.12 (for
+    example from python.org or Homebrew) and select it as the **Python interpreter** in
+    *Preferences → Plugins*.
+
+### Steps
+
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
-2. Link (or copy) this repo into your KiCad plugins folder. KiCad uses your *Documents* folder,
-   which may be redirected to OneDrive on Windows machines:
+2. Link (or copy) this repo into your KiCad plugins folder. The examples use KiCad 10's
+   folder: for KiCad 9, put `9.0` in place of `10.0`. On Windows, KiCad uses your
+   *Documents* folder, which may be redirected to OneDrive:
 
    ```powershell
    $plug = "$([Environment]::GetFolderPath('MyDocuments'))\KiCad\10.0\plugins"
    New-Item -ItemType Junction -Path "$plug\KiPI" -Target "<path to this repo>"
+   ```
+
+   On macOS the folder is `~/Documents/KiCad/10.0/plugins`, and on Linux
+   `~/.local/share/kicad/10.0/plugins`:
+
+   ```sh
+   ln -s "<path to this repo>" ~/Documents/KiCad/10.0/plugins/KiPI          # macOS
+   ln -s "<path to this repo>" ~/.local/share/kicad/10.0/plugins/KiPI       # Linux
    ```
 
 3. Restart the PCB editor. KiCad builds the plugin venv in the background; the first time this
@@ -42,8 +77,9 @@ Open your board in the PCB editor and click the **KiPI** toolbar button. KiPI op
 own window and reads the board through the KiCad API; the log at the bottom streams each
 stage as it runs.
 
-* **Refill zones** (toolbar, on by default) refills every zone in KiCad before reading, so
-  the zone fills KiPI sees match your current routing. KiPI analyzes filled copper only.
+* **Refill zones** (toolbar, on by default) refills every zone in KiCad and waits for the fill
+  to finish before reading, so the zone fills KiPI sees match your current routing. KiPI
+  analyzes filled copper only.
 * **Load from KiCad** re-reads the board after you edit it, and reloads the saved PI setup
   (save first if you have unsaved changes).
 * **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
@@ -56,6 +92,11 @@ drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** fil
 list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
 the filter box to find a net.
 
+The ticked nets are saved with the PI setup and ticked again the next time the board is
+opened. **Load from KiCad** on a board that is already open keeps the current ticks. Only
+a board with no saved choice starts with a guess: its largest power planes and the main
+ground.
+
 Below that:
 
 * **Copper layers** toggles layers in the view.
@@ -66,7 +107,9 @@ Below that:
   via in the PCB editor.
 
 Toolbar buttons set **Top / Bottom / Iso** views and save a **Screenshot…**. Drag to rotate,
-scroll to zoom and shift-drag (or middle-drag) to pan.
+scroll to zoom and shift-drag (or middle-drag) to pan. **About** shows the KiPI version and
+project links, and **Copy version info** copies the versions of KiPI, Python and its
+libraries for a bug report.
 
 ![Stackup cut along Y with 15× Z scale, showing the inner planes and via barrels](docs/images/stackup_cut.png)
 
@@ -86,6 +129,7 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Output pins, Set voltage | Where it drives, and to what voltage |
 | Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
+| Output current limit | Optional: the VRM PASSes if its total output current (all phases) is at most this. Leave at **no limit** to skip the check. |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
@@ -111,7 +155,10 @@ To try it without a design of your own, open the example board in
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
-* **Max drop** (%) is the PASS/FAIL limit. Each load is judged by its worst pin.
+* **Tolerance** (± %) is the PASS/FAIL limit. Each load is judged by its worst pin: the one
+  furthest from the VRM set point, below it (a **drop**) or above it (a **boost**). Boosts
+  happen with remote sense, where the VRM raises its output pins to hold a sense point
+  further down the copper, so pins nearer the VRM sit above the set point.
 
 | Loads tab | Thermal tab |
 |---|---|
@@ -119,9 +166,12 @@ To try it without a design of your own, open the example board in
 
 **DC connections tab**: parts that pass DC from one net to another, such as sense
 resistors, ferrite beads, fuses, load switches and 0 Ω links. Give **Side A pins**,
-**Side B pins** and a **Resistance**. Nets joined this way are solved together as one group,
-and each group may hold only one VRM. A net with no connection to its VRM is reported, not
-guessed at.
+**Side B pins** and a **Resistance**. A new connection starts on a part that bridges the first
+two ticked nets, if there is one. When both sides are on the same resistor (reference `R…`),
+the resistance is read from its value field: `10m`, `0.005`, `4k7`, `0R1`, `5 mΩ` and the like
+all work, and anything after the value (`1% 0603`) is ignored. You can still type your own.
+Nets joined this way are solved together as one group, and each group may hold only one VRM.
+A net with no connection to its VRM is reported, not guessed at.
 
 **Mesh tab**: **Max edge** is the largest triangle edge in mm; smaller is more accurate and
 slower. **Via grading** controls how fast the mesh refines towards plated holes, and
@@ -184,8 +234,15 @@ solved, the ground under a load rises above 0 V, so a supply plane can read abov
 point even though a remotely sensed rail is exactly on target. The Loads tab's effective
 voltage (supply minus ground at the load) is the figure to compare with the set point.
 
-Click any point on the copper or any via to probe it. **Show copper** returns to the plain
-geometry view without any results.
+The color scale covers the copper layers that are shown: untick a layer under **Copper
+layers** and the colors stretch over the layers that remain, so one layer's outlier does not
+flatten the rest. (Current and power density clip at the 99.5th percentile, since pad corners
+spike; the probe still reports true values.)
+
+Click any point on the copper or any via to probe it: the Info box gives the voltage, its drop
+or boost from the set point, current and power density, and the pad or via hit. **Show
+copper** returns to the plain geometry view; pick the group again, or another field, to get
+the results back.
 
 ![Voltage across the +3.3V plane, with the Loads results table](docs/images/voltage.png)
 
@@ -195,12 +252,12 @@ geometry view without any results.
 |---|---|
 | ![Via current, with the Vias table ranked by current](docs/images/via_current.png) | ![Board temperature from the electro-thermal solve, with the Notes tab](docs/images/temperature.png) |
 
-Result tabs:
+Result tabs (click a column header to sort by it; click again to reverse):
 
 | Tab | Shows |
 |---|---|
-| Loads | Each load's current, effective voltage, drop, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, plus conversion loss, with a row per phase for multi-phase VRMs |
+| Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
+| VRMs | Output and input voltage, current and power, conversion loss, and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
 | DC connections | Current and loss in each series part |
 | Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, DC connections and VRM conversion |
@@ -208,7 +265,8 @@ Result tabs:
 
 **Export ▾** writes the tables as CSV, the 3D results as a ParaView `.vtm`, or **Save
 results…** as a `.kipi-results` file, which the toolbar's **Open results…** reloads without
-solving again. Results files are Python pickles, so only open ones you created.
+solving again (load the board first). Results files are Python pickles, so only open ones
+you created.
 
 ### Tips and troubleshooting
 
@@ -219,9 +277,12 @@ solving again. Results files are Python pickles, so only open ones you created.
   obvious.
 * **Slow solves:** raise **Max edge**, or analyze fewer nets at a time. Large planes are cheap
   but very fine traces are not.
-* **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
+* **Logs:** each session writes to `kipi/kipi-<date>-<time>-<pid>.log` in the temporary
+  folder (`%TEMP%` on Windows, `$TMPDIR` on macOS, `/tmp` on Linux), and the last
   15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
-  task runs longer than a minute, a stack dump of every thread. Attach both to bug reports.
+  task runs longer than a minute, a stack dump of every thread. If the window stops
+  responding during a task, the log records where the UI thread was stuck. Attach both
+  files, and the **About** dialog's version info, to bug reports.
 
 ## Development
 
@@ -240,8 +301,17 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 `requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
 only in `requirements-dev.txt`.
 
-CI runs ruff and the test suite on Windows and Linux for every push and pull request. The
-tests also solve the example board and check that its committed setup still matches
+CI runs ruff and the test suite for every push and pull request: on Windows with Python 3.11,
+on Linux with Python 3.10 to 3.13, on macOS, and with the oldest kicad-python that
+`requirements.txt` allows. A further job checks whether every dependency has prebuilt
+packages for Python 3.14; it is expected to fail until Triangle and PyAMG publish them.
+
+`tests/kicad_fake.py` stands in for a running KiCad. It answers the IPC API's own
+messages the way each KiCad version from 9.0.0 to 10.0.6 does, refusing commands that
+version did not have yet, and `tests/test_kicad_versions.py` extracts a board from each one.
+When a KiCad release adds a command KiPI starts using, add it to `ADDED` there.
+
+The tests also solve the example board and check that its committed setup still matches
 `make_board.py`. After changing the generator, rerun
 `python examples/multiphase_buck/make_board.py` and commit both output files.
 

@@ -24,6 +24,7 @@ import numpy as np
 
 from kipi import __version__
 from kipi.model.board import BoardSnapshot
+from kipi.pi.tree import fmt_drop
 
 TRIANGLE_BUDGET = 60_000      # per group's 3D view
 Z_EXAGGERATION = 5.0
@@ -252,24 +253,31 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")
     parts.append(_table(
-        ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop (mV)", "Drop %",
-         "Worst pin (mV)", "Worst %", "Limit %", "Result"],
+        ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop / boost (mV)", "%",
+         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance %", "Result"],
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
-          _num(l.v_effective, ".6f"), _num(l.drop * 1e3, ".3f"), _num(l.drop_pct, ".3f"),
-          _num(l.drop_worst * 1e3, ".3f"), _num(l.drop_worst_pct, ".3f"),
-          _num(l.tolerance_pct, "g"), _verdict(l.passed)] for l in tree.loads]))
-    pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f")]
-          for l in tree.loads for n, a, vm, vmin in l.pin_groups]
+          _num(l.v_effective, ".6f"), fmt_drop(l.drop, unit=""), _num(abs(l.drop_pct), ".3f"),
+          _num(l.v_worst, ".6f"), fmt_drop(l.drop_worst, unit=""),
+          _num(abs(l.drop_worst_pct), ".3f"),
+          "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}", _verdict(l.passed)]
+         for l in tree.loads]))
+    parts.append("<p class='note'>Drop: below the VRM set point. Boost: above it, e.g. near a "
+                 "remote-sensed VRM's output pins. The worst pin is the one furthest from the "
+                 "set point either way, and is judged against ± the tolerance.</p>")
+    pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f"), _num(vmax, ".6f")]
+          for l in tree.loads for n, a, vm, vmin, vmax in l.pin_groups]
     if pg:
         parts.append("<h3>Load pin groups</h3>" +
-                     _table(["Load", "Pin group", "I (A)", "V mean", "V lowest pin"], pg))
+                     _table(["Load", "Pin group", "I (A)", "V mean", "V lowest pin",
+                             "V highest pin"], pg))
     parts.append("<h2 id='vrms'>VRMs</h2>")
     parts.append(_table(
         ["VRM", "Type", "Group", "V set", "V out", "V sense", "V gnd sense", "I out (A)",
-         "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)"],
+         "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)", "I limit (A)", "Result"],
         [[_e(v.name), _e(v.kind), _e(v.group), _num(v.v_set, ".5g"), _num(v.v_out, ".5f"),
           _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
-          _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss)]
+          _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss),
+          _num(v.current_limit_a, "g"), _verdict(v.passed)]
          for v in tree.vrms]))
     phases = [[_e(v.name), str(p.index), _num(p.v_out, ".5f"), _num(p.i_out), _num(p.v_in, ".5f"),
                _num(p.i_in), _num(p.p_loss)] for v in tree.vrms for p in v.phases]
@@ -345,12 +353,18 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
             rows.append([_e(names.get(lid, lid)), _num(area, ".1f"),
                          _num(v.min() if len(v) else None, ".6f"),
                          _num(v.max() if len(v) else None, ".6f"),
-                         _num((scene.v_ref - v.min()) * 1e3 if len(v) else None, ".3f"),
+                         _num(max(scene.v_ref - v.min(), 0) * 1e3 if len(v) else None, ".3f"),
+                         _num(max(v.max() - scene.v_ref, 0) * 1e3 if len(v) else None, ".3f"),
                          _num(np.percentile(j, 99.5) if len(j) else None, ".3g"),
                          _num(j.max() if len(j) else None, ".3g"),
                          _num(float(f.tri_power[sel].sum()) * 1e3, ".3f")])
-        parts.append(_table(["Layer", "Copper (mm²)", "V min", "V max", "Max drop (mV)",
+        below, above = (("Max drop (mV)", "Max boost (mV)") if g.kind == "rail"
+                        else ("Max below 0 V (mV)", "Max above 0 V (mV)"))
+        parts.append(_table(["Layer", "Copper (mm²)", "V min", "V max", below, above,
                              "|J| p99.5 (A/mm²)", "|J| max", "Loss (mW)"], rows))
+        if g.kind == "rail":
+            parts.append(f"<p class='note'>Drop and boost are measured from the "
+                         f"{scene.v_ref:g} V set point.</p>")
         maps = []
         vmin, vmax = scene.ranges["voltage"]
         for lid, lr in scene.layers.items():

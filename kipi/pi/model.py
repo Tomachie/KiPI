@@ -64,6 +64,8 @@ class Vrm:
     # Phases 2..N of a multi-phase VRM (empty = single phase). Each phase carries
     # 1/N of the output current; sense and ground sense are shared by all phases.
     phases: List[VrmPhase] = field(default_factory=list)
+    # PASS if the total output current (all phases) is at most this many amps.
+    current_limit_a: Optional[float] = None
 
     def all_phases(self) -> List[VrmPhase]:
         return [VrmPhase(self.output, self.input, self.ground), *self.phases]
@@ -90,7 +92,7 @@ class Load:
     supply: PinRef
     current: float
     ground: Optional[PinRef] = None
-    tolerance_pct: Optional[float] = None   # pass if the worst pin's drop is within this %
+    tolerance_pct: Optional[float] = None   # pass if every pin is within +/- this % of nominal
     # Empty: ``current`` is split equally across the supply pins. Otherwise each group
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)
@@ -116,6 +118,16 @@ class PISetup:
     via_current_limit_a: Optional[float] = None   # vias above this are flagged FAIL
     thermal: ThermalSettings = field(default_factory=ThermalSettings)   # off by default
     html_report: bool = False                     # write an HTML report after solving
+    # Nets ticked in the Board panel (the nets in scope). None = never chosen, so the
+    # GUI guesses the main power and ground planes; [] = the user unticked them all.
+    nets: Optional[List[str]] = None
+
+    def pin_nets(self) -> set:
+        """Nets the VRMs, loads and DC connections have pins on."""
+        refs = [r for v in self.vrms for r in v.pin_refs()]
+        refs += [r for ld in self.loads for r in (ld.supply, ld.ground) if r]
+        refs += [r for k in self.links for r in (k.side_a, k.side_b) if r]
+        return {r.net for r in refs}
 
     # ------------------------------------------------------------------ JSON
     def to_dict(self) -> dict:
@@ -139,7 +151,8 @@ class PISetup:
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")),
                       ground_sense=pin(v.get("ground_sense")),
                       phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
-                                       pin(ph.get("ground"))) for ph in v.get("phases", [])])
+                                       pin(ph.get("ground"))) for ph in v.get("phases", [])],
+                      current_limit_a=v.get("current_limit_a"))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
@@ -152,6 +165,7 @@ class PISetup:
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
             html_report=bool(d.get("html_report", False)),
+            nets=list(d["nets"]) if d.get("nets") is not None else None,
             settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
                                       if k in known}),
         )
@@ -267,6 +281,8 @@ def validate(setup: PISetup) -> List[str]:
                           "(that is what connects it into the power tree)")
         if v.kind == "smps" and not (0 < v.efficiency <= 1):
             errors.append(f"VRM {v.name}: efficiency must be between 0 and 1")
+        if v.current_limit_a is not None and not v.current_limit_a > 0:
+            errors.append(f"VRM {v.name}: the output current limit must be positive")
         if v.sense and groups[v.sense.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: sense pins must be on the output net (or nets "
                           "DC-connected to it)")

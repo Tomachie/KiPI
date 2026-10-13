@@ -8,7 +8,7 @@ model.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -59,15 +59,18 @@ class Fields:
     tri_area: np.ndarray          # (M,) mm^2
     vias: List[ViaResult]
     terminals: List[TerminalResult]
-    v_ref: float                  # highest source voltage, the reference for "drop"
+    v_ref: float                  # the reference for drop (below it) and boost (above it)
     summary: Dict[str, float] = field(default_factory=dict)
     series: List[SeriesResult] = field(default_factory=list)
 
     def drop(self, v: np.ndarray) -> np.ndarray:
+        """v_ref - v: positive is a drop, negative a boost."""
         return self.v_ref - v
 
 
-def compute_fields(sol: Solution) -> Fields:
+def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
+    """``v_ref``: the nominal voltage drop and boost are measured from (default: the
+    highest source voltage)."""
     mesh, prob = sol.mesh, sol.problem
     b, c, two_a = triangle_geometry(mesh.points, mesh.tris)
     v = np.nan_to_num(sol.node_v[mesh.tris])          # floating copper -> zero field
@@ -108,6 +111,10 @@ def compute_fields(sol: Solution) -> Fields:
         nodes = next(iter(mesh.pad_nodes[pid].values()))
         return float(sol.node_v[nodes[0]])
 
+    # What the system was actually solved with (a power tree overrides the problem's
+    # placeholder currents); solutions pickled before these were kept lack them.
+    amps = getattr(sol, "load_current", None) or {}
+    volts = getattr(sol, "source_voltage", None) or {}
     terminals = []
     for src in prob.sources:
         vs = [pad_v(p) for p in src.pad_ids]
@@ -115,14 +122,17 @@ def compute_fields(sol: Solution) -> Fields:
                                         vs, min(vs), max(vs)))
     for load in prob.loads:
         vs = [pad_v(p) for p in load.pad_ids]
-        terminals.append(TerminalResult(load.name, "load", load.current, vs, min(vs), max(vs)))
+        terminals.append(TerminalResult(load.name, "load", amps.get(load.name, load.current),
+                                        vs, min(vs), max(vs)))
 
-    v_ref = max(s.voltage for s in prob.sources)
+    v_src = max(volts.get(s.name, s.voltage) for s in prob.sources)
+    if v_ref is None:
+        v_ref = v_src
     copper_power = float(tri_power.sum())
-    # Power delivered into the copper, measured relative to v_ref so it is not the small
+    # Power delivered into the copper, measured relative to v_src so it is not the small
     # difference of two large products (sum(I_src) == sum(I_load) is checked separately).
-    delivered = sum(t.current * (v_ref - t.v_mean) for t in terminals if t.kind == "load") - \
-        sum(t.current * (v_ref - t.v_mean) for t in terminals if t.kind == "source")
+    delivered = sum(t.current * (v_src - t.v_mean) for t in terminals if t.kind == "load") - \
+        sum(t.current * (v_src - t.v_mean) for t in terminals if t.kind == "source")
     i_src = sum(t.current for t in terminals if t.kind == "source")
     i_load = sum(t.current for t in terminals if t.kind == "load")
     series = []
@@ -140,7 +150,8 @@ def compute_fields(sol: Solution) -> Fields:
         "v_ref": v_ref,
         "v_min": float(np.nanmin(sol.node_v)),
         "v_max": float(np.nanmax(sol.node_v)),
-        "max_drop": float(v_ref - np.nanmin(sol.node_v)),
+        "max_drop": float(max(v_ref - np.nanmin(sol.node_v), 0.0)),
+        "max_boost": float(max(np.nanmax(sol.node_v) - v_ref, 0.0)),
         "j_max": float(j.max()) if len(j) else 0.0,
         "power_copper": copper_power,
         "power_barrels": total_barrel_power,

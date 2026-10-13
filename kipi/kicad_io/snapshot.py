@@ -74,7 +74,8 @@ def from_dict(d: Dict[str, Any]) -> BoardSnapshot:
               for v in d["vias"]],
         pads=[Pad(id=p["id"], net=p["net"], footprint=p["footprint"], number=p["number"],
                   position=tuple(p["position"]), pad_type=p["pad_type"],
-                  drill_mm=tuple(p["drill_mm"]), shapes=_layer_polys(p["shapes"]))
+                  drill_mm=tuple(p["drill_mm"]), shapes=_layer_polys(p["shapes"]),
+                  angle_deg=p.get("angle_deg"))
               for p in d["pads"]],
         footprints=[Footprint(id=f["id"], reference=f["reference"], value=f["value"],
                               position=tuple(f["position"]), side=f["side"],

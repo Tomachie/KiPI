@@ -26,6 +26,7 @@ from kipi.gui.pi_panel import PIPanel
 from kipi.gui.worker import QtProgress, Task
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import classify_nets, sorted_nets
+from kipi.pi.tree import fmt_drop
 
 log = logging.getLogger("kipi")
 
@@ -54,6 +55,11 @@ class MainWindow(QMainWindow):
         self._render_timer.setSingleShot(True)
         self._render_timer.setInterval(50)
         self._render_timer.timeout.connect(self._timed_render)
+        from kipi.gui import app as kipi_app
+        self._ui_beat_timer = QTimer(self)   # lets the task watchdog spot a stalled UI
+        self._ui_beat_timer.setInterval(250)
+        self._ui_beat_timer.timeout.connect(kipi_app.ui_alive)
+        self._ui_beat_timer.start()
         self._checked_cache: Optional[frozenset] = None  # None = recompute from the list
         self._last_fraction_t = 0.0
         self._picked = None   # ("pad"|"via", id)
@@ -102,6 +108,12 @@ class MainWindow(QMainWindow):
         act("Screenshot…", self.save_screenshot)
         tb.addSeparator()
         act("Open results…", self.open_results, "Reopen a saved power-tree solve")
+        tb.addSeparator()
+        self.act_about = act("About", self.show_about, "Version, author and project links")
+
+    def show_about(self):
+        from kipi.gui.about import AboutDialog
+        AboutDialog(self).exec()
 
     def _build_left_panel(self):
         panel = QWidget(self)
@@ -205,8 +217,11 @@ class MainWindow(QMainWindow):
     def _build_solve_dock(self):
         self.solve_panel = PIPanel(self)
         self.solve_panel.solve_requested.connect(self.run_solve)
-        self.solve_panel.field_changed.connect(self.viewer.set_result_field)
+        self.solve_panel.field_changed.connect(self._field_changed)
         self.solve_panel.group_changed.connect(self._show_group)
+        # Picking the group already selected sends no group_changed; after "Show copper"
+        # that pick is how the results come back.
+        self.solve_panel.cmb_group.activated.connect(self._group_activated)
         self.solve_panel.show_geometry.connect(self._show_geometry)
         self.solve_panel.save_requested.connect(self._save_setup)
         self.solve_panel.arrows_toggled.connect(self.viewer.set_arrows_visible)
@@ -391,18 +406,23 @@ class MainWindow(QMainWindow):
             self.log(f"Screenshot saved to {path}")
 
     def _set_snapshot(self, snap: BoardSnapshot):
+        prev = self.snapshot
+        # Re-reading the same board from KiCad keeps the nets ticked now, even unsaved.
+        keep = (self._checked_nets() if prev is not None and
+                (prev.board_name, prev.project_dir) == (snap.board_name, snap.project_dir)
+                else None)
         self.snapshot = snap
         self._copper_cache.clear()
         self._picked = None
         self.btn_select_kicad.setEnabled(False)
         self.setWindowTitle(f"KiPI {__version__} — {snap.board_name}")
         self._populate_layers()
-        self._populate_nets()
-        self._show_board_summary()
         self._result = None
         self._tree = None
         self._scenes = {}
-        self._load_setup(snap)
+        setup = self._load_setup(snap)
+        self._populate_nets(keep if keep is not None else setup.nets, setup)
+        self._show_board_summary()
         from kipi.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
         self.sync_nets()
@@ -426,17 +446,29 @@ class MainWindow(QMainWindow):
             self.layer_list.addItem(it)
         self.layer_list.blockSignals(False)
 
-    def _populate_nets(self):
+    def _populate_nets(self, chosen: Optional[List[str]], setup):
+        """Fill the net list, ticking ``chosen``; None means the user has never chosen
+        (a new setup), so tick the main power and ground planes instead."""
         snap = self.snapshot
         kinds = classify_nets(snap)
-        zone_nets = {z.net for z in snap.zones}
         pad_count: Dict[str, int] = {}
         for p in snap.pads:
             pad_count[p.net] = pad_count.get(p.net, 0) + 1
-        # Start with the main plane nets: a few power nets plus the main ground.
-        by_pads = sorted(zone_nets, key=lambda n: -pad_count.get(n, 0))
-        auto = set([n for n in by_pads if kinds.get(n) == "power"][:MAX_AUTO_NETS - 1] +
-                   [n for n in by_pads if kinds.get(n) == "ground"][:1])
+        if chosen is not None:
+            auto = set(chosen)
+            gone = sorted(auto - set(kinds))
+            if gone:
+                self.log(f"Nets in the setup that are not on the board: {', '.join(gone)}",
+                         logging.WARNING)
+        else:
+            # Start with the main plane nets: a few power nets plus the main ground.
+            zone_nets = {z.net for z in snap.zones}
+            by_pads = sorted(zone_nets, key=lambda n: -pad_count.get(n, 0))
+            auto = set([n for n in by_pads if kinds.get(n) == "power"][:MAX_AUTO_NETS - 1] +
+                       [n for n in by_pads if kinds.get(n) == "ground"][:1])
+            # A setup saved before nets were stored: its VRMs, loads and links are on
+            # nets the user had ticked.
+            auto |= setup.pin_nets()
 
         self.net_list.blockSignals(True)
         self.net_list.clear()
@@ -508,6 +540,7 @@ class MainWindow(QMainWindow):
         if self.snapshot is None:
             return
         self.solve_panel.set_nets(list(self._checked_set()))
+        self.solve_panel.setup.nets = self._checked_nets()   # saved with the setup
         if self._busy():
             self._resync_pending = True
             return
@@ -579,10 +612,13 @@ class MainWindow(QMainWindow):
                 label = f"Could not read {path.name}; starting empty"
         self._setup_path = path
         self.solve_panel.set_board(snap, setup, label)
+        return setup
 
     def _save_setup(self):
         if self._setup_path is None:
             return
+        if self.snapshot is not None:   # a checkbox change may not have synced yet
+            self.solve_panel.setup.nets = self._checked_nets()
         try:
             self.solve_panel.setup.save(self._setup_path)
             self.solve_panel.lbl_file.setText(f"Setup: {self._setup_path}")
@@ -627,6 +663,8 @@ class MainWindow(QMainWindow):
             with progress.timed("Building result views"):
                 temp = tree.thermal.sampler() if tree.thermal is not None else None
                 for name, g in tree.groups.items():
+                    progress.check_cancel()
+                    progress.info(f"  {name}: {g.result.mesh.n_tris} triangles")
                     scenes[name] = build_result_scene(snap, g.result, temperature=temp)
             if report_path is not None:
                 from kipi.report.html import write_report
@@ -650,8 +688,8 @@ class MainWindow(QMainWindow):
             self._show_group(first)
             for l in tree.loads:
                 verdict = "" if l.passed is None else (" PASS" if l.passed else " FAIL")
-                self.log(f"  {l.name}: {l.drop * 1e3:.3f} mV drop ({l.drop_pct:.3f} %) "
-                         f"at {l.current:g} A{verdict}")
+                self.log(f"  {l.name}: {fmt_drop(l.drop)} ({abs(l.drop_pct):.3f} %), worst pin "
+                         f"{fmt_drop(l.drop_worst)} at {l.current:g} A{verdict}")
 
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
@@ -667,6 +705,8 @@ class MainWindow(QMainWindow):
         """Jump to a via from the results table: show its group, center and select it."""
         if self.solve_panel.cmb_group.currentText() != group:
             self.solve_panel.cmb_group.setCurrentText(group)
+        elif self.viewer.result is None:          # the copper view is up ("Show copper")
+            self._show_group(group)
         scene = self.viewer.result
         if scene is None or owner_id not in scene.via_ids:
             return
@@ -708,6 +748,12 @@ class MainWindow(QMainWindow):
 
     def open_results(self):
         from kipi.pi import report
+        if self.snapshot is None:
+            # The tables and probing need the board (pads, layers); results files hold
+            # only the solution.
+            QMessageBox.information(self, "KiPI", "Load the board (from KiCad or a snapshot) "
+                                                  "before opening its results.")
+            return
         start = str(self._setup_path.parent) if self._setup_path else ""
         path, _ = QFileDialog.getOpenFileName(self, "Open results", start,
                                               "KiPI results (*.kipi-results)")
@@ -733,6 +779,17 @@ class MainWindow(QMainWindow):
         self._result = self._tree.groups[name].result
         self.viewer.show_result(self._scenes[name], self.solve_panel.current_field())
 
+    def _group_activated(self, index: int):
+        if self.viewer.result is None:
+            self._show_group(self.solve_panel.cmb_group.itemText(index))
+
+    def _field_changed(self, field: str):
+        """A new result field; from the copper view this brings the results back."""
+        if self.viewer.result is None:
+            self._show_group(self.solve_panel.cmb_group.currentText())
+        else:
+            self.viewer.set_result_field(field)
+
     def _show_geometry(self):
         self.viewer.clear_result()
 
@@ -756,6 +813,14 @@ class MainWindow(QMainWindow):
             f"Zones: {len(s.zones)} &nbsp; Footprints: {len(s.footprints)}<br><br>"
             f"<table cellspacing=4><tr><th align=left>Layer</th><th>Cu</th><th>z mm</th></tr>"
             f"{rows}</table><br><i>Left-click copper in the 3D view to identify it.</i>")
+
+    def _probe_deviation(self, dv: float, v_ref: float) -> str:
+        """A probed point against its reference: drop or boost from a rail's set point, or
+        how far a ground sits from its 0 V reference."""
+        group = self._tree.groups.get(self.viewer.result.net) if self._tree else None
+        if group is not None and group.kind == "ground":
+            return f"{abs(dv) * 1e3:.4f} mV {'above' if dv <= 0 else 'below'} 0 V"
+        return f"{fmt_drop(dv, '.4f')} (from {v_ref:g} V)"
 
     def _nearest_layer(self, z: float):
         st = self.snapshot.stackup
@@ -812,18 +877,20 @@ class MainWindow(QMainWindow):
         probe_html = ""
         scene = self.viewer.result
         if scene is not None:
-            shown = {scene.net}
+            # The scene is named after its group; a group may join several nets.
+            group = self._tree.groups.get(scene.net) if self._tree else None
+            shown = set(group.nets) if group is not None else {scene.net}
             # Results only exist on layers with this net's copper; pick the nearest of those.
             layers = [s.stackup.layer(l) for l in scene.layers]
             cu = min(layers, key=lambda c: abs(c.z_mid_mm - z))
             val = scene.probe(cu.id, x, y)
             if val is not None:
-                probe_html = (f"<b>V = {val['V']:.6f} V</b> &nbsp; drop "
-                              f"<b>{val['drop_mV']:.4f} mV</b><br>"
+                dev = self._probe_deviation(val["drop_mV"] * 1e-3, scene.v_ref)
+                probe_html = (f"<b>V = {val['V']:.6f} V</b> &nbsp; <b>{dev}</b><br>"
                               f"|J| = {val['J']:.3f} A/mm² &nbsp; P = {val['P']:.4g} mW/mm²")
                 self.statusBar().showMessage(
                     f"{cu.name}  x={x:.3f} y={y:.3f}  V={val['V']:.6f}  "
-                    f"drop={val['drop_mV']:.4f} mV  |J|={val['J']:.3f} A/mm²")
+                    f"{dev}  |J|={val['J']:.3f} A/mm²")
 
         best_via = via_obj      # chosen by on-screen distance in _on_click
 

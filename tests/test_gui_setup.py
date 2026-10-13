@@ -32,3 +32,66 @@ def test_ticking_nets_does_not_edit_the_selected_items(app):
     panel.load_list.lst.setCurrentRow(0)
     panel.set_nets(["VIN"])
     assert setup.to_dict() == before
+
+
+def test_vrm_current_limit_edits_and_shows_in_results(app):
+    from kipi.pi.tree import solve_tree
+    setup = two_phase()
+    panel = PIPanel()
+    panel.set_board(board(), setup, "test")
+    panel.vrm_list.lst.setCurrentRow(1)
+    ed = panel.vrm_list.editor
+    assert ed.i_limit.value() == 0 and ed.i_limit.text() == "no limit"
+    ed.i_limit.setValue(1.5)
+    assert setup.vrms[1].current_limit_a == 1.5
+    tree = solve_tree(board(), setup)
+    panel.show_results(tree, next(iter(tree.groups)))
+    t = panel.tbl_vrms
+    row = {t.item(r, 0).text(): r for r in range(t.rowCount())}
+    assert t.item(row["U1"], 8).text() == "1.5" and t.item(row["U1"], 9).text() == "FAIL"
+    assert t.item(row["J1"], 9).text() == ""
+    ed.i_limit.setValue(0)
+    assert setup.vrms[1].current_limit_a is None
+    panel.close()
+
+
+def _board_with_bridges():
+    from kipi.model.board import Footprint, Net, Pad
+    from synthetic import make_board
+    snap = make_board()
+    snap.nets.append(Net(4, "VSNS"))
+    for ref, value, x in (("R5", "10m 1%", 4.0), ("L1", "BLM18", 6.0)):
+        snap.pads += [Pad(f"{ref}a", "+3V3", ref, "1", (x, 0.0), "smd"),
+                      Pad(f"{ref}b", "VSNS", ref, "2", (x, 1.0), "smd")]
+        snap.footprints.append(Footprint(f"f{ref}", ref, value, (x, 0.5), "top",
+                                         [f"{ref}a", f"{ref}b"]))
+    return snap
+
+
+def test_dc_connection_takes_a_resistors_value(app):
+    from kipi.pi.model import PISetup
+    setup = PISetup()
+    panel = PIPanel()
+    panel.set_board(_board_with_bridges(), setup, "test")
+    panel.set_nets(["+3V3", "VSNS"])
+    panel.link_list._add()
+    k = setup.links[0]
+    # A new connection uses a part bridging the two nets; a ferrite gets no resistance.
+    assert (k.name, k.side_a.ref, k.side_b.ref, k.resistance) == ("L1", "L1", "L1", 0.0)
+    ed = panel.link_list.editor
+
+    def pick(ref):
+        for picker in (ed.a, ed.b):
+            picker.cmb_part.setCurrentIndex(picker.cmb_part.findData(ref))
+
+    pick("R5")
+    assert k.side_b.ref == "R5" and k.resistance == pytest.approx(0.01)
+    assert ed.r.value() == pytest.approx(10.0)
+    # A typed resistance is kept when switching to a non-resistor ...
+    ed.r.setValue(25.0)
+    pick("L1")
+    assert k.resistance == pytest.approx(0.025)
+    # ... and picking the resistor again re-reads its value.
+    pick("R5")
+    assert k.resistance == pytest.approx(0.01) and ed.r.value() == pytest.approx(10.0)
+    panel.close()

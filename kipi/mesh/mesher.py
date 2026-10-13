@@ -17,6 +17,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import shapely
+from shapely import STRtree
 import triangle
 from scipy.spatial import cKDTree
 from shapely.geometry import Point, Polygon
@@ -27,6 +28,9 @@ from kipi.model.board import BoardSnapshot, Pad
 from kipi.progress import NULL, ProgressReporter
 
 RING_EPS_MM = 1e-3      # tolerance when collecting nodes on a drill ring / inside a pad
+# Steps big enough to announce before they start (they take seconds), not only after.
+ANNOUNCE_LAYER_MM2 = 200.0   # copper area of one layer of one net
+ANNOUNCE_HOLES = 50          # plated holes to join across layers
 
 
 class MeshError(RuntimeError):
@@ -352,6 +356,9 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
             continue
         if simplify_mm > 0:
             geom = geom.simplify(simplify_mm, preserve_topology=True)
+        if geom.area >= ANNOUNCE_LAYER_MM2:
+            # Big planes take seconds each; say so before starting, not only after.
+            progress.info(f"  {cu.name}: meshing {geom.area:.0f} mm² of copper...")
         constraints = [g.boundary for g in (_pad_geom(p, cu.id) for p in terminals) if g is not None]
         size_fn = graded_size(_hole_features(snap, net, cu.id), min_edge_mm, max_edge_mm, grading)
         start = n_nodes
@@ -390,6 +397,10 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
     trees = {lid: cKDTree(points[a:b]) for lid, (a, b) in layer_ranges.items()}
 
     # Plated holes: collect each hole's boundary nodes per layer.
+    n_holes = sum(v.drill_mm > 0 for v in vias) + sum(
+        p.pad_type == "pth" and p.drill_mm[0] > 0 for p in pads)
+    if n_holes >= ANNOUNCE_HOLES:
+        progress.info(f"  Joining layers through {n_holes} plated holes...")
     def ring(lid, hole_geom):
         a, b = layer_ranges[lid]
         return _nodes_in(hole_geom, points[a:b], trees[lid], a)
@@ -406,20 +417,33 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
                     bar.ring_nodes[lid] = nodes
         if bar.ring_nodes:   # even one layer: the plated wall shorts the hole edge
             mesh.barrels.append(bar)
+    # The net's holes on each layer, unioned once per layer (not once per pad and layer)
+    # and indexed so each pad finds its own part quickly.
+    layer_holes: Dict[int, Optional[Tuple[np.ndarray, STRtree]]] = {}
+
+    def pad_hole(lid, pos):
+        if lid not in layer_holes:
+            hole = drill_holes(snap, net, lid, circle_quad_segs)
+            parts = shapely.get_parts(hole) if hole is not None else None
+            layer_holes[lid] = (parts, STRtree(parts)) if parts is not None else None
+        if layer_holes[lid] is None:
+            return None
+        parts, tree = layer_holes[lid]
+        hits = tree.query(Point(pos), predicate="dwithin", distance=1e-6)
+        # The first such part in union order, as a linear scan would find it.
+        return parts[hits.min()] if len(hits) else None
+
     for p in pads:
         if p.pad_type != "pth" or p.drill_mm[0] <= 0:
             continue
         bar = Barrel(owner_id=p.id, kind="pth", position=p.position,
                      drill_mm=min(p.drill_mm[0], p.drill_mm[1] or p.drill_mm[0]))
         for lid in [c.id for c in st.copper if c.id in p.shapes and c.id in layer_ranges]:
-            hole = drill_holes(snap, net, lid, circle_quad_segs)
-            if hole is None:
-                continue
             # The net's holes on this layer; keep only the part belonging to this pad.
-            mine = [g for g in shapely.get_parts(hole) if g.distance(Point(p.position)) < 1e-6]
-            if not mine:
+            mine = pad_hole(lid, p.position)
+            if mine is None:
                 continue
-            nodes = ring(lid, mine[0])
+            nodes = ring(lid, mine)
             if len(nodes):
                 bar.ring_nodes[lid] = nodes
         if bar.ring_nodes:   # even one layer: the plated wall shorts the hole edge

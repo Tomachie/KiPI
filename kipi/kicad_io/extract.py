@@ -1,4 +1,4 @@
-"""Read a live KiCad 10 board through the IPC API (kicad-python / kipy) into a
+"""Read a live KiCad 9 or 10 board through the IPC API (kicad-python / kipy) into a
 :class:`~kipi.model.board.BoardSnapshot`.
 
 All kipy-specific code lives here so the rest of KiPI never touches protobufs.
@@ -57,6 +57,7 @@ def connect(timeout_ms: int = 5000, retries: int = 3, progress: ProgressReporter
             version = kicad.get_version()
             progress.info(f"Connected to KiCad {version} "
                           f"(kicad-python built for {kicad.get_api_version()})")
+            _warn_old_kicad(version, progress)
             board = kicad.get_board()
             return kicad, board
         except ApiError as e:   # e.g. AS_BUSY or no board open
@@ -69,6 +70,18 @@ def connect(timeout_ms: int = 5000, retries: int = 3, progress: ProgressReporter
         "Could not connect to KiCad. Make sure the PCB editor is open with a board loaded "
         "and that Preferences > Plugins > 'Enable KiCad API' is checked.\n"
         f"Last error: {last_err}")
+
+
+def _warn_old_kicad(version, progress: ProgressReporter) -> None:
+    """Say what a KiCad too old for some of KiPI's requests means for the results."""
+    try:
+        v = (int(version.major), int(version.minor), int(version.patch))
+    except (AttributeError, TypeError, ValueError):
+        return
+    if v < (9, 0, 3):
+        progress.warn(f"KiCad {v[0]}.{v[1]}.{v[2]} cannot say which layers plated pads have "
+                      "copper on, so pads are kept on every layer. Update to KiCad 9.0.3 "
+                      "or later for exact pad copper.")
 
 
 # ---------------------------------------------------------------------------
@@ -129,23 +142,73 @@ def _poly(pwh) -> Poly:
 # Stackup
 # ---------------------------------------------------------------------------
 
-def _copper_layer_ids(board) -> List[int]:
+def _unsupported(e: Exception) -> bool:
+    """True if KiCad does not know the request: it is older than the command.
+
+    KiCad answers such a request with ``AS_UNHANDLED`` and the message "no handler
+    available for request of type ..." (``KICAD_API_SERVER::handleApiEvent``). Either is
+    taken as the sign, in case a release reports the status differently.
+    """
+    from kipy.errors import ApiError
+    from kipy.proto.common.envelope_pb2 import ApiStatusCode
+    return isinstance(e, ApiError) and (e.code == ApiStatusCode.AS_UNHANDLED
+                                        or "no handler available" in str(e))
+
+
+def _stackup_copper(stackup_layers) -> Dict[int, str]:
+    """Enabled copper layers in the board's stackup, with the names shown in KiCad."""
+    from kipy.proto.board import board_pb2
+    return {sl.layer: sl.user_name for sl in stackup_layers
+            if sl.enabled and sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER}
+
+
+def _copper_layer_ids(board, stackup_layers=(), progress: ProgressReporter = NULL) -> List[int]:
     from kipy.util.board_layer import is_copper_layer
     from kipy.proto.board.board_types_pb2 import BoardLayer
-    ids = [l for l in board.get_enabled_layers() if is_copper_layer(l)]
+    try:
+        ids = [l for l in board.get_enabled_layers() if is_copper_layer(l)]
+    except Exception as e:  # noqa: BLE001
+        if not _unsupported(e):
+            raise
+        # KiCad before 9.0.5 cannot list the enabled layers: the stackup has the copper.
+        ids = [l for l in _stackup_copper(stackup_layers) if is_copper_layer(l)]
+        if not ids:
+            progress.warn("This KiCad cannot list the board's layers; assuming 2 copper layers")
+            ids = [BoardLayer.BL_F_Cu, BoardLayer.BL_B_Cu]
     # Stack order: F.Cu, In1..In30, B.Cu. Enum values are already in that order.
     return sorted(ids, key=lambda l: (l == BoardLayer.BL_B_Cu, l))
+
+
+def _layer_names(board, cu_ids, stackup_layers) -> Dict[int, str]:
+    """Each copper layer's name as KiCad shows it ("F.Cu", or the user's own name)."""
+    from kipy.util.board_layer import CANONICAL_LAYER_NAMES
+    from_stackup = _stackup_copper(stackup_layers)
+    names = {}
+    for l in cu_ids:
+        try:
+            name = board.get_layer_name(l)
+        except Exception as e:  # noqa: BLE001
+            if not _unsupported(e):
+                raise
+            name = ""            # KiCad before 9.0.8 has no GetBoardLayerName
+        names[l] = name or from_stackup.get(l) or CANONICAL_LAYER_NAMES.get(l, str(l))
+    return names
 
 
 def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
     from kipy.proto.board import board_pb2
 
-    cu_ids = _copper_layer_ids(board)
-    names = {l: board.get_layer_name(l) for l in cu_ids}
+    try:
+        stackup_layers = list(board.get_stackup().layers)
+    except Exception as e:  # noqa: BLE001 - stackup is optional; fall back below
+        progress.warn(f"Could not read board stackup ({e}); using defaults")
+        stackup_layers = []
+    cu_ids = _copper_layer_ids(board, stackup_layers, progress)
+    names = _layer_names(board, cu_ids, stackup_layers)
 
     entries = []  # (kind, layer_id, thickness_mm, material, epsilon_r), top to bottom
     try:
-        for sl in board.get_stackup().layers:
+        for sl in stackup_layers:
             if not sl.enabled:
                 continue
             if sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER and sl.layer in names:
@@ -158,7 +221,7 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
                 er = subs[0].epsilon_r if subs else 0.0
                 entries.append(("diel", -1, t, mat, er))
     except Exception as e:  # noqa: BLE001 - stackup is optional; fall back below
-        progress.warn(f"Could not read board stackup ({e}); using defaults")
+        progress.warn(f"Could not read board stackup layers ({e}); using defaults")
         entries = []
 
     from_board = sum(1 for e in entries if e[0] == "cu") == len(cu_ids) and len(cu_ids) > 0
@@ -218,6 +281,15 @@ def _netclass_map(board, nets) -> Dict[str, str]:
         return {}
 
 
+def _net_code(net, index: int) -> int:
+    """KiCad's net code, which KiPI only records. kipy deprecates it (KiCad is dropping
+    net codes from the API), so read the message itself and fall back to the list order."""
+    try:
+        return int(net.proto.code.value)
+    except Exception:  # noqa: BLE001
+        return index
+
+
 def _field_text(field) -> str:
     try:
         return field.text.value
@@ -260,6 +332,15 @@ def _pad_shapes(board, pads, layer_ids: Iterable[int], progress) -> Dict[str, Di
             if len(p.outline) >= 3:
                 out.setdefault(pid.value, {}).setdefault(lid, []).append(p)
     return out
+
+
+def _pad_angle(pad) -> Optional[float]:
+    """The pad's orientation on the board in degrees. KiCad keeps the padstack's angle
+    absolute (the footprint's rotation is included); the drill size is unrotated."""
+    try:
+        return float(pad.padstack.angle.degrees)
+    except Exception:  # noqa: BLE001 - older API: slots fall back to the pad's shape
+        return None
 
 
 def _via_layers(via, stackup: Stackup) -> List[int]:
@@ -315,6 +396,65 @@ def _outline(board, progress) -> List[Poly]:
                  holes=[list(r.coords)[:-1] for r in g.interiors]) for g in geoms]
 
 
+def _kicad_busy(board) -> bool:
+    """True if the PCB editor cannot serve board requests right now.
+
+    ``Ping`` is answered even while a zone fill runs, so it cannot tell when the fill
+    is done. A cheap ``GetItems`` goes through the editor's busy check: it returns
+    ``AS_BUSY`` while the fill runs, or times out if the fill blocks the event loop.
+
+    Groups are asked for because a board has few of them. KiCad checks for busy before it
+    looks at the type, so a KiCad that rejects groups (KiCad 9) is asked for text instead,
+    and then for tracks, which every version serves.
+    """
+    from kipy.errors import ApiError
+    from kipy.proto.common.envelope_pb2 import ApiStatusCode
+    from kipy.proto.common.types import KiCadObjectType
+
+    probes = (KiCadObjectType.KOT_PCB_GROUP, KiCadObjectType.KOT_PCB_TEXT,
+              KiCadObjectType.KOT_PCB_TRACE)
+    for i, kind in enumerate(probes):
+        try:
+            board.get_items(kind)
+        except ApiError as e:
+            if e.code == ApiStatusCode.AS_BUSY:
+                return True
+            if (e.code in (ApiStatusCode.AS_BAD_REQUEST, ApiStatusCode.AS_UNHANDLED)
+                    and i < len(probes) - 1):
+                continue
+            raise
+        except OSError:     # transport timeout (kipy raises ConnectionError)
+            return True
+        return False
+    return False
+
+
+def refill_and_wait(board, progress: ProgressReporter = NULL, timeout_s: float = 600.0,
+                    grace_s: float = 3.0, poll_s: float = 0.25) -> None:
+    """Refill all zones in KiCad and return once the fill has finished.
+
+    KiCad only queues the refill when it acknowledges the request, so the editor is
+    briefly idle before the fill starts. kipy's own ``refill_zones(block=True)`` polls
+    with ``Ping``, which succeeds in that window (and during the fill), so it returned
+    before the fill and the following reads hit ``AS_BUSY`` or timed out. Here we wait
+    until we have seen the editor busy and then idle again, or, for a fill too quick
+    to catch, until it has stayed idle for ``grace_s``.
+    """
+    board.refill_zones(block=False)
+    t0 = time.perf_counter()
+    seen_busy = False
+    while True:
+        progress.check_cancel()
+        time.sleep(poll_s)
+        elapsed = time.perf_counter() - t0
+        if _kicad_busy(board):
+            seen_busy = True
+        elif seen_busy or elapsed >= grace_s:
+            return
+        if elapsed > timeout_s:
+            raise ExtractionError(f"KiCad was still filling zones after {timeout_s:.0f} s")
+
+
 def extract_board(board, refill_zones: bool = False,
                   progress: ProgressReporter = NULL) -> BoardSnapshot:
     """Pull everything KiPI needs from an open kipy ``Board``."""
@@ -322,7 +462,7 @@ def extract_board(board, refill_zones: bool = False,
 
     if refill_zones:
         with progress.timed("Refilling zones"):
-            board.refill_zones(block=True, max_poll_seconds=120.0)
+            refill_and_wait(board, progress)
 
     with progress.timed("Reading stackup"):
         stackup = extract_stackup(board, progress)
@@ -332,7 +472,8 @@ def extract_board(board, refill_zones: bool = False,
     with progress.timed("Reading nets"):
         knets = board.get_nets()
         nc = _netclass_map(board, knets)
-        nets = [Net(code=n.code, name=n.name, netclass=nc.get(n.name, "")) for n in knets]
+        nets = [Net(code=_net_code(n, i), name=n.name, netclass=nc.get(n.name, ""))
+                for i, n in enumerate(knets)]
         progress.info(f"{len(nets)} nets")
     progress.check_cancel()
 
@@ -391,7 +532,8 @@ def extract_board(board, refill_zones: bool = False,
                 number=p.number, position=_pt(p.position),
                 pad_type=_PAD_TYPES.get(p.pad_type, "unknown"),
                 drill_mm=(_mm(d.x), _mm(d.y)),
-                shapes=shapes.get(p.id.value, {})))
+                shapes=shapes.get(p.id.value, {}),
+                angle_deg=_pad_angle(p)))
     progress.check_cancel()
 
     with progress.timed("Reading zone fills"):
