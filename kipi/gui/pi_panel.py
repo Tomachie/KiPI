@@ -988,12 +988,16 @@ class PIPanel(QWidget):
         s = self.setup.settings
         self.spin_edge = _spin(0.05, 5.0, s.max_edge_mm, 2, " mm", 0.05)
         self.spin_grading = _spin(0.0, 2.0, s.grading, 2, "", 0.05)
-        self.spin_plating = _spin(1.0, 100.0, s.plating_mm * 1000, 1, " µm", 1.0)
+        from kipi.gui.via_rules_editor import ViaRulesEditor
+        self.via_rules = ViaRulesEditor(w)
+        self.via_rules.set_rules(s.via_rules)
         f.addRow("Max edge", self.spin_edge)
         f.addRow("Via grading", self.spin_grading)
-        f.addRow("Barrel plating", self.spin_plating)
-        for sp in (self.spin_edge, self.spin_grading, self.spin_plating):
+        f.addRow(QLabel("<b>Via plating</b>"))
+        f.addRow(self.via_rules)
+        for sp in (self.spin_edge, self.spin_grading):
             sp.valueChanged.connect(self._settings_changed)
+        self.via_rules.changed.connect(self._settings_changed)
         return w
 
     def _copper_tab(self) -> QWidget:
@@ -1127,7 +1131,7 @@ class PIPanel(QWidget):
         s = self.setup.settings
         s.max_edge_mm = self.spin_edge.value()
         s.grading = self.spin_grading.value()
-        s.plating_mm = self.spin_plating.value() / 1000
+        s.via_rules = self.via_rules.rules()
         self._on_changed()
 
     # ------------------------------------------------------------------ data
@@ -1137,12 +1141,14 @@ class PIPanel(QWidget):
         self.lbl_file.setText(file_label)
         for sp, v in ((self.spin_edge, setup.settings.max_edge_mm),
                       (self.spin_grading, setup.settings.grading),
-                      (self.spin_plating, setup.settings.plating_mm * 1000),
                       (self.spin_rho, setup.settings.rho_ohm_mm / UOHM_CM),
                       (self.spin_tcr, setup.settings.tcr_per_c)):
             sp.blockSignals(True)
             sp.setValue(v)
             sp.blockSignals(False)
+        self.via_rules.blockSignals(True)
+        self.via_rules.set_rules(setup.settings.via_rules)
+        self.via_rules.blockSignals(False)
         self._fill_rho_table()
         self.clear_results()
         self.spin_via_limit.blockSignals(True)
