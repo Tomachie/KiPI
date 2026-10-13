@@ -39,6 +39,7 @@ class LoadReport:
     pin_groups: List[tuple] = field(default_factory=list)  # (name, A, V mean, V min)
     v_best: float = 0.0                  # highest supply pin minus lowest ground pin
     status: str = ""                     # why the load was not judged, or was failed outright
+    min_v: Optional[float] = None        # the load's datasheet minimum supply voltage
 
     @property
     def drop_pct(self) -> float:
