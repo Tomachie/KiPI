@@ -32,10 +32,11 @@ milestones rather than versions that were ever set.
 - **Progress messages** before long steps: meshing large planes, joining layers through
   many plated holes, mapping copper for the thermal model, and solving the board
   temperature.
-- **KiCad 9 support.** Boards are read from KiCad 9.0.0 onwards. Where a KiCad 9 release
-  lacks a request, KiPI takes the layers and their names from the stackup instead, and
-  zone refills wait on a request KiCad 9 answers. Before 9.0.3, plated pads are kept on
+- **KiCad 9 support**, confirmed on KiCad 9.0.7. Boards are read from KiCad 9.0.0 onwards.
+  Where a KiCad 9 release lacks a request, KiPI takes the layers and their names from the
+  stackup instead, and zone refills wait on a request KiCad 9 answers. Before 9.0.3, plated pads are kept on
   every layer, because KiCad cannot say which layers have their copper.
+- **README badges** for the supported KiCad versions, platforms and Python versions.
 - **Install notes for macOS and Linux:** plugin folders, and which Python each platform's
   KiCad runs plugins with (macOS needs a newer Python than the one KiCad bundles).
 

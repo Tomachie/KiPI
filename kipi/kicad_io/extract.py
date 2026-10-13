@@ -1,4 +1,4 @@
-"""Read a live KiCad 10 board through the IPC API (kicad-python / kipy) into a
+"""Read a live KiCad 9 or 10 board through the IPC API (kicad-python / kipy) into a
 :class:`~kipi.model.board.BoardSnapshot`.
 
 All kipy-specific code lives here so the rest of KiPI never touches protobufs.

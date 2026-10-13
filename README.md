@@ -2,12 +2,15 @@
   <img src="resources/kipi_256.png" alt="KiPI logo" width="128">
 </p>
 
-# KiPI — DC power integrity for KiCad 10
+# KiPI — DC power integrity for KiCad
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![KiCad 9.0+](https://img.shields.io/badge/KiCad-9.0%2B-314cb0.svg?logo=kicad&logoColor=white)](#requirements)
+[![Platform: Windows | Linux | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
+[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-3776ab.svg?logo=python&logoColor=white)](#requirements)
 
-KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin:
+KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 9 and 10 IPC plugin:
 
 1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements (beads, resistors, load switches).
 2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
@@ -22,11 +25,13 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
 
 ### Requirements
 
-* **KiCad 10** (developed on 10.0.7; tested against every 10.0 release's API). **KiCad 9.0**
-  should also work, though it is only tested against a simulated KiCad 9, not a real one.
-  Before KiCad 9.0.3, KiCad cannot say which layers a plated pad has copper on, so pads
-  are kept on every layer, including inner layers where KiCad removed unconnected pads.
-  KiCad 9.0.0 cannot report net classes either.
+* **KiCad 9.0 or later.** Developed on KiCad 10.0.7 and confirmed on KiCad 9.0.7. The tests
+  also check the API of every release from 9.0.0 to 10.0.6. On KiCad 9, KiPI works around
+  the requests that release does not have yet, with two limits on the oldest releases:
+  * Before 9.0.3, KiCad cannot say which layers a plated pad has copper on, so pads are kept
+    on every layer, including inner layers where KiCad removed unconnected pads. KiPI
+    warns about this in its log.
+  * KiCad 9.0.0 cannot report net classes.
 * **Python 3.10 to 3.13**, the one KiCad runs plugins with. KiCad installs KiPI's
   dependencies with pip, and some of them (Triangle, PyAMG) have no prebuilt packages for
   Python 3.14 yet.
@@ -35,14 +40,15 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
     work. Ubuntu 26.04 and Fedora 43 ship Python 3.14: until those packages exist, pip has
     to compile them, which needs a C/C++ compiler and the Python headers
     (`sudo apt install build-essential python3-dev`).
-  * **macOS:** KiCad 10 bundles Python 3.9, which is too old. Install Python 3.12 (for
+  * **macOS:** KiCad bundles Python 3.9, which is too old. Install Python 3.12 (for
     example from python.org or Homebrew) and select it as the **Python interpreter** in
     *Preferences → Plugins*.
 
 ### Steps
 
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
-2. Link (or copy) this repo into your KiCad plugins folder. On Windows, KiCad uses your
+2. Link (or copy) this repo into your KiCad plugins folder. The examples use KiCad 10's
+   folder: for KiCad 9, put `9.0` in place of `10.0`. On Windows, KiCad uses your
    *Documents* folder, which may be redirected to OneDrive:
 
    ```powershell
@@ -51,7 +57,7 @@ KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin
    ```
 
    On macOS the folder is `~/Documents/KiCad/10.0/plugins`, and on Linux
-   `~/.local/share/kicad/10.0/plugins` (use `9.0` for KiCad 9):
+   `~/.local/share/kicad/10.0/plugins`:
 
    ```sh
    ln -s "<path to this repo>" ~/Documents/KiCad/10.0/plugins/KiPI          # macOS
