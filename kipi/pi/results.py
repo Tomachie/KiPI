@@ -9,6 +9,7 @@ from kipi.solver import NetResult
 
 NOT_CONVERGED = "NOT CONVERGED"
 OUT_OF_REGULATION = "VRM OUT OF REGULATION"
+INCOMPLETE = "INCOMPLETE"          # a current on this rail or downstream is not known
 
 
 @dataclass
@@ -39,6 +40,7 @@ class LoadReport:
     pin_groups: List[tuple] = field(default_factory=list)  # (name, A, V mean, V min)
     v_best: float = 0.0                  # highest supply pin minus lowest ground pin
     status: str = ""                     # why the load was not judged, or was failed outright
+    basis: str = ""                      # which current was solved: typ, max, typ (no max)...
 
     @property
     def drop_pct(self) -> float:
@@ -121,3 +123,4 @@ class TreeResult:
     solve_s: float = 0.0
     thermal: Optional[object] = None          # kipi.thermal.cosim.ThermalResult, if run
     report_path: Optional[object] = None      # HTML report written for this solve, if any
+    corner: str = "typ"                       # "typ" or "max": which values were solved

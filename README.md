@@ -108,10 +108,14 @@ To try it without a design of your own, open the example board in
 
 **Loads tab**: one entry per consumer.
 
-* **Supply pins** and **Current**. With several supply pins, **Current split** chooses
-  between splitting the current evenly over all pins and giving explicit **pin groups**,
-  each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
-  part draws different currents on different rails or pins, e.g. a core and an I/O supply.
+* **Supply pins** and **Current** (typical) and **Max current**. A current can be left
+  **not known**: it is solved as 0 A, and every load on that rail and on every rail
+  upstream of it is marked **INCOMPLETE** instead of PASS (a load that fails anyway still
+  fails). Pin groups take a typical and a maximum current each. With several supply pins,
+  **Current split** chooses between splitting the current evenly over all pins and giving
+  explicit **pin groups**, each with its own current (**Add pin group**, or **One group per
+  pin**). Use groups when one part draws different currents on different rails or pins, e.g.
+  a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
 * **Max drop** (%) is the PASS/FAIL limit, in both directions: the pin furthest below the
   set voltage, and the pin furthest above it (remote sense can lift a load above it). A
@@ -123,7 +127,8 @@ To try it without a design of your own, open the example board in
 
 **DC connections tab**: parts that pass DC from one net to another, such as sense
 resistors, ferrite beads, fuses, load switches and 0 Ω links. Give **Side A pins**,
-**Side B pins** and a **Resistance**. Nets joined this way are solved together as one group,
+**Side B pins** and a **Resistance**, with an optional **Max resistance** for the worst
+case. Nets joined this way are solved together as one group,
 and each group may hold only one VRM. A net with no connection to its VRM is reported, not
 guessed at.
 
@@ -156,6 +161,11 @@ the top of the panel and every time you solve. It travels with the project and c
 version control.
 
 ### 4. Solve
+
+Choose **Typical** or **Worst case (max)** beside the Solve button. Worst case solves each
+load at its maximum current and each DC connection at its maximum resistance; where no
+maximum is given the typical value is used and the Notes tab names those items. The
+Loads table's **Current** column says which value each load was solved at.
 
 Click **Solve all**. Every net group is meshed and solved, the downstream loads first and then
 back towards the source, so each VRM's input current includes everything it feeds. Progress
