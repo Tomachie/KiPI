@@ -89,6 +89,20 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
+| Phases | Parallel phases of a multi-phase regulator. **Edit phase** picks which phase the output, input and ground pins belong to. |
+
+**Multi-phase VRMs**: set **Phases** above 1, then choose each phase in **Edit phase** and
+give it its own output pins (e.g. its inductor), input pins and ground pins. A new phase
+starts as a copy of the previous one, so change its part. All phases share the VRM's set
+voltage, type, efficiency and sense pins. Each phase carries an equal share of the output
+current and settles at whatever voltage its copper needs to deliver that share. The VRM
+regulates its sense pins or, without them, the average of its phase outputs. Each phase draws
+its own input current and returns its own ground current. The VRMs results tab lists every
+phase under its VRM.
+
+To try it without a design of your own, open the example board in
+[`examples/multiphase_buck`](examples/multiphase_buck): a 4-phase 12 V → 0.9 V, 40 A core rail
+(`python -m kipi --snapshot examples/multiphase_buck/multiphase_buck.kipi.json.gz`).
 
 **Loads tab**: one entry per consumer.
 
@@ -181,7 +195,7 @@ Result tabs:
 | Tab | Shows |
 |---|---|
 | Loads | Each load's current, effective voltage, drop, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, plus conversion loss |
+| VRMs | Output and input voltage, current and power, plus conversion loss, with a row per phase for multi-phase VRMs |
 | DC connections | Current and loss in each series part |
 | Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, DC connections and VRM conversion |

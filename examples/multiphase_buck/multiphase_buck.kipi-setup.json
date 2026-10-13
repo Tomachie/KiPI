@@ -1,0 +1,186 @@
+{
+  "vrms": [
+    {
+      "name": "J1",
+      "output": {
+        "ref": "J1",
+        "net": "VIN",
+        "pins": [
+          "1"
+        ]
+      },
+      "voltage": 12.0,
+      "kind": "source",
+      "efficiency": 0.9,
+      "quiescent_a": 0.0,
+      "input": null,
+      "sense": null,
+      "ground": {
+        "ref": "J1",
+        "net": "GND",
+        "pins": [
+          "2"
+        ]
+      },
+      "ground_sense": null,
+      "phases": []
+    },
+    {
+      "name": "U1",
+      "output": {
+        "ref": "L1",
+        "net": "VCORE",
+        "pins": [
+          "2"
+        ]
+      },
+      "voltage": 0.9,
+      "kind": "smps",
+      "efficiency": 0.9,
+      "quiescent_a": 0.01,
+      "input": {
+        "ref": "Q1",
+        "net": "VIN",
+        "pins": [
+          "1"
+        ]
+      },
+      "sense": {
+        "ref": "U10",
+        "net": "VCORE",
+        "pins": [
+          "C3"
+        ]
+      },
+      "ground": {
+        "ref": "Q1",
+        "net": "GND",
+        "pins": [
+          "2"
+        ]
+      },
+      "ground_sense": {
+        "ref": "U10",
+        "net": "GND",
+        "pins": [
+          "C4"
+        ]
+      },
+      "phases": [
+        {
+          "output": {
+            "ref": "L2",
+            "net": "VCORE",
+            "pins": [
+              "2"
+            ]
+          },
+          "input": {
+            "ref": "Q2",
+            "net": "VIN",
+            "pins": [
+              "1"
+            ]
+          },
+          "ground": {
+            "ref": "Q2",
+            "net": "GND",
+            "pins": [
+              "2"
+            ]
+          }
+        },
+        {
+          "output": {
+            "ref": "L3",
+            "net": "VCORE",
+            "pins": [
+              "2"
+            ]
+          },
+          "input": {
+            "ref": "Q3",
+            "net": "VIN",
+            "pins": [
+              "1"
+            ]
+          },
+          "ground": {
+            "ref": "Q3",
+            "net": "GND",
+            "pins": [
+              "2"
+            ]
+          }
+        },
+        {
+          "output": {
+            "ref": "L4",
+            "net": "VCORE",
+            "pins": [
+              "2"
+            ]
+          },
+          "input": {
+            "ref": "Q4",
+            "net": "VIN",
+            "pins": [
+              "1"
+            ]
+          },
+          "ground": {
+            "ref": "Q4",
+            "net": "GND",
+            "pins": [
+              "2"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "loads": [
+    {
+      "name": "U10",
+      "supply": {
+        "ref": "U10",
+        "net": "VCORE",
+        "pins": []
+      },
+      "current": 40.0,
+      "ground": {
+        "ref": "U10",
+        "net": "GND",
+        "pins": []
+      },
+      "tolerance_pct": 3.0,
+      "groups": []
+    }
+  ],
+  "links": [],
+  "settings": {
+    "max_edge_mm": 0.5,
+    "min_angle_deg": 28.0,
+    "simplify_mm": 0.003,
+    "circle_quad_segs": 4,
+    "min_edge_mm": 0.02,
+    "grading": 0.2,
+    "plating_mm": 0.025,
+    "rho_ohm_mm": 1.724e-05,
+    "tcr_per_c": 0.00393,
+    "rho_by_layer": {},
+    "tol": 1e-10,
+    "max_iter": 2000
+  },
+  "via_current_limit_a": null,
+  "thermal": {
+    "enabled": false,
+    "ambient_c": 25.0,
+    "iterations": 3,
+    "airflow_m_s": 0.0,
+    "grid_mm": 0.0,
+    "laminate_k_w_mk": 0.0
+  },
+  "html_report": false,
+  "format_version": 1
+}

@@ -270,6 +270,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
           _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
           _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss)]
          for v in tree.vrms]))
+    phases = [[_e(v.name), str(p.index), _num(p.v_out, ".5f"), _num(p.i_out), _num(p.v_in, ".5f"),
+               _num(p.i_in), _num(p.p_loss)] for v in tree.vrms for p in v.phases]
+    if phases:
+        parts.append("<h3>VRM phases</h3>" +
+                     _table(["VRM", "Phase", "V out", "I out (A)", "V in", "I in (A)",
+                             "Loss (W)"], phases))
     links = [[_e(sr.name), _e(g.name), _num(sr.resistance * 1e3, "g"), _num(sr.current),
               _num(sr.power * 1e3, ".3f")]
              for g in tree.groups.values() for sr in g.result.fields.series]

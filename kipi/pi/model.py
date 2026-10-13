@@ -6,7 +6,8 @@ Everything here is entered by the user; nothing is inferred from the board:
   Nets joined this way form one *group* that is simulated as a single problem.
 * **VRMs** drive one group from their output pins. A group may have only one VRM.
   A VRM's input pins (LDO / switcher) make it a load on the group feeding it; that is
-  how the power tree is defined.
+  how the power tree is defined. A multi-phase VRM has output, input and ground pins
+  per phase; the phases share its output current equally.
 * **Loads** draw a current from their supply pins, optionally returning it through
   ground pins.
 
@@ -41,9 +42,17 @@ class PinRef:
 
 
 @dataclass
+class VrmPhase:
+    """The pins of one phase of a multi-phase VRM."""
+    output: PinRef
+    input: Optional[PinRef] = None
+    ground: Optional[PinRef] = None
+
+
+@dataclass
 class Vrm:
     name: str
-    output: PinRef
+    output: PinRef                       # phase 1's pins: output, input, ground
     voltage: float
     kind: str = "source"                 # "source" (ideal supply), "ldo", "smps"
     efficiency: float = 0.9              # switchers: P_in = P_out / efficiency
@@ -52,6 +61,19 @@ class Vrm:
     sense: Optional[PinRef] = None       # remote sense: regulate the voltage here
     ground: Optional[PinRef] = None      # ground pins (enables ground-net simulation)
     ground_sense: Optional[PinRef] = None  # negative remote sense: regulate against these
+    # Phases 2..N of a multi-phase VRM (empty = single phase). Each phase carries
+    # 1/N of the output current; sense and ground sense are shared by all phases.
+    phases: List[VrmPhase] = field(default_factory=list)
+
+    def all_phases(self) -> List[VrmPhase]:
+        return [VrmPhase(self.output, self.input, self.ground), *self.phases]
+
+    def pin_refs(self) -> List[PinRef]:
+        """Every pin reference of the VRM, all phases included."""
+        refs = [self.sense, self.ground_sense]
+        for ph in self.all_phases():
+            refs.extend((ph.output, ph.input, ph.ground))
+        return [r for r in refs if r]
 
 
 @dataclass
@@ -115,7 +137,9 @@ class PISetup:
                       kind=v.get("kind", "source"), efficiency=v.get("efficiency", 0.9),
                       quiescent_a=v.get("quiescent_a", 0.0), input=pin(v.get("input")),
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")),
-                      ground_sense=pin(v.get("ground_sense")))
+                      ground_sense=pin(v.get("ground_sense")),
+                      phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
+                                       pin(ph.get("ground"))) for ph in v.get("phases", [])])
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
@@ -168,9 +192,7 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
 
     nets = set(extra_nets)
     for v in setup.vrms:
-        for p in (v.output, v.input, v.sense, v.ground, v.ground_sense):
-            if p:
-                nets.add(p.net)
+        nets.update(p.net for p in v.pin_refs())
     for l in setup.loads:
         nets.add(l.supply.net)
         if l.ground:
@@ -186,6 +208,43 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
 
 def group_name(group) -> str:
     return " + ".join(sorted(group))
+
+
+def _overlaps(a: PinRef, b: PinRef) -> bool:
+    """Whether two pin references share a pad (an empty pin list means all pads)."""
+    if a.ref != b.ref or a.net != b.net:
+        return False
+    return not a.pins or not b.pins or bool(set(a.pins) & set(b.pins))
+
+
+def _phase_errors(v: Vrm, groups) -> List[str]:
+    if not v.phases:
+        return []
+    errors: List[str] = []
+    phases = v.all_phases()
+    for i, ph in enumerate(phases[1:], start=2):
+        if groups[ph.output.net] != groups[v.output.net]:
+            errors.append(f"VRM {v.name}: phase {i} output must be on the same rail as "
+                          "phase 1")
+        if v.kind in ("ldo", "smps") and ph.input is None:
+            errors.append(f"VRM {v.name}: phase {i} needs its input pins set")
+        elif ph.input and v.input and groups[ph.input.net] != groups[v.input.net]:
+            errors.append(f"VRM {v.name}: phase {i} input must be on the same rail as "
+                          "phase 1's input")
+        if bool(ph.ground) != bool(v.ground):
+            errors.append(f"VRM {v.name}: set ground pins on every phase or on none")
+        elif ph.ground and groups[ph.ground.net] != groups[v.ground.net]:
+            errors.append(f"VRM {v.name}: phase {i} ground must be on the same ground as "
+                          "phase 1")
+    for what in ("output", "input", "ground"):
+        refs = [(i, getattr(ph, what)) for i, ph in enumerate(phases, start=1)]
+        refs = [(i, r) for i, r in refs if r]
+        for a in range(len(refs)):
+            for b in range(a + 1, len(refs)):
+                if _overlaps(refs[a][1], refs[b][1]):
+                    errors.append(f"VRM {v.name}: phases {refs[a][0]} and {refs[b][0]} "
+                                  f"share {what} pins; pick each phase's own pins")
+    return errors
 
 
 def validate(setup: PISetup) -> List[str]:
@@ -221,6 +280,7 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: input and output are on the same net group")
         if v.ground:
             ground_groups.add(groups[v.ground.net])
+        errors.extend(_phase_errors(v, groups))
     for g, vs in by_group.items():
         if len(vs) > 1:
             errors.append(f"Only one VRM may drive a net group; {group_name(g)} has "
