@@ -61,6 +61,7 @@ class LoadReport:
     v_high: Optional[float] = None       # highest supply pin minus lowest ground pin
     status: str = ""                     # why the load was not judged, or was failed outright
     basis: str = ""                      # which current was solved: typ, max, typ (no max)...
+    min_v: Optional[float] = None        # the load's datasheet minimum supply voltage
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,

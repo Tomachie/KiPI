@@ -447,3 +447,26 @@ def test_unknown_load_with_ground_pins_marks_loads_sharing_its_ground():
 def test_unknown_load_without_ground_pins_leaves_an_unrelated_rail_judged():
     res = _unknown_on_vin(ground_pins=False, regulated=False)
     assert by_name(res.loads, "U2").verdict == "PASS"
+
+
+def test_load_below_its_datasheet_minimum_fails():
+    s = setup("ldo")
+    s.loads[0].tolerance_pct = None
+    s.loads[0].min_v = 3.299                 # 1 A over R(8) drops 3.9 mV below 3.3 V
+    ld = by_name(solve_tree(board(), s).loads, "U2")
+    assert ld.min_v == 3.299 and ld.passed is False
+    s.loads[0].min_v = 3.0
+    assert by_name(solve_tree(board(), s).loads, "U2").passed is True
+
+
+def test_min_v_and_max_drop_both_judge():
+    s = setup("ldo")                          # tolerance 1 %: passes
+    s.loads[0].min_v = 3.299                  # but below the minimum
+    assert by_name(solve_tree(board(), s).loads, "U2").passed is False
+
+
+def test_min_v_round_trips(tmp_path):
+    s = setup("ldo")
+    s.loads[0].min_v = 3.0
+    back = PISetup.load(s.save(tmp_path / "s.json"))
+    assert by_name(back.loads, "U2").min_v == 3.0
