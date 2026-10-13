@@ -42,6 +42,12 @@ def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
     return f"%.{step_decimals}f"
 
 
+def _bar_args(title: str, fmt: str) -> dict:
+    return dict(title=title, vertical=True, position_x=0.88, position_y=0.25, height=0.5,
+                width=0.05, fmt=fmt, title_font_size=14, color="white", label_font_size=12,
+                n_labels=6)
+
+
 def _chunk_actor(category) -> vtkActor:
     """A bare VTK actor colored by the chunk's per-cell ``rgb`` array.
 
@@ -432,10 +438,7 @@ class Viewer3D(QWidget):
         log_scale = self._result_field == "power_density"
         if log_scale:
             lo = max(hi * 1e-4, 1e-30)      # four decades: loss is very concentrated
-        bar = dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
-                   height=0.5, width=0.05, fmt=_bar_format(lo, hi, log_scale),
-                   title_font_size=14, color="white",
-                   label_font_size=12, n_labels=6)
+        bar = _bar_args(title, _bar_format(lo, hi, log_scale))
         first = True
         for lid, lr in scene.layers.items():
             actor = p.add_mesh(lr.mesh, scalars=arr, preference=assoc, cmap=cmap,
@@ -446,7 +449,7 @@ class Viewer3D(QWidget):
             actor.SetScale(1.0, 1.0, self._zscale)
             self._result_actors[lid] = actor
             first = False
-        self._scalar_bars.append(title)
+        self._style_bar(title)
         if scene.vias is not None:
             self._result_via_actor = p.add_mesh(
                 scene.vias, color=_VIA_COLOR, specular=0.6, name="result:vias",
@@ -470,11 +473,19 @@ class Viewer3D(QWidget):
         self._result_via_actor = p.add_mesh(
             scene.vias, scalars=arr, cmap="viridis", clim=(lo, hi), specular=0.4,
             show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
-            scalar_bar_args=dict(title=title, vertical=True, position_x=0.88, position_y=0.25,
-                                 height=0.5, width=0.05, fmt=_bar_format(lo, hi, False),
-                                 title_font_size=14, color="white", label_font_size=12, n_labels=6))
+            scalar_bar_args=_bar_args(title, _bar_format(lo, hi, False)))
         self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
+        self._style_bar(title)
+
+    def _style_bar(self, title):
+        """Tick values to the left of the bar, where they stay inside the view, and the
+        title lifted clear of the top value."""
         self._scalar_bars.append(title)
+        bars = self.plotter.scalar_bars
+        if title in bars:
+            bar = bars[title]
+            bar.SetTextPositionToPrecedeScalarBar()
+            bar.SetVerticalTitleSeparation(12)
 
     # ------------------------------------------------------------------ views
     def _fit(self, zoom: float = 1.0):
