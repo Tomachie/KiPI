@@ -1,1 +1,3 @@
 pytest>=8
+# Pinned: a new ruff release can flag new things and break CI on its own.
+ruff==0.17.0

@@ -77,6 +77,47 @@ def test_radial_disc_through_via_matches_log_and_barrel_formulas():
     assert res.fields.summary["energy_balance_error"] < 1e-7
 
 
+
+def test_layer_resistivity_override_scales_that_layer_only():
+    """A strip on F.Cu at 1.5x rho drops 1.5x as much; current density is unchanged."""
+    L, W = 20.0, 1.0
+    snap = two_layer([(F, box(0, -W / 2, L, W / 2))],
+                     [pad("src", "U1", F, box(0, -W / 2, 1, W / 2)),
+                      pad("ld", "U2", F, box(L - 1, -W / 2, L, W / 2))])
+
+    def solve(**kw):
+        prob = NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                          [CurrentLoad("LOAD", ["ld"], 2.0)],
+                          SolveSettings(max_edge_mm=0.3, **kw))
+        return run(snap, prob).fields
+    base = solve()
+    hot = solve(rho_by_layer={"F.Cu": 1.5 * RHO})
+    other = solve(rho_by_layer={"B.Cu": 1.5 * RHO})       # no copper there: no effect
+    drop = lambda f: 1.0 - f.terminals[1].v_mean
+    assert drop(hot) == pytest.approx(1.5 * RHO * (L - 2) / (W * T_CU) * 2.0, rel=1e-9)
+    assert drop(other) == pytest.approx(drop(base), rel=1e-12)
+    assert hot.summary["j_max"] == pytest.approx(2.0 / (W * T_CU), rel=1e-6)
+    assert hot.summary["energy_balance_error"] < 1e-7
+
+
+def test_layer_resistivity_override_leaves_via_barrels_on_the_default():
+    R_OUT, R_PAD, DRILL, TP = 10.0, 9.0, 0.3, 0.025
+    disc = Point(0, 0).buffer(R_OUT, quad_segs=64)
+    ring = disc.difference(Point(0, 0).buffer(R_PAD, quad_segs=64))
+    via = Via("v", "N", (0.0, 0.0), DRILL, 0.6, [F, B])
+    snap = two_layer([(F, disc), (B, disc)],
+                     [pad("src", "J1", F, ring), pad("ld", "J2", B, ring)], [via])
+    settings = SolveSettings(max_edge_mm=0.4, circle_quad_segs=16, plating_mm=TP,
+                             rho_by_layer={"B.Cu": 2 * RHO})
+    res = run(snap, NetProblem("N", [VoltageSource("VRM", ["src"], 1.0)],
+                               [CurrentLoad("LOAD", ["ld"], 1.0)], settings))
+    r_spread = RHO / (2 * math.pi * T_CU) * math.log(R_PAD / (DRILL / 2))
+    r_barrel = RHO * (DIEL + T_CU) / (math.pi * (DRILL * TP - TP * TP))
+    assert 1.0 - res.fields.terminals[1].v_mean == pytest.approx(
+        3 * r_spread + r_barrel, rel=2e-3)                 # F.Cu 1x, B.Cu 2x, barrel 1x
+    assert res.solution.layer_rho == {F: RHO, B: 2 * RHO}
+    assert res.fields.summary["energy_balance_error"] < 1e-7
+
 def test_floating_island_is_reported_and_load_on_it_is_an_error():
     snap = two_layer([(F, box(0, 0, 10, 1)), (F, box(0, 5, 10, 6))],
                      [pad("src", "U1", F, box(0, 0, 1, 1)),

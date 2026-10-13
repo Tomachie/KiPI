@@ -7,6 +7,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # Only the linter: it reads the source, so the plugin's own dependencies are not needed.
+      - name: Install ruff
+        run: pip install "$(grep '^ruff' requirements-dev.txt)"
+
+      - name: Ruff
+        run: ruff check --output-format=github .
+
   test:
     name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

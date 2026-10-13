@@ -17,7 +17,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -136,6 +136,12 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                       [[v.name, v.kind, v.group, v.v_set, v.v_out, v.v_sense, v.v_ground_sense,
                         v.i_out, v.v_in, v.i_in, v.p_out, v.p_in, v.p_loss]
                        for v in tree.vrms]))
+    if any(v.phases for v in tree.vrms):
+        out.append(_write(folder / f"{stem}_vrm_phases.csv",
+                          ["vrm", "phase", "v_out_V", "i_out_A", "v_in_V", "i_in_A", "p_out_W",
+                           "p_in_W", "p_loss_W"],
+                          [[v.name, p.index, p.v_out, p.i_out, p.v_in, p.i_in, p.p_out, p.p_in,
+                            p.p_loss] for v in tree.vrms for p in v.phases]))
     out.append(_write(folder / f"{stem}_dc_connections.csv",
                       ["part", "group", "resistance_ohm", "current_A", "v_a_V", "v_b_V",
                        "power_W"],

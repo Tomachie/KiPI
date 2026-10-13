@@ -2,7 +2,7 @@
 
 Copper is drawn as slabs at the true stackup Z. Vias are tubes. The viewer
 applies any Z exaggeration as a plotter scale, so the meshes here stay in
-real millimetres.
+real millimeters.
 
 KiCad's y axis points down. The meshes flip it (y -> -y) so the board reads
 correctly when viewed from +Z.
@@ -21,7 +21,7 @@ from shapely.geometry.base import BaseGeometry
 from kipi.geometry.copper import drill_holes, iter_polygons, poly_to_shapely
 from kipi.model.board import BoardSnapshot, CopperLayer
 
-# KiCad-like default layer colours, top to bottom (outer layers fixed).
+# KiCad-like default layer colors, top to bottom (outer layers fixed).
 _TOP = (0.78, 0.20, 0.20)
 _BOTTOM = (0.30, 0.45, 0.85)
 _INNER = [(0.85, 0.75, 0.25), (0.35, 0.75, 0.40), (0.85, 0.45, 0.80), (0.30, 0.75, 0.80),

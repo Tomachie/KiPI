@@ -26,7 +26,7 @@ from kipi.thermal.model import BoardThermalModel, ThermalSettings
 @dataclass
 class ThermalResult:
     settings: ThermalSettings
-    x: np.ndarray                 # grid cell centres, KiCad mm
+    x: np.ndarray                 # grid cell centers, KiCad mm
     y: np.ndarray
     temps: np.ndarray             # (ny, nx) degC, NaN outside the board
     history: List[dict] = field(default_factory=list)   # per iteration: t_max, dt_max
@@ -77,11 +77,15 @@ def heat_sources(tree: TreeResult, snap: BoardSnapshot, setup: PISetup):
     vrm_by_name = {v.name: v for v in setup.vrms}
     for rep in tree.vrms:
         if rep.p_loss and rep.p_loss > 0:
-            v = vrm_by_name[rep.name]
-            pads = pads_for(snap, v.output.net, v.output.ref, v.output.pins or None)
-            pts = np.asarray([p.position for p in pads])
-            xy.append(pts)
-            w.append(np.full(len(pts), rep.p_loss / len(pts)))
+            # Each phase's conversion loss sits at its own output pins.
+            phases = vrm_by_name[rep.name].all_phases()
+            losses = [ph.p_loss for ph in rep.phases] if rep.phases else [rep.p_loss]
+            for ph, loss in zip(phases, losses):
+                pads = pads_for(snap, ph.output.net, ph.output.ref, ph.output.pins or None)
+                if loss > 0 and pads:
+                    pts = np.asarray([p.position for p in pads])
+                    xy.append(pts)
+                    w.append(np.full(len(pts), loss / len(pts)))
     if not xy:
         return np.zeros((0, 2)), np.zeros(0)
     return np.vstack(xy), np.concatenate(w)

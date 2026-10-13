@@ -14,6 +14,12 @@ output delivers, and its input pins are a load on the group feeding it.
 * Ground: groups used as ground are referenced to 0 V at the source VRM's ground pins.
   Loads return their current at their ground pins; every other VRM returns
   I_in - I_out at its ground pins.
+* Multi-phase VRMs: every phase carries I_out / N. Phase 1's output pins hold the VRM's
+  output voltage; phases 2..N inject their share, so each phase settles at whatever
+  voltage its copper gives it. The VRM regulates its sense pins or, without them, the
+  mean of its phase outputs. Each phase draws its own input current (from its own
+  output and input voltages) and returns I_out / N - I_in,phase at its ground pins; a
+  source VRM's reference is phase 1's ground.
 """
 
 from __future__ import annotations
@@ -55,7 +61,7 @@ class LoadReport:
     nominal: float            # set point of the VRM driving the group
     v_supply: float           # mean over the supply pins
     v_supply_min: float
-    v_ground: Optional[float]  # mean over the ground pins (None if not modelled)
+    v_ground: Optional[float]  # mean over the ground pins (None if not modeled)
     v_effective: float        # supply - ground
     drop: float               # nominal - effective, volts
     tolerance_pct: Optional[float]
@@ -77,12 +83,34 @@ class LoadReport:
 
 
 @dataclass
+class PhaseReport:
+    index: int                # 1-based
+    v_out: float              # mean over the phase's output pins
+    i_out: float
+    v_in: Optional[float]
+    i_in: Optional[float]
+
+    @property
+    def p_out(self) -> float:
+        return self.v_out * self.i_out
+
+    @property
+    def p_in(self) -> Optional[float]:
+        return None if self.v_in is None else self.v_in * self.i_in
+
+    @property
+    def p_loss(self) -> Optional[float]:
+        return None if self.p_in is None else self.p_in - self.p_out
+
+
+@dataclass
 class VrmReport:
     name: str
     kind: str
     group: str
     v_set: float
-    v_out: float              # voltage applied at the output pins (after sense correction)
+    v_out: float              # at the output pins (after sense correction); multi-phase:
+                              # the mean of the phases
     v_sense: Optional[float]
     i_out: float
     v_in: Optional[float]
@@ -90,6 +118,11 @@ class VrmReport:
     p_out: float
     p_in: Optional[float]
     v_ground_sense: Optional[float] = None   # at the ground sense pins, if any
+    phases: List[PhaseReport] = field(default_factory=list)   # multi-phase VRMs only
+
+    def __setstate__(self, state):
+        # Results files saved before multi-phase VRMs have no phases.
+        self.__dict__.update({"phases": [], **state})
 
     @property
     def p_loss(self) -> Optional[float]:
@@ -136,13 +169,20 @@ def _group_load_name(load, index: int) -> str:
 
 
 def _input_current(v: Vrm, v_out: float, i_out: float, v_in: float) -> float:
+    """Input current of one phase delivering ``i_out`` at ``v_out`` from ``v_in``."""
+    iq = v.quiescent_a / (len(v.phases) + 1)
     if v.kind == "ldo":
-        return i_out + v.quiescent_a
+        return i_out + iq
     if v.kind == "smps":
         if v_in <= 0:
             raise SolveError(f"VRM {v.name}: input voltage collapsed to {v_in:.3f} V")
-        return v_out * i_out / (v.efficiency * v_in) + v.quiescent_a
+        return v_out * i_out / (v.efficiency * v_in) + iq
     return 0.0
+
+
+def _term(v: Vrm, what: str, k: int) -> str:
+    """Name of a VRM terminal in a net problem; ``k`` is the 1-based phase."""
+    return f"{v.name} ({what})" if not v.phases else f"{v.name} ({what}, phase {k})"
 
 
 def solve_tree(snap: BoardSnapshot, setup: PISetup,
@@ -218,10 +258,11 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
             built[g] = (mesh, system)
         return built[g]
 
-    v_out: Dict[str, float] = {}
-    i_out: Dict[str, float] = {}
-    v_in: Dict[str, float] = {}
-    i_in: Dict[str, float] = {}
+    # Per VRM, one entry per phase.
+    v_out: Dict[str, List[float]] = {}
+    i_out: Dict[str, List[float]] = {}
+    v_in: Dict[str, List[float]] = {}
+    i_in: Dict[str, List[float]] = {}
     v_sense: Dict[str, float] = {}
     # Ground-sensing VRMs regulate against their ground sense pins, whose voltage comes
     # from the ground solve, which depends on the rails' currents: iterate both to a
@@ -258,35 +299,59 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
                 for gi, grp in enumerate(l.groups):
                     ref = PinRef(l.supply.ref, l.supply.net, list(grp.pins))
                     loads.append(CurrentLoad(_group_load_name(l, gi), pads(ref), grp.current))
+            demand = sum(ld.current for ld in loads)     # fixed loads; the rest vary
             children = fed_by.get(g, [])
-            child_load = {c.name: f"{c.name} (input)" for c in children}
+            child_load = {c.name: [_term(c, "input", k) for k in range(1, len(c.phases) + 2)]
+                          for c in children}
+            child_pads = {c.name: [pads(ph.input) for ph in c.all_phases()] for c in children}
             for c in children:
-                loads.append(CurrentLoad(child_load[c.name], pads(c.input), 0.0))
+                for name, pp in zip(child_load[c.name], child_pads[c.name]):
+                    loads.append(CurrentLoad(name, pp, 0.0))
             sense_pads = pads(vrm.sense) if vrm.sense else []
             if sense_pads:
                 loads.append(CurrentLoad(f"{vrm.name} (sense)", sense_pads, 0.0))
-            src_pads = pads(vrm.output)
-            mesh, system = system_for(g, [VoltageSource(vrm.name, src_pads, vrm.voltage)],
+            # Phase 1 is the voltage source; phases 2..N inject their share of the demand.
+            phase_pads = [pads(ph.output) for ph in vrm.all_phases()]
+            n_ph = len(phase_pads)
+            phase_load = [_term(vrm, "output", k) for k in range(2, n_ph + 1)]
+            for name, pp in zip(phase_load, phase_pads[1:]):
+                loads.append(CurrentLoad(name, pp, 0.0))
+            mesh, system = system_for(g, [VoltageSource(vrm.name, phase_pads[0], vrm.voltage)],
                                       loads, label)
+
+            def regulated(sol):
+                if sense_pads:
+                    return _mean_v(sol, sense_pads)
+                if n_ph > 1:
+                    return float(np.mean([_mean_v(sol, pp) for pp in phase_pads]))
+                return None                       # the output pins, held directly
 
             # The VRM holds (sense or output pins) - (ground sense pins) at its set point.
             target = vrm.voltage + v_gsense.get(vrm.name, 0.0)
             v_src = target
-            vin_est = {c.name: v_in.get(c.name, vrm.voltage) for c in children}
+            vin_est = {c.name: list(v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
+                       for c in children}
             sol = None
-            for it in range(1, MAX_TREE_ITERATIONS + 1):
-                currents = {child_load[c.name]: _input_current(c, v_out[c.name],
-                                                               i_out[c.name], vin_est[c.name])
-                            for c in children}
+            for it in range(1, MAX_TREE_ITERATIONS + 1):  # noqa: B007 - reported after
+                currents = {}
+                for c in children:
+                    share = sum(i_out[c.name]) / (len(c.phases) + 1)
+                    for k, name in enumerate(child_load[c.name]):
+                        currents[name] = _input_current(c, v_out[c.name][k], share,
+                                                        vin_est[c.name][k])
+                total = demand + sum(currents.values())
+                for name in phase_load:
+                    currents[name] = -total / n_ph
                 sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
                 change = 0.0
                 for c in children:
-                    new = _mean_v(sol, pads(c.input))
-                    change = max(change, abs(new - vin_est[c.name]))
-                    vin_est[c.name] = new
-                if sense_pads:
-                    vs = _mean_v(sol, sense_pads)
-                    step = target - vs
+                    for k, pp in enumerate(child_pads[c.name]):
+                        new = _mean_v(sol, pp)
+                        change = max(change, abs(new - vin_est[c.name][k]))
+                        vin_est[c.name][k] = new
+                vr = regulated(sol)
+                if vr is not None:
+                    step = target - vr
                     v_src += step
                     change = max(change, abs(step))
                 if change < V_TOL:
@@ -294,17 +359,19 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
             else:
                 pass_warnings.append(f"{label}: power-tree iteration did not converge "
                                      f"(last change {change:.2e} V)")
-            if sense_pads:
+            if regulated(sol) is not None:
                 sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
+            if sense_pads:
                 v_sense[vrm.name] = _mean_v(sol, sense_pads)
+            v_out[vrm.name] = [_mean_v(sol, pp) for pp in phase_pads]
+            i_out[vrm.name] = [sol.source_current[vrm.name],
+                               *(-currents[name] for name in phase_load)]
             progress.info(f"{label}: {it} iteration(s), {vrm.name} supplies "
-                          f"{sol.source_current[vrm.name] * 1e3:.2f} mA at {v_src:.5f} V")
-
-            v_out[vrm.name] = v_src
-            i_out[vrm.name] = sol.source_current[vrm.name]
+                          f"{sum(i_out[vrm.name]) * 1e3:.2f} mA at {v_src:.5f} V"
+                          + (f" ({n_ph} phases)" if n_ph > 1 else ""))
             for c in children:
                 v_in[c.name] = vin_est[c.name]
-                i_in[c.name] = currents[child_load[c.name]]
+                i_in[c.name] = [currents[name] for name in child_load[c.name]]
             solved.append((label, sorted(g), "rail", vrm.name, mesh, sol, it))
             pass_warnings.extend(f"{label}: {w}" for w in sol.warnings)
             rail_solutions[g] = sol
@@ -321,10 +388,15 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
                      for l in setup.loads if l.ground and l.ground.net in g]
             currents = {}
             for v in setup.vrms:
-                if v.ground and v.ground.net in g and v.kind != "source":
+                for k, ph in enumerate(v.all_phases() if v.ground and v.ground.net in g
+                                       else []):
+                    if v.kind == "source" and k == 0:
+                        continue                  # the 0 V reference
                     # Output current comes back in, input current leaves to its own source.
-                    currents[f"{v.name} (gnd)"] = i_out[v.name] - i_in[v.name]
-                    loads.append(CurrentLoad(f"{v.name} (gnd)", pads(v.ground), 0.0))
+                    name = _term(v, "gnd", k + 1)
+                    i_back = i_in[v.name][k] if v.name in i_in else 0.0
+                    currents[name] = i_out[v.name][k] - i_back
+                    loads.append(CurrentLoad(name, pads(ph.ground), 0.0))
                 if v.ground_sense and v.ground_sense.net in g:
                     loads.append(CurrentLoad(f"{v.name} (gnd sense)", pads(v.ground_sense),
                                              0.0))
@@ -376,19 +448,25 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         if l.tolerance_pct is not None and nominal:
             passed = 100.0 * (nominal - worst) / nominal <= l.tolerance_pct
         pin_groups = []
-        for gi, grp in enumerate(l.groups):
+        for grp in l.groups:
             gp_ids = pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))
             pin_groups.append((grp.name or ",".join(grp.pins), grp.current,
                                _mean_v(sol, gp_ids), _min_v(sol, gp_ids)))
         out.loads.append(LoadReport(l.name, label_of(g), l.total_current(), nominal, vs, vmin,
                                     vg, eff, drop, l.tolerance_pct, passed, worst, pin_groups))
     for v in setup.vrms:
-        p_out = v_out[v.name] * i_out[v.name]
-        vi, ii = v_in.get(v.name), i_in.get(v.name)
-        out.vrms.append(VrmReport(v.name, v.kind, label_of(groups[v.output.net]), v.voltage,
-                                  v_out[v.name], v_sense.get(v.name), i_out[v.name], vi, ii,
-                                  p_out, None if vi is None else vi * ii,
-                                  v_gsense.get(v.name)))
+        n = len(v.phases) + 1
+        has_in = v.name in v_in
+        vis, iis = (v_in[v.name], i_in[v.name]) if has_in else ([None] * n, [None] * n)
+        phases = [PhaseReport(k + 1, v_out[v.name][k], i_out[v.name][k], vis[k], iis[k])
+                  for k in range(n)]
+        out.vrms.append(VrmReport(
+            v.name, v.kind, label_of(groups[v.output.net]), v.voltage,
+            float(np.mean(v_out[v.name])), v_sense.get(v.name), sum(i_out[v.name]),
+            float(np.mean(vis)) if has_in else None, sum(iis) if has_in else None,
+            sum(ph.p_out for ph in phases),
+            sum(ph.p_in for ph in phases) if has_in else None,
+            v_gsense.get(v.name), phases if n > 1 else []))
     out.solve_s = time.perf_counter() - t0
     progress.info(f"Power tree solved: {len(order)} rail(s), {len(ground_groups)} ground(s) "
                   f"in {out.solve_s:.2f} s")

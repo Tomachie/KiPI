@@ -1,6 +1,6 @@
 """Derived quantities from a :class:`~kipi.solver.fem.Solution`.
 
-Units: volts, amps, watts, millimetres. Current density is reported per unit
+Units: volts, amps, watts, millimeters. Current density is reported per unit
 cross-section (A/mm^2) and is uniform through the copper thickness in this 2.5D
 model.
 """
@@ -69,7 +69,6 @@ class Fields:
 
 def compute_fields(sol: Solution) -> Fields:
     mesh, prob = sol.mesh, sol.problem
-    rho = prob.settings.rho_ohm_mm
     b, c, two_a = triangle_geometry(mesh.points, mesh.tris)
     v = np.nan_to_num(sol.node_v[mesh.tris])          # floating copper -> zero field
     gx = (b * v).sum(axis=1) / two_a
@@ -77,6 +76,7 @@ def compute_fields(sol: Solution) -> Fields:
     grad = np.column_stack([gx, gy])
     g2 = gx * gx + gy * gy
     gs = np.array([sol.sheet_g[l] for l in mesh.tri_layer])
+    rho = np.array([sol.layer_rho.get(l, prob.settings.rho_ohm_mm) for l in mesh.tri_layer])
     area = np.abs(two_a) / 2
     factor = sol.tri_rho_factor if sol.tri_rho_factor is not None else 1.0
     gs = gs / factor                                  # sheet conductance at temperature

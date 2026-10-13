@@ -131,7 +131,7 @@ def _thermal_map(th, outline) -> str:
 
 
 def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
-    """Interactive 3D view of one group: copper coloured by voltage, plus vias."""
+    """Interactive 3D view of one group: copper colored by voltage, plus vias."""
     import plotly.graph_objects as go
     import plotly.io as pio
     import pyvista as pv
@@ -139,9 +139,9 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
     st = snap.stackup
     total = sum(len(lr.tris) for lr in scene.layers.values()) or 1
     keep = min(1.0, TRIANGLE_BUDGET / total)
-    # Colour range from the 1st-99th percentile of node voltages: a small high-voltage
+    # Color range from the 1st-99th percentile of node voltages: a small high-voltage
     # net (e.g. a regulator's switch node in the same group) would otherwise flatten the
-    # planes into one colour. Hover still shows exact values.
+    # planes into one color. Hover still shows exact values.
     allv = np.concatenate([lr.node_v[np.isfinite(lr.node_v)] for lr in scene.layers.values()])
     vmin, vmax = (np.percentile(allv, [1, 99]) if len(allv) else scene.ranges["voltage"])
     vmin, vmax = float(vmin), float(max(vmax, vmin + 1e-9))
@@ -172,7 +172,8 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
             intensity=np.asarray(sheet.point_data["V"]), colorscale="Turbo", cmin=vmin,
             cmax=vmax, name=cu.name, showscale=not traces, flatshading=True,
             colorbar=dict(title="V", len=0.7),
-            hovertemplate=f"{cu.name}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}<br>V %{{intensity:.5f}}<extra></extra>"))
+            hovertemplate=(f"{cu.name}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}"
+                           "<br>V %{intensity:.5f}<extra></extra>")))
     if len(scene.via_segments):
         seg = scene.via_segments
         xs, ys, zs = [], [], []
@@ -242,7 +243,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append(f"<p class='note'>Mesh: max edge {s.max_edge_mm:g} mm, via grading "
                  f"{s.grading:g}, barrel plating {s.plating_mm * 1000:g} µm, copper "
                  f"resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
-                 f"(TCR {s.tcr_per_c:g}/°C).</p>")
+                 f"(TCR {s.tcr_per_c:g}/°C)"
+                 + ("; layer overrides: " + ", ".join(
+                     f"{_e(n)} {r * 1e-3:.4g} Ω·m" for n, r in sorted(s.rho_by_layer.items()))
+                    if s.rho_by_layer else "")
+                 + ".</p>")
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")
@@ -266,6 +271,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
           _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
           _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss)]
          for v in tree.vrms]))
+    phases = [[_e(v.name), str(p.index), _num(p.v_out, ".5f"), _num(p.i_out), _num(p.v_in, ".5f"),
+               _num(p.i_in), _num(p.p_loss)] for v in tree.vrms for p in v.phases]
+    if phases:
+        parts.append("<h3>VRM phases</h3>" +
+                     _table(["VRM", "Phase", "V out", "I out (A)", "V in", "I in (A)",
+                             "Loss (W)"], phases))
     links = [[_e(sr.name), _e(g.name), _num(sr.resistance * 1e3, "g"), _num(sr.current),
               _num(sr.power * 1e3, ".3f")]
              for g in tree.groups.values() for sr in g.result.fields.series]
@@ -321,7 +332,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         parts.append(f"<p>{role}; nets: {_e(', '.join(g.nets))}.</p>")
         parts.append(_plotly_3d(scene, snap, f"plot{gi}"))
         parts.append("<p class='note'>Drag to rotate, scroll to zoom, double-click to reset; "
-                     "hover for values. The 3D mesh is simplified for the report, and its colour "
+                     "hover for values. The 3D mesh is simplified for the report, and its color "
                      "scale spans the 1st–99th percentile of voltages (the maps below are "
                      "scaled per layer).</p>")
         rows = []

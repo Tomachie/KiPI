@@ -43,10 +43,10 @@ def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
 
 
 def _chunk_actor(category) -> vtkActor:
-    """A bare VTK actor coloured by the chunk's per-cell ``rgb`` array.
+    """A bare VTK actor colored by the chunk's per-cell ``rgb`` array.
 
     Chunk actors bypass ``Plotter.add_mesh``: its name bookkeeping walks every actor in
-    the renderer on each call, and pyvista's mapper wrapper builds colour lookup tables
+    the renderer on each call, and pyvista's mapper wrapper builds color lookup tables
     that direct-RGB meshes never use.
     """
     mapper = vtkPolyDataMapper()
@@ -85,8 +85,8 @@ class Viewer3D(QWidget):
 
         self._batch = MeshBatcher()
         self._chunk_actors: Dict[Chunk, vtkActor] = {}
-        self._net_color: Dict[str, int] = {}                  # net -> colour index
-        self._layer_color: Dict[Tuple[str, int], tuple] = {}  # (net, layer) -> layer colour
+        self._net_color: Dict[str, int] = {}                  # net -> color index
+        self._layer_color: Dict[Tuple[str, int], tuple] = {}  # (net, layer) -> layer color
         self._next_color = 0
         self._board_actors: List[object] = []
         self._hidden_layers: set = set()
@@ -282,7 +282,7 @@ class Viewer3D(QWidget):
         return self._result
 
     def show_result(self, scene: ResultScene, field: Optional[str] = None):
-        """Replace the copper view with solver results coloured by ``field``."""
+        """Replace the copper view with solver results colored by ``field``."""
         self._clear_result_actors()
         self._result = scene
         if field is not None:
@@ -415,7 +415,7 @@ class Viewer3D(QWidget):
                 m.AddClippingPlane(plane)
 
     def _draw_copper_result(self, scene, arr, assoc, title):
-        """Copper coloured by a field; vias drawn plain for context."""
+        """Copper colored by a field; vias drawn plain for context."""
         p = self.plotter
         lo, hi = scene.ranges[self._result_field]
         if self._result_field in ("current_density", "power_density"):
@@ -454,7 +454,7 @@ class Viewer3D(QWidget):
             self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
 
     def _draw_via_result(self, scene, arr, title):
-        """Vias coloured by current; copper drawn as muted grey for context."""
+        """Vias colored by current; copper drawn as muted gray for context."""
         p = self.plotter
         for lid, lr in scene.layers.items():
             actor = p.add_mesh(lr.mesh, color="#7a7f88", opacity=0.35, smooth_shading=False,

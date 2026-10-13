@@ -19,7 +19,7 @@ import numpy as np
 import shapely
 import triangle
 from scipy.spatial import cKDTree
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kipi.geometry.copper import drill_holes, iter_polygons, net_layer_copper, poly_to_shapely
@@ -71,7 +71,7 @@ class NetMesh:
 # One polygon
 # ---------------------------------------------------------------------------
 
-# KiCad works in integer nanometres, so noding on a 1 nm grid loses nothing.
+# KiCad works in integer nanometers, so noding on a 1 nm grid loses nothing.
 NODING_GRID_MM = 1e-6
 
 
@@ -189,7 +189,7 @@ def _triangulate(data: dict, switches: str, cap: int) -> dict:
 
 def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: float,
                  min_angle: float, size_fn=None, warn=None) -> Tuple[np.ndarray, np.ndarray]:
-    """Quality-mesh a polygon (with holes) honouring extra constraint lines inside it.
+    """Quality-mesh a polygon (with holes) honoring extra constraint lines inside it.
 
     ``size_fn(xy) -> h`` optionally gives the desired edge length at triangle centroids;
     the mesh is then refined once more with per-triangle area limits. ``warn(text)``
@@ -220,7 +220,7 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
         out = first_pass(True)
     except MeshCapHit:
         if not clipped_constraints:
-            raise MeshError(f"Mesher could not converge on the copper {where}")
+            raise MeshError(f"Mesher could not converge on the copper {where}") from None
         warn(f"Mesher struggled with pad outlines {where}; meshing without them "
              "(pads are still found by position)")
         try:
@@ -295,7 +295,7 @@ def _nodes_in(geom: BaseGeometry, pts: np.ndarray, tree: cKDTree, offset: int) -
 
 
 def _via_ring_centers(vias, pads, layer: int, terminal_ids) -> Optional[cKDTree]:
-    """Centres of plated holes on ``layer`` whose ring could be dead copper."""
+    """Centers of plated holes on ``layer`` whose ring could be dead copper."""
     pts = [v.position for v in vias if layer in v.layers]
     pts += [p.position for p in pads
             if p.pad_type == "pth" and layer in p.shapes and p.id not in terminal_ids]
@@ -303,7 +303,7 @@ def _via_ring_centers(vias, pads, layer: int, terminal_ids) -> Optional[cKDTree]
 
 
 def _is_dead_via_ring(poly: Polygon, centers: Optional[cKDTree], terminals) -> bool:
-    """A copper island that is only one plated hole's annular ring (one hole, small, centred
+    """A copper island that is only one plated hole's annular ring (one hole, small, centered
     on the hole) touches nothing but its own barrel, so no current can flow through it."""
     if centers is None or len(poly.interiors) != 1:
         return False

@@ -69,6 +69,7 @@ class Solution:
     series_elements: List[SeriesElement] = field(default_factory=list)
     series_current: Dict[str, float] = field(default_factory=dict)   # A from side A to B
     tri_rho_factor: Optional[np.ndarray] = None   # rho(T)/rho(20 C) per triangle, if heated
+    layer_rho: Dict[int, float] = field(default_factory=dict)   # layer -> rho(20 C), ohm*mm
     warnings: List[str] = field(default_factory=list)
 
 
@@ -113,7 +114,8 @@ def _rho_factor(problem: NetProblem, xy: np.ndarray) -> Optional[np.ndarray]:
 def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     s = problem.settings
     st = snap.stackup
-    sheet_g = {lid: st.layer(lid).thickness_mm / s.rho_ohm_mm for lid in mesh.layers}
+    sheet_g = {lid: st.layer(lid).thickness_mm / s.rho_for(st.layer(lid).name)
+               for lid in mesh.layers}
 
     # Equipotential groups: drill rings per layer and terminal pads (all their layers).
     groups = [nodes for b in mesh.barrels for nodes in b.ring_nodes.values()]
@@ -308,6 +310,8 @@ class LinearSystem:
                           f"{self.K.nnz} non-zeros, {len(self.elements)} barrel segments, "
                           f"{len(self.series)} series part(s)")
         self.nm = nm
+        self.layer_rho = {lid: problem.settings.rho_for(snap.stackup.layer(lid).name)
+                          for lid in mesh.layers}
         self.stats.update(n_nodes=mesh.n_nodes, n_tris=mesh.n_tris, n_unknowns=nm,
                           nnz=self.K.nnz)
 
@@ -404,7 +408,7 @@ class LinearSystem:
                         barrel_elements=self.elements, source_current=source_current,
                         stats=stats, warnings=list(self.warnings),
                         series_elements=self.series, series_current=series_current,
-                        tri_rho_factor=self.rho_factor)
+                        tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,

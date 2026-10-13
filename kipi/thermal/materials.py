@@ -15,13 +15,13 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-DEFAULT_K_W_MK = 0.8          # FR4 core, used when a name is not recognised
+DEFAULT_K_W_MK = 0.8          # FR4 core, used when a name is not recognized
 
 # (pattern, description, in-plane k in W/(m K)); first match wins, so specific first.
 _TABLE: List[Tuple[str, str, float]] = [
-    (r"alumin(i)?um\s*nitride|\baln\b", "aluminium nitride ceramic", 170.0),
+    (r"alumin(i)?um\s*nitride|\baln\b", "aluminum nitride ceramic", 170.0),
     (r"^\s*al\s*$|alumin(i)?um(?!\s*(oxide|nitride))|metal\s*core|\bims\b",
-     "aluminium (metal core)", 205.0),
+     "aluminum (metal core)", 205.0),
     (r"alumina|al2o3|ceramic", "alumina ceramic (96%)", 24.0),
     (r"kapton", "Kapton polyimide film", 0.12),
     (r"polyimide|\bpi\b", "polyimide laminate", 0.30),
@@ -43,7 +43,7 @@ class Dielectric:
     material: str        # as named in the stackup
     matched: str         # what it was taken to be
     k_w_mk: float
-    assumed: bool        # True when the name was not recognised
+    assumed: bool        # True when the name was not recognized
 
 
 def lookup(material: str) -> Dielectric:
@@ -52,7 +52,7 @@ def lookup(material: str) -> Dielectric:
     for pattern, desc, k in _TABLE:
         if re.search(pattern, low):
             return Dielectric(name, desc, k, False)
-    return Dielectric(name, "unrecognised, assumed FR4", DEFAULT_K_W_MK, True)
+    return Dielectric(name, "unrecognized, assumed FR4", DEFAULT_K_W_MK, True)
 
 
 def laminate_conductance(stackup, override_k_w_mk: Optional[float] = None):

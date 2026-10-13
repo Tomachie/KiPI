@@ -1,6 +1,6 @@
 """Toolkit-independent snapshot of the board data KiPI needs.
 
-Everything is in millimetres, with board coordinates as KiCad uses them
+Everything is in millimeters, with board coordinates as KiCad uses them
 (x right, y down). Z is up, with z = 0 at the bottom surface of the board.
 Polygons are stored as plain coordinate lists so a snapshot can be saved to
 JSON and reloaded without KiCad.
@@ -53,7 +53,7 @@ class Stackup:
     copper: List[CopperLayer]
     dielectrics: List[DielectricLayer]
     board_thickness_mm: float
-    from_board: bool = True  # False when a default stackup had to be synthesised
+    from_board: bool = True  # False when a default stackup had to be synthesized
 
     def layer(self, layer_id: int) -> Optional[CopperLayer]:
         for layer in self.copper:
@@ -167,7 +167,7 @@ class BoardSnapshot:
             for kind, items in enumerate((self.tracks, self.vias, self.pads, self.zones)):
                 for item in items:
                     index.setdefault(item.net, ([], [], [], []))[kind].append(item)
-            # Not a dataclass field, so snapshots never serialise it.
+            # Not a dataclass field, so snapshots never serialize it.
             self.__dict__["_net_index"] = index
         return index.get(net, ([], [], [], []))
 

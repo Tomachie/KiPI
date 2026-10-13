@@ -6,26 +6,41 @@ Each tab is a list of items with an editor form. Edits go straight into the
 
 from __future__ import annotations
 
+import copy
 import html
 import math
 import re
+from functools import partial
 from typing import Callable, Dict, List, Optional
 
-from qtpy.QtCore import Qt, Signal
+from qtpy.QtCore import QSettings, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractItemView, QCheckBox, QMenu, QComboBox, QSpinBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
+    QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu, QPushButton, QSpinBox, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
     QWidget,
 )
 
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
-from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, VRM_KINDS, validate
+from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
 from kipi.viz.results import FIELDS
 
 NONE = "(none)"
+UOHM_CM = 1e-5          # 1 µΩ·cm in Ω·mm, the unit the solver works in
+# Copper thickness display units, as mm per unit. 1 oz/ft² is taken as 35 µm, the usual
+# nominal value (KiCad's default 35 µm and 17.5 µm foils read as 1 oz and ½ oz).
+THICKNESS_UNITS = {"µm": 1e-3, "mil": 0.0254, "oz": 0.035}
+
+
+def format_thickness(mm: float, unit: str) -> str:
+    value = mm / THICKNESS_UNITS[unit]
+    if unit == "µm":
+        return f"{value:.1f} µm"
+    if unit == "mil":
+        return f"{value:.2f} mil"
+    return f"{value:.3g} oz"
 
 
 def _spin(lo, hi, value, decimals, suffix, step=None) -> QDoubleSpinBox:
@@ -222,8 +237,14 @@ class _Editor(QWidget):
             sig.connect(self._store)
 
     def refresh_nets(self, nets):
-        for p in self.pickers:
-            p.refresh_nets(nets)
+        # Repopulating the pickers moves their selections; that must not be saved into
+        # the item being edited (nor re-guess a VRM's voltage). Callers reload it after.
+        loading, self._loading = self._loading, True
+        try:
+            for p in self.pickers:
+                p.refresh_nets(nets)
+        finally:
+            self._loading = loading
 
     def load(self, obj):
         self._loading = True
@@ -255,18 +276,30 @@ class VrmEditor(_Editor):
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
         self.ground_sense = self._picker(optional=True)
+        # Multi-phase: the output, input and ground pickers show the selected phase.
+        self.n_phases = QSpinBox()
+        self.n_phases.setRange(1, 32)
+        self.n_phases.setToolTip("Parallel phases; each carries an equal share of the output "
+                                 "current and has its own output, input and ground pins")
+        self.cmb_phase = QComboBox()
+        self.cmb_phase.setToolTip("The phase whose pins are shown below")
+        self._phase = 0
         f.addRow("Name", self.name)
         f.addRow("Type", self.kind)
-        f.addRow("Output pins", self.output)
         f.addRow("Set voltage", self.voltage)
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
+        f.addRow("Phases", self.n_phases)
+        f.addRow("Edit phase", self.cmb_phase)
+        f.addRow("Output pins", self.output)
         f.addRow("Input pins", self.input)
-        f.addRow("Sense pins", self.sense)
         f.addRow("Ground pins", self.ground)
+        f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
         self._watch(self.name, self.kind, self.voltage, self.eff, self.iq)
         self.kind.currentIndexChanged.connect(self._kind_rows)
+        self.n_phases.valueChanged.connect(self._phase_count_changed)
+        self.cmb_phase.currentIndexChanged.connect(self._phase_selected)
         self.output.cmb_net.currentIndexChanged.connect(
             lambda _i: self._guess_voltage(self.output.net()))
 
@@ -277,33 +310,83 @@ class VrmEditor(_Editor):
         self.form.setRowVisible(self.input, kind != "source")
 
     def _guess_voltage(self, net):
-        if not self._loading and net:
+        if not self._loading and net and self._phase == 0:
             self.voltage.setValue(guess_voltage(net))
+
+    def _phase_rows(self):
+        """Fill the phase selector and label the per-phase pickers."""
+        n = self.n_phases.value()
+        self._phase = min(self._phase, n - 1)
+        self.cmb_phase.blockSignals(True)
+        self.cmb_phase.clear()
+        self.cmb_phase.addItems([f"Phase {k}" for k in range(1, n + 1)])
+        self.cmb_phase.setCurrentIndex(self._phase)
+        self.cmb_phase.blockSignals(False)
+        self.form.setRowVisible(self.cmb_phase, n > 1)
+        tag = f" (phase {self._phase + 1})" if n > 1 else ""
+        for w, text in ((self.output, "Output pins"), (self.input, "Input pins"),
+                        (self.ground, "Ground pins")):
+            self.form.labelForField(w).setText(text + tag)
+
+    def _show_phase(self, v: Vrm):
+        ph = v.all_phases()[self._phase]
+        loading, self._loading = self._loading, True
+        self.output.set_value(ph.output)
+        self.input.set_value(ph.input)
+        self.ground.set_value(ph.ground)
+        self._loading = loading
+
+    def _phase_count_changed(self, _n):
+        if self._loading or self.obj is None:
+            return
+        self._store()
+        self._phase_rows()
+        self._show_phase(self.obj)
+
+    def _phase_selected(self, index):
+        if self._loading or self.obj is None or index < 0:
+            return
+        self._phase = index
+        self._phase_rows()
+        self._show_phase(self.obj)
 
     def _load(self, v: Vrm):
         self.name.setText(v.name)
         self.kind.setCurrentIndex(max(0, self.kind.findData(v.kind)))
-        self.output.set_value(v.output)
         self.voltage.setValue(v.voltage)
         self.eff.setValue(v.efficiency * 100)
         self.iq.setValue(v.quiescent_a * 1e3)
-        self.input.set_value(v.input)
+        self.n_phases.setValue(len(v.phases) + 1)
+        self._phase = 0
+        self._phase_rows()
+        self._show_phase(v)
         self.sense.set_value(v.sense)
-        self.ground.set_value(v.ground)
         self.ground_sense.set_value(v.ground_sense)
         self._kind_rows()
 
     def _save(self, v: Vrm):
         v.name = self.name.text().strip() or v.name
         v.kind = self.kind.currentData()
-        v.output = self.output.value() or v.output
         v.voltage = self.voltage.value()
         v.efficiency = self.eff.value() / 100
         v.quiescent_a = self.iq.value() / 1e3
-        v.input = self.input.value() if v.kind != "source" else None
         v.sense = self.sense.value()
-        v.ground = self.ground.value()
         v.ground_sense = self.ground_sense.value()
+        phases = v.all_phases()
+        ph = phases[min(self._phase, len(phases) - 1)]
+        ph.output = self.output.value() or ph.output
+        ph.input = self.input.value()
+        ph.ground = self.ground.value()
+        # New phases start as a copy of the last one; the user then picks their own pins.
+        n = self.n_phases.value()
+        while len(phases) < n:
+            phases.append(copy.deepcopy(phases[-1]))
+        del phases[n:]
+        for ph in phases:
+            if v.kind == "source":
+                ph.input = None
+        v.output, v.input, v.ground = phases[0].output, phases[0].input, phases[0].ground
+        v.phases = phases[1:]
 
 
 class LoadEditor(_Editor):
@@ -626,6 +709,7 @@ class PIPanel(QWidget):
         self.tabs.addTab(self.load_list, "Loads")
         self.tabs.addTab(self.link_list, "DC connections")
         self.tabs.addTab(self._settings_tab(), "Mesh")
+        self.tabs.addTab(self._copper_tab(), "Copper")
         self.tabs.addTab(self._thermal_tab(), "Thermal")
         for il in (self.vrm_list, self.load_list, self.link_list):
             il.changed.connect(self._on_changed)
@@ -829,6 +913,82 @@ class PIPanel(QWidget):
             sp.valueChanged.connect(self._settings_changed)
         return w
 
+    def _copper_tab(self) -> QWidget:
+        w = QWidget()
+        lay = QVBoxLayout(w)
+        f = QFormLayout()
+        s = self.setup.settings
+        self.spin_rho = _spin(0.5, 100.0, s.rho_ohm_mm / UOHM_CM, 3, " µΩ·cm", 0.01)
+        self.spin_rho.setToolTip("Resistivity at 20 °C of every layer without its own value, "
+                                 "and of via barrel plating. Annealed copper is 1.724 µΩ·cm.")
+        self.spin_tcr = _spin(0.0, 0.02, s.tcr_per_c, 5, " /°C", 0.0001)
+        self.spin_tcr.setToolTip("Temperature coefficient of resistance, used by the "
+                                 "electro-thermal co-simulation. Copper is 0.00393 /°C.")
+        f.addRow("Resistivity", self.spin_rho)
+        f.addRow("TCR", self.spin_tcr)
+        self.cmb_thk_unit = QComboBox()
+        self.cmb_thk_unit.addItems(list(THICKNESS_UNITS))
+        self.cmb_thk_unit.setToolTip("Unit for the layer thicknesses below (1 oz = 35 µm). "
+                                     "Thicknesses come from the board stackup in KiCad.")
+        unit = QSettings("KiPI", "KiPI").value("copper/thickness_unit", "µm")
+        self.cmb_thk_unit.setCurrentText(unit if unit in THICKNESS_UNITS else "µm")
+        self.cmb_thk_unit.currentTextChanged.connect(self._thickness_unit_changed)
+        f.addRow("Thickness unit", self.cmb_thk_unit)
+        lay.addLayout(f)
+        self.tbl_rho = self._table(["Layer", "Thickness", "Resistivity at 20 °C"])
+        self.tbl_rho.setSelectionMode(QAbstractItemView.NoSelection)
+        lay.addWidget(self.tbl_rho, 1)
+        note = QLabel("Per-layer values override the resistivity above, e.g. for thin "
+                      "electroplated or rolled-annealed foil. 'default' uses the value above.")
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #999;")
+        lay.addWidget(note)
+        for sp in (self.spin_rho, self.spin_tcr):
+            sp.valueChanged.connect(self._copper_changed)
+        return w
+
+    def _fill_rho_table(self):
+        t = self.tbl_rho
+        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
+        overrides = self.setup.settings.rho_by_layer
+        t.setRowCount(len(layers))
+        for r, cu in enumerate(layers):
+            t.setItem(r, 0, QTableWidgetItem(cu.name))
+            item = QTableWidgetItem()
+            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            t.setItem(r, 1, item)
+            sp = _spin(0.0, 100.0, overrides.get(cu.name, 0.0) / UOHM_CM, 3, " µΩ·cm", 0.01)
+            sp.setSpecialValueText("default")
+            sp.setToolTip(f"Resistivity of {cu.name} at 20 °C ('default' uses the "
+                          f"Resistivity setting above)")
+            sp.valueChanged.connect(partial(self._layer_rho_changed, cu.name))
+            t.setCellWidget(r, 2, sp)
+        self._show_thicknesses()
+
+    def _show_thicknesses(self):
+        unit = self.cmb_thk_unit.currentText()
+        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
+        for r, cu in enumerate(layers):
+            self.tbl_rho.item(r, 1).setText(format_thickness(cu.thickness_mm, unit))
+
+    def _thickness_unit_changed(self, unit: str):
+        QSettings("KiPI", "KiPI").setValue("copper/thickness_unit", unit)
+        self._show_thicknesses()
+
+    def _layer_rho_changed(self, name: str, value: float):
+        overrides = self.setup.settings.rho_by_layer
+        if value > 0:
+            overrides[name] = value * UOHM_CM
+        else:
+            overrides.pop(name, None)
+        self._on_changed()
+
+    def _copper_changed(self, *_):
+        s = self.setup.settings
+        s.rho_ohm_mm = self.spin_rho.value() * UOHM_CM
+        s.tcr_per_c = self.spin_tcr.value()
+        self._on_changed()
+
     def _thermal_tab(self) -> QWidget:
         w = QWidget()
         f = QFormLayout(w)
@@ -894,10 +1054,13 @@ class PIPanel(QWidget):
         self.lbl_file.setText(file_label)
         for sp, v in ((self.spin_edge, setup.settings.max_edge_mm),
                       (self.spin_grading, setup.settings.grading),
-                      (self.spin_plating, setup.settings.plating_mm * 1000)):
+                      (self.spin_plating, setup.settings.plating_mm * 1000),
+                      (self.spin_rho, setup.settings.rho_ohm_mm / UOHM_CM),
+                      (self.spin_tcr, setup.settings.tcr_per_c)):
             sp.blockSignals(True)
             sp.setValue(v)
             sp.blockSignals(False)
+        self._fill_rho_table()
         self.clear_results()
         self.spin_via_limit.blockSignals(True)
         self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)
@@ -979,7 +1142,8 @@ class PIPanel(QWidget):
     @staticmethod
     def _describe_vrm(v: Vrm) -> str:
         src = "" if v.kind == "source" else f"  ← {v.input.net if v.input else '?'}"
-        return f"{v.name}: {v.output.net} {v.voltage:g} V ({v.kind}){src}"
+        kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases) + 1} phases"
+        return f"{v.name}: {v.output.net} {v.voltage:g} V ({kind}){src}"
 
     @staticmethod
     def _describe_load(l: Load) -> str:
@@ -1032,13 +1196,19 @@ class PIPanel(QWidget):
                                       "" if l.tolerance_pct is None else f"{l.tolerance_pct:g}",
                                       status]):
                 put(self.tbl_loads, r, c, text, color if c == 8 else None)
-        self.tbl_vrms.setRowCount(len(tree.vrms))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
-        for r, v in enumerate(tree.vrms):
-            for c, text in enumerate([v.name, v.kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}",
-                                      f(v.v_in, ".5f"), f(v.i_in, ".4g"), f(v.p_in, ".4g"),
-                                      f(v.p_loss, ".4g")]):
-                put(self.tbl_vrms, r, c, text)
+        rows = []                # each VRM, then one indented row per phase if multi-phase
+        for v in tree.vrms:
+            kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases)} phases"
+            rows.append([v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
+                         f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g")])
+            rows.extend([f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
+                         f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
+                         f(p.p_loss, ".4g")] for p in v.phases)
+        self.tbl_vrms.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            for c, text in enumerate(row):
+                put(self.tbl_vrms, r, c, text, "#a0a0a0" if row[0].startswith(" ") else None)
         rows = [(g.name, s) for g in tree.groups.values() for s in g.result.fields.series]
         self.tbl_links.setRowCount(len(rows))
         for r, (gname, s) in enumerate(rows):

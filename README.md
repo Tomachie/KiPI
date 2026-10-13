@@ -7,7 +7,7 @@
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 
-KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin:
+KiPI is a HyperLynx-PI-style DC drop analyzer that runs as a KiCad 10 IPC plugin:
 
 1. Define voltage regulators (VRMs), loads (current into pins) and DC series elements (beads, resistors, load switches).
 2. Simulate voltage drop net by net, across every copper layer, with live solver progress.
@@ -16,7 +16,7 @@ KiPI is a HyperLynx-PI-style DC drop analyser that runs as a KiCad 10 IPC plugin
 
 ![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
 
-**Status: 0.5.0 (alpha).** This entire project was vibe coded with Claude Opus 5.5 in a single day. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
+**Status: 0.6.0 (alpha)** ([changelog](docs/CHANGELOG.md)). This entire project was vibe coded with Claude Opus 5.5. I make no assurances that any of this works or is accurate; however, for my use cases (decently complex PCB layouts, windows 11 machine, KiCad 10.0.7), it seems stable. Please leave any comments, concerns or bugs as a github issue. I am used to the Hyperlynx PI workflow and wanted to create a free open source alternative for KiCad, which I think this project accomplishes. I'm open to suggestons for improvements.
 
 ## Install
 
@@ -43,7 +43,7 @@ own window and reads the board through the KiCad API; the log at the bottom stre
 stage as it runs.
 
 * **Refill zones** (toolbar, on by default) refills every zone in KiCad before reading, so
-  the zone fills KiPI sees match your current routing. KiPI analyses filled copper only.
+  the zone fills KiPI sees match your current routing. KiPI analyzes filled copper only.
 * **Load from KiCad** re-reads the board after you edit it, and reloads the saved PI setup
   (save first if you have unsaved changes).
 * **Save snapshot… / Open snapshot…** store the extracted board as a file that KiPI can open
@@ -51,7 +51,7 @@ stage as it runs.
 
 ### 2. Pick the nets
 
-The **Board** panel on the left lists every net. Tick the nets you want to analyse: they are
+The **Board** panel on the left lists every net. Tick the nets you want to analyze: they are
 drawn in 3D and offered in the PI setup pin pickers. **Power & ground only** filters the
 list, **All power** ticks every likely power and ground net, and **None** clears it. Type in
 the filter box to find a net.
@@ -59,7 +59,7 @@ the filter box to find a net.
 Below that:
 
 * **Copper layers** toggles layers in the view.
-* **Display** colours copper by layer or by net, exaggerates the stackup (**Z scale**), shows
+* **Display** colors copper by layer or by net, exaggerates the stackup (**Z scale**), shows
   or hides vias, pads and the board, and cuts the view along X, Y or Z (**Cut**, slider,
   **Flip**) to look inside the stackup.
 * **Info** shows whatever you last clicked in 3D. **Select in KiCad** selects that pad or
@@ -89,6 +89,20 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
+| Phases | Parallel phases of a multi-phase regulator. **Edit phase** picks which phase the output, input and ground pins belong to. |
+
+**Multi-phase VRMs**: set **Phases** above 1, then choose each phase in **Edit phase** and
+give it its own output pins (e.g. its inductor), input pins and ground pins. A new phase
+starts as a copy of the previous one, so change its part. All phases share the VRM's set
+voltage, type, efficiency and sense pins. Each phase carries an equal share of the output
+current and settles at whatever voltage its copper needs to deliver that share. The VRM
+regulates its sense pins or, without them, the average of its phase outputs. Each phase draws
+its own input current and returns its own ground current. The VRMs results tab lists every
+phase under its VRM.
+
+To try it without a design of your own, open the example board in
+[`examples/multiphase_buck`](examples/multiphase_buck): a 4-phase 12 V → 0.9 V, 40 A core rail
+(`python -m kipi --snapshot examples/multiphase_buck/multiphase_buck.kipi.json.gz`).
 
 **Loads tab**: one entry per consumer.
 
@@ -113,6 +127,13 @@ guessed at.
 slower. **Via grading** controls how fast the mesh refines towards plated holes, and
 **Barrel plating** sets the via wall thickness. The defaults suit most boards.
 
+**Copper tab**: **Resistivity** at 20 °C, by default annealed copper (1.724 µΩ·cm), applies to
+every layer and to via barrel plating. **TCR** is the temperature coefficient that the
+electro-thermal co-simulation uses (0.00393 /°C for copper). The table lists each copper layer.
+Give a layer its own resistivity to override the default, for example for electroplated or
+rolled-annealed foil. Leave it at **default** to use the value above. Layer thicknesses come
+from the KiCad board stackup. **Thickness unit** shows them in µm, mil or oz (1 oz = 35 µm).
+
 **Thermal tab** (off by default): tick **Electro-thermal co-simulation** to make losses heat
 the board and the warmer copper become more resistive. Set:
 
@@ -123,7 +144,7 @@ the board and the warmer copper become more resistive. Set:
 * **Grid**, the thermal cell size: *auto* gives about 250 cells across the board.
 * **Laminate k**: *from stackup* looks up the in-plane conductivity from each dielectric's
   material in your KiCad stackup (FR4, prepreg types, polyimide, Kapton, PTFE, Rogers,
-  ceramic, aluminium…). Unrecognised names fall back to FR4 with a warning. Enter a value
+  ceramic, aluminum…). Unrecognized names fall back to FR4 with a warning. Enter a value
   here to override.
 
 The setup is saved as `<board>.kipi-setup.json` next to the board when you click **Save** at
@@ -158,6 +179,11 @@ In the **Results** group, choose a **net group** and a **field** to show in 3D:
 * **Via current**
 * **Temperature** (with thermal on)
 
+Voltages are measured against the source's ground pins (0 V). When ground returns are
+solved, the ground under a load rises above 0 V, so a supply plane can read above its VRM's set
+point even though a remotely sensed rail is exactly on target. The Loads tab's effective
+voltage (supply minus ground at the load) is the figure to compare with the set point.
+
 Click any point on the copper or any via to probe it. **Show copper** returns to the plain
 geometry view without any results.
 
@@ -174,7 +200,7 @@ Result tabs:
 | Tab | Shows |
 |---|---|
 | Loads | Each load's current, effective voltage, drop, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, plus conversion loss |
+| VRMs | Output and input voltage, current and power, plus conversion loss, with a row per phase for multi-phase VRMs |
 | DC connections | Current and loss in each series part |
 | Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, DC connections and VRM conversion |
@@ -191,7 +217,7 @@ solving again. Results files are Python pickles, so only open ones you created.
 * **Unexpected drop:** compare the board view with KiCad. Thermal reliefs, necked traces and
   via counts dominate DC drop, and the Current density view with Arrows makes the bottleneck
   obvious.
-* **Slow solves:** raise **Max edge**, or analyse fewer nets at a time. Large planes are cheap
+* **Slow solves:** raise **Max edge**, or analyze fewer nets at a time. Large planes are cheap
   but very fine traces are not.
 * **Logs:** each session writes to `%TEMP%\kipi\kipi-<date>-<time>-<pid>.log`, and the last
   15 sessions are kept. A matching `.crash.log` collects native crash tracebacks and, if a
@@ -208,7 +234,16 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m kipi --dump board.kipi.json.gz   # extract only
 .venv\Scripts\python -m kipi --snapshot tests\data\synthetic.kipi.json
 .venv\Scripts\python -m pytest tests
+.venv\Scripts\ruff check .                    # lint, as CI does (ruff check . --fix fixes most)
 ```
+
+`requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
+only in `requirements-dev.txt`.
+
+CI runs ruff and the test suite on Windows and Linux for every push and pull request. The
+tests also solve the example board and check that its committed setup still matches
+`make_board.py`. After changing the generator, rerun
+`python examples/multiphase_buck/make_board.py` and commit both output files.
 
 ### Layout
 
@@ -226,6 +261,7 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 | `kipi/viz/` | PyVista mesh building and batching, result meshes (no Qt) |
 | `kipi/gui/` | PySide6 main window, embedded 3D viewer, worker threads |
 | `kipi/progress.py` | Progress/log reporting used by every pipeline stage |
+| `examples/` | Example boards as snapshots with their PI setups, and the scripts that generate them |
 
 ## License
 

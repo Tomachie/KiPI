@@ -76,7 +76,7 @@ def connect(timeout_ms: int = 5000, retries: int = 3, progress: ProgressReporter
 # ---------------------------------------------------------------------------
 
 def _arc_points(start, mid, end, include_start: bool = False) -> List[tuple]:
-    """Discretise a start/mid/end arc (mm tuples) into points, excluding start."""
+    """Discretize a start/mid/end arc (mm tuples) into points, excluding start."""
     (x1, y1), (x2, y2), (x3, y3) = start, mid, end
     d = 2.0 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
     if abs(d) < 1e-12:
@@ -163,7 +163,7 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
 
     from_board = sum(1 for e in entries if e[0] == "cu") == len(cu_ids) and len(cu_ids) > 0
     if not from_board:
-        progress.warn("Stackup incomplete; synthesising a default "
+        progress.warn("Stackup incomplete; synthesizing a default "
                       f"{DEFAULT_BOARD_THICKNESS_MM} mm stackup")
         entries = []
         n = len(cu_ids)

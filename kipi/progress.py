@@ -15,7 +15,7 @@ from typing import Optional
 log = logging.getLogger("kipi")
 
 
-class Cancelled(Exception):
+class Canceled(Exception):
     """Raised inside a stage when the user cancels the run."""
 
 
@@ -57,7 +57,7 @@ class ProgressReporter:
 
     def check_cancel(self):
         if self._cancel:
-            raise Cancelled()
+            raise Canceled()
 
     @contextmanager
     def timed(self, name: str):

@@ -58,7 +58,7 @@ class ResultScene:
     vias: Optional[pv.PolyData]
     ranges: Dict[str, Tuple[float, float]]   # field -> (min, max) over all layers
     via_range: Tuple[float, float] = (0.0, 0.0)
-    # Plated holes for click selection: (N, 2, 3) top/bottom centre points in KiCad
+    # Plated holes for click selection: (N, 2, 3) top/bottom center points in KiCad
     # coordinates (x, y down, z up) and the owning via/pad id of each.
     via_segments: np.ndarray = field(default_factory=lambda: np.zeros((0, 2, 3)))
     via_ids: List[str] = field(default_factory=list)
@@ -169,7 +169,7 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16,
         slab.cell_data["J"] = tri_j[source]
         slab.cell_data["P"] = tri_p[source]
         lr = LayerResult(lid, slab, pts2, tris, v, tri_j, tri_p, cKDTree(pts2[tris].mean(axis=1)))
-        rho = result.solution.problem.settings.rho_ohm_mm
+        rho = cu.thickness_mm / sol.sheet_g[lid]          # this layer's resistivity
         apts, adir, amag, h = current_arrows(pts2, tris, fields.grad[tri_sel],
                                              fields.tri_area[tri_sel],
                                              cu.z_top_mm + 0.002)

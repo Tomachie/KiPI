@@ -160,7 +160,7 @@ class MainWindow(QMainWindow):
             cb.setChecked(True)
             cb.toggled.connect(lambda v, n=name: self.viewer.set_feature_visible(n, v))
             feats.addWidget(cb)
-        fv.addRow("Colour", self.cmb_color)
+        fv.addRow("Color", self.cmb_color)
         fv.addRow("Z scale", self.spin_z)
         fv.addRow(feats)
         cut = QHBoxLayout()
@@ -555,8 +555,8 @@ class MainWindow(QMainWindow):
 
         task = self._run(work, done, "Building view", on_partial=on_net)
         if task is not None:
-            # A cancelled build leaves its nets unchecked so the list matches the view.
-            task.cancelled.connect(lambda: self._set_checked(
+            # A canceled build leaves its nets unchecked so the list matches the view.
+            task.canceled.connect(lambda: self._set_checked(
                 lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
 
     # ============================================================ solve
@@ -664,7 +664,7 @@ class MainWindow(QMainWindow):
                              self.chk_cut_flip.isChecked())
 
     def _show_via(self, group: str, owner_id: str):
-        """Jump to a via from the results table: show its group, centre and select it."""
+        """Jump to a via from the results table: show its group, center and select it."""
         if self.solve_panel.cmb_group.currentText() != group:
             self.solve_panel.cmb_group.setCurrentText(group)
         scene = self.viewer.result
@@ -801,7 +801,7 @@ class MainWindow(QMainWindow):
             return
         s = self.snapshot
         via_obj = next((v for v in s.vias if v.id == via_id), None) if via_id else None
-        pth_obj = next((p for p in s.pads if p.id == via_id), None) if via_id and not via_obj             else None
+        pth_obj = next((p for p in s.pads if p.id == via_id), None) if via_id and not via_obj else None
         if pt is None:
             hole = via_obj or pth_obj
             layer_id = (hole.layers if via_obj else hole.layers)[0]

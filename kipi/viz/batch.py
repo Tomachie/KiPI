@@ -6,7 +6,7 @@ same triangles in a dozen actors at under 1 ms. The batcher groups meshes by
 category (e.g. copper on one layer) into chunks of bounded size; each chunk
 becomes one actor. Adding or removing a net rebuilds only the chunks it touches.
 
-Per-net colour survives merging as a per-cell ``rgb`` array.
+Per-net color survives merging as a per-cell ``rgb`` array.
 """
 
 from __future__ import annotations
