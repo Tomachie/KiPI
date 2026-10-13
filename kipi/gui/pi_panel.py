@@ -25,6 +25,7 @@ from qtpy.QtWidgets import (
 
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
+from kipi.model.parts import resistor_ohms
 from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
 from kipi.gui.sortable import make_sortable, reset_sort, set_row
 from kipi.pi.tree import fmt_drop
@@ -574,10 +575,19 @@ class LinkEditor(_Editor):
         if typed == k.side_a.ref and new_a.ref != k.side_a.ref:
             typed = new_a.ref
             self.name.setText(typed)
+        parts = (k.side_a.ref, k.side_b.ref)
         k.name = typed
         k.side_a = new_a
         k.side_b = self.b.value() or k.side_b
         k.resistance = self.r.value() / 1e3
+        # Both sides just became the same resistor: take its resistance from its value.
+        if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
+            ohms = resistor_ohms(self.panel.snapshot, k.side_a.ref)
+            if ohms is not None:
+                k.resistance = ohms
+                self.r.blockSignals(True)
+                self.r.setValue(ohms * 1e3)
+                self.r.blockSignals(False)
 
 
 class ItemList(QWidget):
@@ -1166,9 +1176,15 @@ class PIPanel(QWidget):
         if net is None:
             return None
         other = self._nets[1] if len(self._nets) > 1 else net
-        ref = self._first_part(net)
+        ref, ref_b = self._first_part(net), self._first_part(other)
+        # Prefer a part that bridges the two nets, e.g. a sense resistor between them.
+        on_other = {r for r, _, _ in parts_on_net(self.snapshot, other)} if other != net else set()
+        bridge = next((r for r, _, _ in parts_on_net(self.snapshot, net) if r in on_other), None)
+        if bridge:
+            ref = ref_b = bridge
+        ohms = resistor_ohms(self.snapshot, ref) if bridge else None
         return DcLink(_unique(ref or "R1", [x.name for x in self.setup.links]),
-                      PinRef(ref, net), PinRef(self._first_part(other), other), 0.0)
+                      PinRef(ref, net), PinRef(ref_b, other), ohms or 0.0)
 
     @staticmethod
     def _describe_vrm(v: Vrm) -> str:
