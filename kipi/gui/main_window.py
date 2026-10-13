@@ -97,13 +97,14 @@ class MainWindow(QMainWindow):
         self.chk_refill = QCheckBox("Refill zones", self)
         self.chk_refill.setToolTip("Refill all zones in KiCad before reading (recommended)")
         tb.addWidget(self.chk_refill)
+        act("Load Tomachie pdn.json…", self.import_pdn,
+            "Set up the whole power tree from a Tomachie power-tree file (.pdn.json): "
+            "sources, regulators, series parts and load currents read from the schematic "
+            "and datasheets. Edit any value by hand afterwards.")
         tb.addSeparator()
         act("Open snapshot…", self.open_snapshot, "Load a saved board snapshot (.json / .json.gz)")
         self.act_save = act("Save snapshot…", self.save_snapshot,
                             "Save the extracted board for offline use")
-        act("Import Tomachie PDN…", self.import_pdn,
-            "Fill the PI setup from a Tomachie power-tree file (.pdn.json): rails, sources, "
-            "regulators, series parts and load currents read from the schematic and datasheets")
         tb.addSeparator()
         act("Top", self.viewer.view_top)
         act("Bottom", self.viewer.view_bottom)
@@ -615,7 +616,21 @@ class MainWindow(QMainWindow):
                 label = f"Could not read {path.name}; starting empty"
         self._setup_path = path
         self.solve_panel.set_board(snap, setup, label)
+        if not path.exists():
+            # A board with no setup yet: the Tomachie file is the way in; typing the
+            # power tree by hand is the fallback.
+            QTimer.singleShot(0, self._offer_pdn)
         return setup
+
+    def _offer_pdn(self):
+        # Not modal, so loading a board never waits on the answer.
+        box = QMessageBox(QMessageBox.Question, "KiPI",
+                          "This board has no PI setup yet.\n\nLoad a Tomachie pdn.json to set up "
+                          "its sources, regulators, series parts and loads? (You can also enter "
+                          "them by hand.)", QMessageBox.Yes | QMessageBox.No, self)
+        box.setAttribute(Qt.WA_DeleteOnClose)
+        box.button(QMessageBox.Yes).clicked.connect(self.import_pdn)
+        box.open()
 
     def import_pdn(self):
         """Replace the PI setup with the power tree in a Tomachie .pdn.json."""
@@ -642,9 +657,7 @@ class MainWindow(QMainWindow):
                  f"load(s), {len(setup.links)} DC connection(s)")
         for note in notes:
             self.log(f"  {note}", logging.WARNING)
-        used = {ref.net for v in setup.vrms for ref in v.pin_refs()}
-        used |= {l.supply.net for l in setup.loads}
-        used |= {ref.net for k in setup.links for ref in (k.side_a, k.side_b)}
+        used = setup.pin_nets()
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole) in used)
         self.solve_panel.set_board(self.snapshot, setup, f"Imported from {Path(path).name}")
