@@ -10,6 +10,7 @@ import copy
 import html
 import math
 import re
+from contextlib import contextmanager
 from functools import partial
 from typing import Callable, Dict, List, Optional
 
@@ -840,7 +841,7 @@ class PIPanel(QWidget):
     def _via_limit_changed(self, value):
         self.setup.via_current_limit_a = (value / 1e3) or None
         if getattr(self, "_tree", None) is not None:
-            self._fill_vias()
+            self._set_via_status()      # the rows and their order do not depend on the limit
 
     def _via_row_clicked(self, row, _col):
         it = self.tbl_vias.item(row, 0)
@@ -849,20 +850,32 @@ class PIPanel(QWidget):
 
     def _fill_vias(self, max_rows: int = 500):
         from kipi.pi.report import via_rows
-        rows = via_rows(self._tree, self.snapshot, self.setup.via_current_limit_a)[:max_rows]
+        rows = via_rows(self._tree, self.snapshot)[:max_rows]
+        self._via_currents = [v.current for v in rows]
         t = self.tbl_vias
-        t.setRowCount(len(rows))
-        for r, v in enumerate(rows):
-            status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
-            color = None if v.passed is None else ("#60d060" if v.passed else "#ff6060")
-            for c, text in enumerate([v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
-                                      f"{v.drill_mm:.3f}", f"{v.current * 1e3:.2f}",
-                                      f"{v.power * 1e3:.4f}", status]):
-                it = QTableWidgetItem(text)
-                if c == 7 and color:
-                    it.setForeground(QColor(color))
-                t.setItem(r, c, it)
-            t.item(r, 0).setData(Qt.UserRole, v.owner_id)
+        with _bulk_fill(t):
+            t.setRowCount(len(rows))
+            for r, v in enumerate(rows):
+                for c, text in enumerate([v.group, v.label, f"{v.x:.3f}", f"{v.y:.3f}",
+                                          f"{v.drill_mm:.3f}", f"{v.current * 1e3:.2f}",
+                                          f"{v.power * 1e3:.4f}", ""]):
+                    t.setItem(r, c, QTableWidgetItem(text))
+                t.item(r, 0).setData(Qt.UserRole, v.owner_id)
+        self._set_via_status()
+
+    def _set_via_status(self):
+        """PASS / FAIL against the current limit, without rebuilding the table."""
+        limit = self.setup.via_current_limit_a
+        t = self.tbl_vias
+        with _bulk_fill(t):
+            for r, current in enumerate(self._via_currents):
+                it = t.item(r, 7)
+                if limit is None:
+                    it.setText("")
+                    continue
+                ok = current <= limit
+                it.setText("PASS" if ok else "FAIL")
+                it.setForeground(QColor("#60d060" if ok else "#ff6060"))
 
     def _fill_losses(self):
         from kipi.pi.report import loss_rows
@@ -1257,3 +1270,18 @@ class PIPanel(QWidget):
         it = self.tbl_loads.item(row, 1)
         if it:
             self.cmb_group.setCurrentText(it.text())
+
+
+@contextmanager
+def _bulk_fill(t: QTableWidget):
+    """Fill a table with its columns' resize-to-contents paused.
+
+    With it on, Qt re-measures every row each time one cell changes, which made a few
+    thousand cell updates on a visible table take about a minute.
+    """
+    header = t.horizontalHeader()
+    header.setSectionResizeMode(QHeaderView.Interactive)
+    try:
+        yield
+    finally:
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
