@@ -217,8 +217,11 @@ class MainWindow(QMainWindow):
     def _build_solve_dock(self):
         self.solve_panel = PIPanel(self)
         self.solve_panel.solve_requested.connect(self.run_solve)
-        self.solve_panel.field_changed.connect(self.viewer.set_result_field)
+        self.solve_panel.field_changed.connect(self._field_changed)
         self.solve_panel.group_changed.connect(self._show_group)
+        # Picking the group already selected sends no group_changed; after "Show copper"
+        # that pick is how the results come back.
+        self.solve_panel.cmb_group.activated.connect(self._group_activated)
         self.solve_panel.show_geometry.connect(self._show_geometry)
         self.solve_panel.save_requested.connect(self._save_setup)
         self.solve_panel.arrows_toggled.connect(self.viewer.set_arrows_visible)
@@ -702,6 +705,8 @@ class MainWindow(QMainWindow):
         """Jump to a via from the results table: show its group, center and select it."""
         if self.solve_panel.cmb_group.currentText() != group:
             self.solve_panel.cmb_group.setCurrentText(group)
+        elif self.viewer.result is None:          # the copper view is up ("Show copper")
+            self._show_group(group)
         scene = self.viewer.result
         if scene is None or owner_id not in scene.via_ids:
             return
@@ -743,6 +748,12 @@ class MainWindow(QMainWindow):
 
     def open_results(self):
         from kipi.pi import report
+        if self.snapshot is None:
+            # The tables and probing need the board (pads, layers); results files hold
+            # only the solution.
+            QMessageBox.information(self, "KiPI", "Load the board (from KiCad or a snapshot) "
+                                                  "before opening its results.")
+            return
         start = str(self._setup_path.parent) if self._setup_path else ""
         path, _ = QFileDialog.getOpenFileName(self, "Open results", start,
                                               "KiPI results (*.kipi-results)")
@@ -767,6 +778,17 @@ class MainWindow(QMainWindow):
             return
         self._result = self._tree.groups[name].result
         self.viewer.show_result(self._scenes[name], self.solve_panel.current_field())
+
+    def _group_activated(self, index: int):
+        if self.viewer.result is None:
+            self._show_group(self.solve_panel.cmb_group.itemText(index))
+
+    def _field_changed(self, field: str):
+        """A new result field; from the copper view this brings the results back."""
+        if self.viewer.result is None:
+            self._show_group(self.solve_panel.cmb_group.currentText())
+        else:
+            self.viewer.set_result_field(field)
 
     def _show_geometry(self):
         self.viewer.clear_result()
@@ -855,7 +877,9 @@ class MainWindow(QMainWindow):
         probe_html = ""
         scene = self.viewer.result
         if scene is not None:
-            shown = {scene.net}
+            # The scene is named after its group; a group may join several nets.
+            group = self._tree.groups.get(scene.net) if self._tree else None
+            shown = set(group.nets) if group is not None else {scene.net}
             # Results only exist on layers with this net's copper; pick the nearest of those.
             layers = [s.stackup.layer(l) for l in scene.layers]
             cu = min(layers, key=lambda c: abs(c.z_mid_mm - z))

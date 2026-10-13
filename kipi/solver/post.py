@@ -111,6 +111,10 @@ def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
         nodes = next(iter(mesh.pad_nodes[pid].values()))
         return float(sol.node_v[nodes[0]])
 
+    # What the system was actually solved with (a power tree overrides the problem's
+    # placeholder currents); solutions pickled before these were kept lack them.
+    amps = getattr(sol, "load_current", None) or {}
+    volts = getattr(sol, "source_voltage", None) or {}
     terminals = []
     for src in prob.sources:
         vs = [pad_v(p) for p in src.pad_ids]
@@ -118,9 +122,10 @@ def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
                                         vs, min(vs), max(vs)))
     for load in prob.loads:
         vs = [pad_v(p) for p in load.pad_ids]
-        terminals.append(TerminalResult(load.name, "load", load.current, vs, min(vs), max(vs)))
+        terminals.append(TerminalResult(load.name, "load", amps.get(load.name, load.current),
+                                        vs, min(vs), max(vs)))
 
-    v_src = max(s.voltage for s in prob.sources)
+    v_src = max(volts.get(s.name, s.voltage) for s in prob.sources)
     if v_ref is None:
         v_ref = v_src
     copper_power = float(tri_power.sum())

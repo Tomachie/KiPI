@@ -100,7 +100,7 @@ class LoadReport:
 
     @property
     def drop_pct(self) -> float:
-        return 100.0 * self.drop / self.nominal if self.nominal else 0.0
+        return 100.0 * self.drop / abs(self.nominal) if self.nominal else 0.0
 
     @property
     def drop_worst(self) -> float:
@@ -109,7 +109,7 @@ class LoadReport:
 
     @property
     def drop_worst_pct(self) -> float:
-        return 100.0 * self.drop_worst / self.nominal if self.nominal else 0.0
+        return 100.0 * self.drop_worst / abs(self.nominal) if self.nominal else 0.0
 
 
 @dataclass
@@ -485,7 +485,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         drop = nominal - eff
         passed = None
         if l.tolerance_pct is not None and nominal:
-            passed = 100.0 * abs(nominal - worst) / nominal <= l.tolerance_pct
+            passed = 100.0 * abs(nominal - worst) / abs(nominal) <= l.tolerance_pct
         pin_groups = []
         for grp in l.groups:
             gp_ids = pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))

@@ -81,6 +81,10 @@ class Solution:
     tri_rho_factor: Optional[np.ndarray] = None   # rho(T)/rho(20 C) per triangle, if heated
     layer_rho: Dict[int, float] = field(default_factory=dict)   # layer -> rho(20 C), ohm*mm
     warnings: List[str] = field(default_factory=list)
+    # The source voltages and load currents this solution was solved with; they can
+    # differ from the problem's own (VRM sense correction, power-tree VRM input currents).
+    source_voltage: Dict[str, float] = field(default_factory=dict)
+    load_current: Dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +449,8 @@ class LinearSystem:
                         barrel_elements=self.elements, source_current=source_current,
                         stats=stats, warnings=list(self.warnings),
                         series_elements=self.series, series_current=series_current,
-                        tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho)
+                        tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho,
+                        source_voltage=volts, load_current=amps)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,

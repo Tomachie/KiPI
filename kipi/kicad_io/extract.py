@@ -262,6 +262,15 @@ def _pad_shapes(board, pads, layer_ids: Iterable[int], progress) -> Dict[str, Di
     return out
 
 
+def _pad_angle(pad) -> Optional[float]:
+    """The pad's orientation on the board in degrees. KiCad keeps the padstack's angle
+    absolute (the footprint's rotation is included); the drill size is unrotated."""
+    try:
+        return float(pad.padstack.angle.degrees)
+    except Exception:  # noqa: BLE001 - older API: slots fall back to the pad's shape
+        return None
+
+
 def _via_layers(via, stackup: Stackup) -> List[int]:
     drill = via.padstack.drill
     a, b = drill.start_layer, drill.end_layer
@@ -439,7 +448,8 @@ def extract_board(board, refill_zones: bool = False,
                 number=p.number, position=_pt(p.position),
                 pad_type=_PAD_TYPES.get(p.pad_type, "unknown"),
                 drill_mm=(_mm(d.x), _mm(d.y)),
-                shapes=shapes.get(p.id.value, {})))
+                shapes=shapes.get(p.id.value, {}),
+                angle_deg=_pad_angle(p)))
     progress.check_cancel()
 
     with progress.timed("Reading zone fills"):

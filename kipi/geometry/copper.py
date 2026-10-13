@@ -12,7 +12,8 @@ Via and PTH drill holes are then cut out.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, List, Optional
+import math
+from typing import Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import shapely
@@ -20,7 +21,7 @@ from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kipi.kicad_io.extract import _arc_points
-from kipi.model.board import BoardSnapshot, Poly
+from kipi.model.board import BoardSnapshot, Pad, Poly
 from kipi.progress import NULL, ProgressReporter
 
 CIRCLE_QUAD_SEGS = 8   # 32 segments per full circle
@@ -109,14 +110,43 @@ def drill_holes(snap: BoardSnapshot, net: str, layer: int,
             if abs(dx - dy) < 1e-6:
                 holes.append(shapely.Point(p.position).buffer(dx / 2.0,
                                                               quad_segs=quad_segs))
-            else:  # oblong slot; orientation is not in the snapshot, assume long axis on x/y
+            else:  # oblong slot
                 r = min(dx, dy) / 2.0
                 half = (max(dx, dy) - min(dx, dy)) / 2.0
+                ux, uy = slot_axis(p)
                 x, y = p.position
-                seg = ([(x - half, y), (x + half, y)] if dx > dy
-                       else [(x, y - half), (x, y + half)])
+                seg = [(x - half * ux, y - half * uy), (x + half * ux, y + half * uy)]
                 holes.append(LineString(seg).buffer(r, quad_segs=quad_segs))
     return shapely.union_all(holes) if holes else None
+
+
+SLOT_SHAPE_ASPECT = 1.05   # a pad this much longer than wide shows which way its slot runs
+
+
+def slot_axis(p: Pad) -> Tuple[float, float]:
+    """Unit vector (KiCad board axes, y down) along the long axis of a pad's slot.
+
+    The drill size is in the pad's own frame, so the slot turns with the pad. Snapshots
+    saved before pad angles were recorded take the long axis of the pad's copper (an
+    oblong pad's slot runs along it), or failing that the unrotated drill axis.
+    """
+    dx, dy = p.drill_mm
+    if p.angle_deg is not None:
+        a = math.radians(p.angle_deg)
+        # KiCad angles turn counter-clockwise on screen, i.e. with y pointing down the
+        # pad's x axis maps to (cos a, -sin a) and its y axis to (sin a, cos a).
+        return (math.cos(a), -math.sin(a)) if dx > dy else (math.sin(a), math.cos(a))
+    copper = [g for polys in p.shapes.values() for g in _polys(polys)]
+    if copper:
+        rect = shapely.union_all(copper).minimum_rotated_rectangle
+        c = np.asarray(rect.exterior.coords)[:3] if isinstance(rect, Polygon) else None
+        if c is not None:
+            e1, e2 = c[1] - c[0], c[2] - c[1]
+            l1, l2 = float(np.hypot(*e1)), float(np.hypot(*e2))
+            if min(l1, l2) > 0 and max(l1, l2) >= SLOT_SHAPE_ASPECT * min(l1, l2):
+                e, n = (e1, l1) if l1 > l2 else (e2, l2)
+                return float(e[0] / n), float(e[1] / n)
+    return (1.0, 0.0) if dx > dy else (0.0, 1.0)
 
 
 def net_copper(snap: BoardSnapshot, net: str,

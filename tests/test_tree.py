@@ -270,3 +270,33 @@ def test_pin_group_validation():
     s.loads[0].supply = PinRef("U2", "+3V3", ["1"])
     s.loads[0].groups = [PinGroup(["3"], 0.5)]
     assert any("not among its supply pins" in e for e in validate(s))
+
+
+def test_negative_rail_is_judged_on_its_magnitude():
+    # -3.3 V rail; the load returns 1 A, so it sits R(8) * 1 A (~3.9 mV, 0.12 %) off.
+    s = setup()
+    s.vrms = [Vrm("U1", PinRef("U1", "+3V3", ["2"]), -3.3, "source")]
+    s.loads[0].current = -1.0
+    for tol, verdict in ((0.1, False), (0.2, True)):
+        s.loads[0].tolerance_pct = tol
+        ld = by_name(solve_tree(board(), s).loads, "U2")
+        assert abs(ld.nominal - ld.v_worst) == pytest.approx(R(8), rel=1e-6)
+        assert ld.passed is verdict
+    assert abs(ld.drop_worst_pct) == pytest.approx(100 * R(8) / 3.3, rel=1e-6)
+    assert math.copysign(1, ld.drop_worst_pct) == math.copysign(1, ld.drop_worst)
+
+
+def test_terminals_report_the_currents_the_tree_solved_with():
+    # VRM input, phase and ground-return loads start at 0 A and get their currents per
+    # solve; the per-group summaries must balance with those.
+    res = solve_tree(board(), setup("smps", eff=0.85, iq=0.01, ground=True))
+    for g in res.groups.values():
+        sm = g.result.fields.summary
+        assert sm["kcl_error"] < 1e-9, g.name
+        assert sm["energy_balance_error"] < 1e-6, g.name
+    u1 = by_name(res.vrms, "U1")
+    vin = res.groups["VIN"].result.fields
+    assert by_name(vin.terminals, "U1 (input)").current == pytest.approx(u1.i_in, rel=1e-12)
+    gnd = res.groups["GND"].result.fields
+    assert by_name(gnd.terminals, "U1 (gnd)").current == pytest.approx(u1.i_out - u1.i_in,
+                                                                         rel=1e-12)
