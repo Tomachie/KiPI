@@ -172,7 +172,8 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
             intensity=np.asarray(sheet.point_data["V"]), colorscale="Turbo", cmin=vmin,
             cmax=vmax, name=cu.name, showscale=not traces, flatshading=True,
             colorbar=dict(title="V", len=0.7),
-            hovertemplate=f"{cu.name}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}<br>V %{{intensity:.5f}}<extra></extra>"))
+            hovertemplate=(f"{cu.name}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}"
+                           "<br>V %{intensity:.5f}<extra></extra>")))
     if len(scene.via_segments):
         seg = scene.via_segments
         xs, ys, zs = [], [], []

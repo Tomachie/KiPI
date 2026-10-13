@@ -801,7 +801,7 @@ class MainWindow(QMainWindow):
             return
         s = self.snapshot
         via_obj = next((v for v in s.vias if v.id == via_id), None) if via_id else None
-        pth_obj = next((p for p in s.pads if p.id == via_id), None) if via_id and not via_obj             else None
+        pth_obj = next((p for p in s.pads if p.id == via_id), None) if via_id and not via_obj else None
         if pt is None:
             hole = via_obj or pth_obj
             layer_id = (hole.layers if via_obj else hole.layers)[0]

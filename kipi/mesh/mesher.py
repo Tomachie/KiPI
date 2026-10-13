@@ -19,7 +19,7 @@ import numpy as np
 import shapely
 import triangle
 from scipy.spatial import cKDTree
-from shapely.geometry import LineString, Point, Polygon
+from shapely.geometry import Point, Polygon
 from shapely.geometry.base import BaseGeometry
 
 from kipi.geometry.copper import drill_holes, iter_polygons, net_layer_copper, poly_to_shapely
@@ -220,7 +220,7 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
         out = first_pass(True)
     except MeshCapHit:
         if not clipped_constraints:
-            raise MeshError(f"Mesher could not converge on the copper {where}")
+            raise MeshError(f"Mesher could not converge on the copper {where}") from None
         warn(f"Mesher struggled with pad outlines {where}; meshing without them "
              "(pads are still found by position)")
         try:

@@ -332,7 +332,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
             vin_est = {c.name: list(v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
                        for c in children}
             sol = None
-            for it in range(1, MAX_TREE_ITERATIONS + 1):
+            for it in range(1, MAX_TREE_ITERATIONS + 1):  # noqa: B007 - reported after
                 currents = {}
                 for c in children:
                     share = sum(i_out[c.name]) / (len(c.phases) + 1)
@@ -448,7 +448,7 @@ def solve_tree(snap: BoardSnapshot, setup: PISetup,
         if l.tolerance_pct is not None and nominal:
             passed = 100.0 * (nominal - worst) / nominal <= l.tolerance_pct
         pin_groups = []
-        for gi, grp in enumerate(l.groups):
+        for grp in l.groups:
             gp_ids = pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))
             pin_groups.append((grp.name or ",".join(grp.pins), grp.current,
                                _mean_v(sol, gp_ids), _min_v(sol, gp_ids)))

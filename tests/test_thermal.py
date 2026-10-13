@@ -1,19 +1,17 @@
 """Electro-thermal: resistivity vs temperature and the board heat model."""
 
-import math
 
 import numpy as np
 import pytest
 from shapely.geometry import box
 
 from kipi.model.board import (
-    BoardSnapshot, CopperLayer, DielectricLayer, Net, Pad, Poly, Stackup, Zone,
+    BoardSnapshot, CopperLayer, DielectricLayer, Net, Poly, Stackup, Zone,
 )
 from kipi.solver import CurrentLoad, NetProblem, SolveSettings, VoltageSource, run
-from kipi.solver.setup import RHO_CU_OHM_MM as RHO
 from kipi.thermal.cosim import solve_electrothermal
-from kipi.thermal.model import BoardThermalModel, ThermalSettings, K_CU_W_MM_K
-from test_tree import F, B, T, board, setup, by_name, R
+from kipi.thermal.model import BoardThermalModel, ThermalSettings
+from test_tree import F, B, board, setup, by_name, R
 
 TCR = 0.00393
 
@@ -21,7 +19,6 @@ TCR = 0.00393
 def test_hot_copper_is_more_resistive():
     """A uniformly 120 degC strip drops 1 + 0.00393 * 100 times more than at 20 degC."""
     snap = board()
-    from test_tree import pad
     prob = lambda temp: NetProblem("VIN", [VoltageSource("J1", ["j1_1"], 12.0)],
                                    [CurrentLoad("U1", ["u1_1"], 1.0)], SolveSettings(max_edge_mm=0.3),
                                    temperature=temp)

@@ -229,7 +229,11 @@ python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\python -m kipi --dump board.kipi.json.gz   # extract only
 .venv\Scripts\python -m kipi --snapshot tests\data\synthetic.kipi.json
 .venv\Scripts\python -m pytest tests
+.venv\Scripts\ruff check .                    # lint, as CI does (ruff check . --fix fixes most)
 ```
+
+`requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
+only in `requirements-dev.txt`.
 
 ### Layout
 

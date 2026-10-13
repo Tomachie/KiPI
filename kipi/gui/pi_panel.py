@@ -16,15 +16,15 @@ from typing import Callable, Dict, List, Optional
 from qtpy.QtCore import QSettings, Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
-    QAbstractItemView, QCheckBox, QMenu, QComboBox, QSpinBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QPushButton, QSplitter,
+    QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox,
+    QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMenu, QPushButton, QSpinBox, QSplitter,
     QTableWidget, QTableWidgetItem, QTabWidget, QTextBrowser, QToolButton, QVBoxLayout,
     QWidget,
 )
 
 from kipi.model.board import BoardSnapshot
 from kipi.model.nets import guess_voltage, sorted_nets
-from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, VRM_KINDS, validate
+from kipi.pi.model import DcLink, Load, PinRef, PISetup, Vrm, validate
 from kipi.viz.results import FIELDS
 
 NONE = "(none)"
