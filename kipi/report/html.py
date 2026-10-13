@@ -321,6 +321,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         parts.append(f"<p>{th.heat_w:.3g} W into the board; peak <b>{tmax:.1f} °C</b> at "
                      f"({x:.1f}, {y:.1f}) mm. Ambient {th.settings.ambient_c:g} °C, airflow "
                      f"{th.settings.airflow_m_s:g} m/s, {len(th.history)} iteration(s).</p>")
+        if getattr(th, "heat_by_kind", None):
+            parts.append(f"<p>Heat by source: {_e(th.heat_breakdown())}.</p>")
         parts.append(f"<div class='maps'><figure><img src='{_thermal_map(th, outline)}'>"
                      "</figure></div>")
         if th.dielectrics:

@@ -99,6 +99,10 @@ class Load:
     # Empty: ``current`` is split equally across the supply pins. Otherwise each group
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)
+    # Heat the part puts into the board. None: all the power it takes from its supply
+    # pins (V x I). Set it for a part that passes power on, such as a load switch or an
+    # LED or motor driver, whose own loss is far less than what flows through it.
+    dissipation_w: Optional[float] = None
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
@@ -162,7 +166,8 @@ class PISetup:
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
                         groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""))
-                                for g in l.get("groups", [])])
+                                for g in l.get("groups", [])],
+                        dissipation_w=l.get("dissipation_w"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"]) for k in d.get("links", [])],
@@ -315,6 +320,8 @@ def validate(setup: PISetup) -> List[str]:
     for l in setup.loads:
         if l.tolerance_pct is not None and l.tolerance_pct < 0:
             errors.append(f"Load {l.name}: max drop cannot be negative")
+        if l.dissipation_w is not None and l.dissipation_w < 0:
+            errors.append(f"Load {l.name}: heat cannot be negative")
         if l.groups:
             seen_pins: Dict[str, int] = {}
             for gi, g in enumerate(l.groups):
