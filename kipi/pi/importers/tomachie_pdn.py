@@ -40,6 +40,11 @@ class PdnImportError(ValueError):
     pass
 
 
+def _volts(v) -> Optional[float]:
+    """A voltage object's volts; None for "unknown" or a missing field."""
+    return number(v.get("volts")) if isinstance(v, dict) else None
+
+
 def path_to_rail(parts: List[dict], start: str, rail: str) -> List[dict]:
     """The parts of a regulator's ``output_path`` that lead from its output net to its
     rail, in order. Files written before Tomachie 5.137 also list parts that only hang
@@ -167,7 +172,11 @@ class TomachiePdnImporter:
                                   "as an ideal source")
                 kind = "source"
             self.setup.vrms.append(Vrm(self._unique(f"{reg['refdes']} {name}"), out, v, kind,
-                                       efficiency=eff, input=vin))
+                                       efficiency=eff, input=vin,
+                                       quiescent_a=amps(reg.get("quiescent_current")) or 0.0,
+                                       dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
+                                       vin_min=_volts(reg.get("input_voltage_min")),
+                                       vin_max=_volts(reg.get("input_voltage_max"))))
             parts = src.get("output_path", [])
             path = path_to_rail(parts, src.get("output_net", ""), name)
             off = sorted({e["refdes"] for e in parts} - {e["refdes"] for e in path})
@@ -246,8 +255,10 @@ class TomachiePdnImporter:
             typ, mx = self._currents(l, name)
             taken = {x.name for x in self.setup.loads}
             label = l["refdes"] if l["refdes"] not in taken else f"{l['refdes']} ({name})"
+            sm = l.get("supply_min")
+            min_v = number(sm.get("volts")) if isinstance(sm, dict) else None
             self.setup.loads.append(Load(self._unique(label), supply, typ, tolerance_pct=tol,
-                                         current_max=mx))
+                                         current_max=mx, min_v=min_v))
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:

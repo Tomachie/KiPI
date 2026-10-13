@@ -30,7 +30,8 @@ PDN = {
                                      "resistance_ohm": 10000.0, "datasheet_figures": []}]},
          "loads": [{"role": "ic", "refdes": "U2", "pins": ["U2_1"],
                     "current": {"amps": 1.0, "basis": "typ"},
-                    "current_max": {"amps": 1.5, "basis": "max"}}],
+                    "current_max": {"amps": 1.5, "basis": "max"},
+                    "supply_min": {"volts": 3.0, "basis": "min", "spec": "vdd", "page": 4}}],
          "offboard_pins": []},
     ],
     "regulators": [{"refdes": "U1", "type": "linear", "efficiency": "unknown",
@@ -50,6 +51,7 @@ def test_sources_regulators_and_loads_map_onto_the_board():
     u2 = by_name(setup.loads, "U2")
     assert (u2.current, u2.current_max) == (1.0, 1.5)
     assert u2.tolerance_pct == pytest.approx(5.0)
+    assert u2.min_v == 3.0
     # The regulator's own load entry is carried by its VRM input, not imported twice.
     assert [l.name for l in setup.loads] == ["U2"]
     assert validate(setup) == []
@@ -111,3 +113,15 @@ def test_dc_resistance_never_takes_an_impedance(figs, expect):
     typ, mx, _ = dc_resistance({"resistance_ohm": "unknown", "datasheet_figures": figs})
     assert typ == (None if expect[0] is None else pytest.approx(expect[0]))
     assert mx == pytest.approx(expect[1])
+
+
+def test_regulator_quiescent_dropout_and_input_range():
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(
+        quiescent_current={"amps": 6.5e-6, "basis": "typ"},
+        dropout_voltage={"volts": 0.29, "basis": "max"},
+        input_voltage_min={"volts": 1.6, "basis": "min"},
+        input_voltage_max={"volts": 6.0, "basis": "max"})
+    setup, _ = run(pdn)
+    u1 = by_name(setup.vrms, "U1 +3V3")
+    assert (u1.quiescent_a, u1.dropout_v, u1.vin_min, u1.vin_max) == (6.5e-6, 0.29, 1.6, 6.0)
