@@ -82,8 +82,12 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
 
     entries = []  # (kind, layer_id, thickness_mm, material, epsilon_r), top to bottom
     try:
-        for sl in board.get_stackup().layers:
-            if not sl.enabled:
+        layers = list(board.get_stackup().layers)
+        # KiCad 10.0.1 leaves every layer's enabled flag unset (false); an unset flag on
+        # every layer means the server does not report it, not that no layer is enabled.
+        reports_enabled = any(sl.enabled for sl in layers)
+        for sl in layers:
+            if reports_enabled and not sl.enabled:
                 continue
             if sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER and sl.layer in names:
                 entries.append(("cu", sl.layer, mm(sl.thickness), "", 0.0))
