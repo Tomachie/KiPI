@@ -6,7 +6,6 @@ All kipy-specific code lives here so the rest of KiPI never touches protobufs.
 
 from __future__ import annotations
 
-import math
 import os
 import time
 from typing import Dict, Iterable, List, Optional
@@ -15,21 +14,13 @@ from kipi.model.board import (
     BoardSnapshot, CopperLayer, DielectricLayer, Footprint, Net, Pad, Poly, Stackup,
     Track, Via, Zone,
 )
+from kipi.kicad_io.convert import arc_points, mm, poly, pt, shapely_to_polys
+from kipi.kicad_io.copper_shapes import copper_shape_zones
 from kipi.progress import NULL, ProgressReporter
 
-NM_PER_MM = 1_000_000.0
 DEFAULT_BOARD_THICKNESS_MM = 1.6
 DEFAULT_OUTER_CU_MM = 0.035
 DEFAULT_INNER_CU_MM = 0.0175
-ARC_SEGMENTS_PER_CIRCLE = 64
-
-
-def _mm(v) -> float:
-    return float(v) / NM_PER_MM
-
-
-def _pt(vec) -> tuple:
-    return (_mm(vec.x), _mm(vec.y))
 
 
 class ExtractionError(RuntimeError):
@@ -82,60 +73,6 @@ def _warn_old_kicad(version, progress: ProgressReporter) -> None:
         progress.warn(f"KiCad {v[0]}.{v[1]}.{v[2]} cannot say which layers plated pads have "
                       "copper on, so pads are kept on every layer. Update to KiCad 9.0.3 "
                       "or later for exact pad copper.")
-
-
-# ---------------------------------------------------------------------------
-# Geometry conversion
-# ---------------------------------------------------------------------------
-
-def _arc_points(start, mid, end, include_start: bool = False) -> List[tuple]:
-    """Discretize a start/mid/end arc (mm tuples) into points, excluding start."""
-    (x1, y1), (x2, y2), (x3, y3) = start, mid, end
-    d = 2.0 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
-    if abs(d) < 1e-12:
-        return ([start] if include_start else []) + [end]
-    ux = ((x1 * x1 + y1 * y1) * (y2 - y3) + (x2 * x2 + y2 * y2) * (y3 - y1)
-          + (x3 * x3 + y3 * y3) * (y1 - y2)) / d
-    uy = ((x1 * x1 + y1 * y1) * (x3 - x2) + (x2 * x2 + y2 * y2) * (x1 - x3)
-          + (x3 * x3 + y3 * y3) * (x2 - x1)) / d
-    r = math.hypot(x1 - ux, y1 - uy)
-    a1 = math.atan2(y1 - uy, x1 - ux)
-    a2 = math.atan2(y2 - uy, x2 - ux)
-    a3 = math.atan2(y3 - uy, x3 - ux)
-
-    def ccw_delta(a, b):
-        return (b - a) % (2 * math.pi)
-
-    # Sweep in whichever direction passes through the mid point.
-    sweep = ccw_delta(a1, a3)
-    if ccw_delta(a1, a2) > sweep:
-        sweep -= 2 * math.pi
-    n = max(2, int(math.ceil(abs(sweep) / (2 * math.pi) * ARC_SEGMENTS_PER_CIRCLE)))
-    pts = [(ux + r * math.cos(a1 + sweep * i / n), uy + r * math.sin(a1 + sweep * i / n))
-           for i in range(0 if include_start else 1, n)]
-    pts.append(end)
-    return pts
-
-
-def _polyline_points(polyline) -> List[tuple]:
-    pts: List[tuple] = []
-    for node in polyline.nodes:
-        if node.has_point:
-            pts.append(_pt(node.point))
-        elif node.has_arc:
-            arc = node.arc
-            s, m, e = _pt(arc.start), _pt(arc.mid), _pt(arc.end)
-            if not pts or pts[-1] != s:
-                pts.append(s)
-            pts.extend(_arc_points(s, m, e))
-    if len(pts) > 1 and pts[0] == pts[-1]:
-        pts.pop()
-    return pts
-
-
-def _poly(pwh) -> Poly:
-    return Poly(outline=_polyline_points(pwh.outline),
-                holes=[_polyline_points(h) for h in pwh.holes])
 
 
 # ---------------------------------------------------------------------------
@@ -212,11 +149,11 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
             if not sl.enabled:
                 continue
             if sl.type == board_pb2.BoardStackupLayerType.BSLT_COPPER and sl.layer in names:
-                entries.append(("cu", sl.layer, _mm(sl.thickness), "", 0.0))
+                entries.append(("cu", sl.layer, mm(sl.thickness), "", 0.0))
             elif sl.type == board_pb2.BoardStackupLayerType.BSLT_DIELECTRIC:
                 diel = sl.dielectric
                 subs = diel.layers if diel is not None else []
-                t = sum(_mm(s.thickness) for s in subs) or _mm(sl.thickness)
+                t = sum(mm(s.thickness) for s in subs) or mm(sl.thickness)
                 mat = subs[0].material_name if subs else sl.material_name
                 er = subs[0].epsilon_r if subs else 0.0
                 entries.append(("diel", -1, t, mat, er))
@@ -325,10 +262,10 @@ def _pad_shapes(board, pads, layer_ids: Iterable[int], progress) -> Dict[str, Di
         cmd.pads.extend([p.id for p in pads])
         resp = board.client.send(cmd, board_commands_pb2.PadShapeAsPolygonResponse)
         from kipy.geometry import PolygonWithHoles
-        for pid, poly in zip(resp.pads, resp.polygons):
+        for pid, kpoly in zip(resp.pads, resp.polygons):
             if presence and not presence.get(pid.value, {}).get(lid, False):
                 continue
-            p = _poly(PolygonWithHoles(poly))
+            p = poly(PolygonWithHoles(kpoly))
             if len(p.outline) >= 3:
                 out.setdefault(pid.value, {}).setdefault(lid, []).append(p)
     return out
@@ -352,7 +289,7 @@ def _via_layers(via, stackup: Stackup) -> List[int]:
     return [c.id for c in stackup.copper]
 
 
-def _outline(board, progress) -> List[Poly]:
+def _outline(board_shapes, progress) -> List[Poly]:
     """Board outline polygons from Edge.Cuts graphics (best effort)."""
     from kipy.board_types import BoardArc, BoardCircle, BoardPolygon, BoardRectangle, BoardSegment
     from kipy.proto.board.board_types_pb2 import BoardLayer
@@ -363,23 +300,23 @@ def _outline(board, progress) -> List[Poly]:
         return []
 
     lines, closed = [], []
-    for s in board.get_shapes():
+    for s in board_shapes:
         if s.layer != BoardLayer.BL_Edge_Cuts:
             continue
         if isinstance(s, BoardSegment):
-            lines.append(LineString([_pt(s.start), _pt(s.end)]))
+            lines.append(LineString([pt(s.start), pt(s.end)]))
         elif isinstance(s, BoardArc):
-            st, md, en = _pt(s.start), _pt(s.mid), _pt(s.end)
-            lines.append(LineString([st] + _arc_points(st, md, en)))
+            st, md, en = pt(s.start), pt(s.mid), pt(s.end)
+            lines.append(LineString([st] + arc_points(st, md, en)))
         elif isinstance(s, BoardCircle):
-            c = _pt(s.center)
-            closed.append(SPoint(c).buffer(_mm(s.radius()), quad_segs=32))
+            c = pt(s.center)
+            closed.append(SPoint(c).buffer(mm(s.radius()), quad_segs=32))
         elif isinstance(s, BoardRectangle):
-            (x1, y1), (x2, y2) = _pt(s.top_left), _pt(s.bottom_right)
+            (x1, y1), (x2, y2) = pt(s.top_left), pt(s.bottom_right)
             closed.append(SPolygon([(x1, y1), (x2, y1), (x2, y2), (x1, y2)]))
         elif isinstance(s, BoardPolygon):
             for pwh in s.polygons:
-                p = _poly(pwh)
+                p = poly(pwh)
                 closed.append(SPolygon(p.outline, p.holes))
     polys = list(polygonize(unary_union(lines))) if lines else []
     polys += closed
@@ -391,9 +328,7 @@ def _outline(board, progress) -> List[Poly]:
     board_poly = polys[0]
     for p in polys[1:]:
         board_poly = board_poly.symmetric_difference(p)
-    geoms = getattr(board_poly, "geoms", [board_poly])
-    return [Poly(outline=list(g.exterior.coords)[:-1],
-                 holes=[list(r.coords)[:-1] for r in g.interiors]) for g in geoms]
+    return shapely_to_polys(board_poly)
 
 
 def _kicad_busy(board) -> bool:
@@ -484,9 +419,9 @@ def extract_board(board, refill_zones: bool = False,
             if t.layer not in cu_ids:
                 continue
             tracks.append(Track(
-                net=t.net.name, layer=t.layer, width_mm=_mm(t.width),
-                start=_pt(t.start), end=_pt(t.end),
-                mid=_pt(t.mid) if isinstance(t, ArcTrack) else None))
+                net=t.net.name, layer=t.layer, width_mm=mm(t.width),
+                start=pt(t.start), end=pt(t.end),
+                mid=pt(t.mid) if isinstance(t, ArcTrack) else None))
         n_arcs = sum(1 for t in tracks if t.is_arc)
         progress.info(f"{len(tracks)} track segments ({n_arcs} arcs)")
     progress.check_cancel()
@@ -495,11 +430,11 @@ def extract_board(board, refill_zones: bool = False,
         vias = []
         for v in board.get_vias():
             try:
-                dia = _mm(v.diameter)
+                dia = mm(v.diameter)
             except ValueError:
-                dia = _mm(v.drill_diameter) * 2
-            vias.append(Via(id=v.id.value, net=v.net.name, position=_pt(v.position),
-                            drill_mm=_mm(v.drill_diameter), diameter_mm=dia,
+                dia = mm(v.drill_diameter) * 2
+            vias.append(Via(id=v.id.value, net=v.net.name, position=pt(v.position),
+                            drill_mm=mm(v.drill_diameter), diameter_mm=dia,
                             layers=_via_layers(v, stackup),
                             via_type=_VIA_TYPES.get(v.type, "through")))
         progress.info(f"{len(vias)} vias")
@@ -508,6 +443,7 @@ def extract_board(board, refill_zones: bool = False,
     with progress.timed("Reading footprints and pads"):
         footprints: List[Footprint] = []
         kpads = []
+        fp_shapes = []
         pad_ref: Dict[str, str] = {}
         for fp in board.get_footprints():
             ref = _field_text(fp.reference_field)
@@ -515,12 +451,13 @@ def extract_board(board, refill_zones: bool = False,
             from kipy.proto.board.board_types_pb2 import BoardLayer
             footprints.append(Footprint(
                 id=fp.id.value, reference=ref, value=_field_text(fp.value_field),
-                position=_pt(fp.position),
+                position=pt(fp.position),
                 side="bottom" if fp.layer == BoardLayer.BL_B_Cu else "top",
                 pad_ids=[p.id.value for p in fpads]))
             for p in fpads:
                 pad_ref[p.id.value] = ref
             kpads.extend(fpads)
+            fp_shapes.extend(fp.definition.shapes)
         progress.info(f"{len(footprints)} footprints, {len(kpads)} pads")
         progress.info("Querying pad copper shapes per layer...")
         shapes = _pad_shapes(board, kpads, cu_ids, progress)
@@ -529,9 +466,9 @@ def extract_board(board, refill_zones: bool = False,
             d = p.padstack.drill.diameter
             pads.append(Pad(
                 id=p.id.value, net=p.net.name, footprint=pad_ref.get(p.id.value, ""),
-                number=p.number, position=_pt(p.position),
+                number=p.number, position=pt(p.position),
                 pad_type=_PAD_TYPES.get(p.pad_type, "unknown"),
-                drill_mm=(_mm(d.x), _mm(d.y)),
+                drill_mm=(mm(d.x), mm(d.y)),
                 shapes=shapes.get(p.id.value, {}),
                 angle_deg=_pad_angle(p)))
     progress.check_cancel()
@@ -543,7 +480,7 @@ def extract_board(board, refill_zones: bool = False,
             if z.is_rule_area():
                 continue
             net = z.net.name if z.net is not None else ""
-            filled = {lid: [_poly(p) for p in polys]
+            filled = {lid: [poly(p) for p in polys]
                       for lid, polys in z.filled_polygons.items() if lid in cu_ids}
             if not filled:
                 unfilled += 1
@@ -554,8 +491,12 @@ def extract_board(board, refill_zones: bool = False,
         if unfilled:
             progress.warn(f"{unfilled} zones have no fill; refill zones (B) for accurate results")
 
+    board_shapes = list(board.get_shapes())
+    with progress.timed("Reading copper graphic shapes"):
+        zones.extend(copper_shape_zones(board_shapes + fp_shapes, cu_ids, progress))
+
     with progress.timed("Reading board outline"):
-        outline = _outline(board, progress)
+        outline = _outline(board_shapes, progress)
 
     project_dir = ""
     try:

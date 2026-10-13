@@ -130,6 +130,8 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
 | Output current limit | Optional: the VRM PASSes if its total output current (all phases) is at most this. Leave at **no limit** to skip the check. |
+| Dropout | LDO only. The least input-to-output difference it regulates at |
+| Input min / max | Optional input range it regulates over. A VRM whose solved input voltage is outside its range, or an LDO below its dropout, cannot hold its set voltage: every load it feeds, directly or downstream, is marked **VRM OUT OF REGULATION** |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
@@ -158,7 +160,8 @@ To try it without a design of your own, open the example board in
 * **Tolerance** (± %) is the PASS/FAIL limit. Each load is judged by its worst pin: the one
   furthest from the VRM set point, below it (a **drop**) or above it (a **boost**). Boosts
   happen with remote sense, where the VRM raises its output pins to hold a sense point
-  further down the copper, so pins nearer the VRM sit above the set point.
+  further down the copper, so pins nearer the VRM sit above the set point. A load on a net
+  group whose solve did not converge shows **NOT CONVERGED** instead of a result.
 
 | Loads tab | Thermal tab |
 |---|---|
