@@ -115,14 +115,15 @@ libraries for a bug report.
 
 ### 3. Model the power system
 
-**From the schematic:** **Import Tomachie PDN…** (toolbar) fills the whole setup from a
-Tomachie power-tree file (`<design>.pdn.json`), which is read from the schematic and the
-parts' datasheets: every rail's source and voltage, each regulator as an LDO or switcher
-with its input pins and efficiency, the parts in series between rails (fuses, ferrites,
-0 Ω links, pass FETs, a switcher's inductor) with their datasheet DC resistance, and each
-load's typical and maximum current. A current the file does not know stays not known, and
-so does the draw of a part that passes power on; power leaving the board at a connector
-pin is a load of unknown current. Everything that cannot be placed on the board is
+**From the schematic:** **Load Tomachie pdn.json…** (toolbar, and offered when a board has
+no setup yet) fills the whole setup from a Tomachie power-tree file (`<design>.pdn.json`),
+which is read from the schematic and the parts' datasheets: every rail's source and voltage,
+each regulator as an LDO or switcher with its input pins, efficiency, quiescent current,
+dropout and input range, the parts in series between rails (fuses, ferrites, 0 Ω links, pass
+FETs, a switcher's inductor) with their datasheet DC resistance, and each load's typical and
+maximum current and datasheet minimum supply voltage. A current the file does not know stays
+not known, and so does the draw of a part that passes power on; power leaving the board at a
+connector pin is a load of unknown current. Everything that cannot be placed on the board is
 written to the log, never guessed. Review the result, then solve.
 
 **By hand:**
@@ -174,7 +175,8 @@ To try it without a design of your own, open the example board in
   a core and an I/O supply.
 * **Ground pins** (optional) include the ground return.
 * **Min V** (optional) is the lowest supply voltage the part's datasheet allows; the load
-  FAILS when its worst supply pin is below it.
+  FAILS when its worst supply pin is below it. The Tomachie import fills it from
+  `supply_min`.
 * **Tolerance** (± %) is the PASS/FAIL limit. Each load is judged by its worst pin: the one
   furthest from the VRM set point, below it (a **drop**) or above it (a **boost**). Boosts
   happen with remote sense, where the VRM raises its output pins to hold a sense point
