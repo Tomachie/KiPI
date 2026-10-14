@@ -478,6 +478,9 @@ class LoadEditor(_Editor):
         self.tol.setSpecialValueText("no limit")
         self.tol.setToolTip("PASS if every supply pin is within ± this % of the VRM set "
                             "voltage: no pin drops below it or is boosted above it by more")
+        self.min_v = _optional_volts()
+        self.min_v.setToolTip("The lowest supply voltage the part's datasheet allows: FAIL "
+                              "when the worst supply pin is below it")
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -488,7 +491,8 @@ class LoadEditor(_Editor):
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
         f.addRow("Tolerance", self.tol)
-        self._watch(self.name, self.current, self.current_max, self.tol, self.mode)
+        f.addRow("Min V", self.min_v)
+        self._watch(self.name, self.current, self.current_max, self.tol, self.mode, self.min_v)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
 
@@ -571,6 +575,7 @@ class LoadEditor(_Editor):
         self.mode.setCurrentIndex(1 if l.groups else 0)
         self.ground.set_value(l.ground)
         self.tol.setValue(l.tolerance_pct or 0.0)
+        _set_optional(self.min_v, l.min_v)
         self.lbl_total.setText(_amps(l.total_current()))
         self._mode_rows()
 
@@ -595,6 +600,7 @@ class LoadEditor(_Editor):
             l.groups = []
         l.ground = self.ground.value()
         l.tolerance_pct = self.tol.value() or None
+        l.min_v = _get_optional(self.min_v)
         self.lbl_total.setText(_amps(l.total_current()))
 
 
@@ -863,7 +869,7 @@ class PIPanel(QWidget):
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance %", "Current", ""], sortable=True)
+                                      "Tolerance %", "Min V", "Current", ""], sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
                                   "a remote-sensed VRM's output pins. The worst pin is the one "
                                   "furthest from the set point either way.")
@@ -1313,12 +1319,12 @@ class PIPanel(QWidget):
                            (fmt_drop(l.drop, unit=""), l.drop * 1e3),
                            (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
                            (f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
-                           "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}", l.basis,
-                           status])
+                           "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}",
+                           "" if l.min_v is None else f"{l.min_v:g}", l.basis, status])
             color = (("#ffb040" if l.status else None) if l.passed is None
                      else ("#60d060" if l.passed else "#ff6060"))
             if color:
-                t.item(r, 9).setForeground(QColor(color))
+                t.item(r, 10).setForeground(QColor(color))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         t = self.tbl_vrms
         t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))
