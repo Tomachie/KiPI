@@ -4,6 +4,18 @@
 
 # KiPI — DC power integrity for KiCad
 
+> **This is a fork of [drewsum/KiPI](https://github.com/drewsum/KiPI)**, written by Drew
+> Maatman, the original author. It adds five changes, each also offered upstream as a pull
+> request:
+>
+> - [Solver and extraction bug fixes](https://github.com/drewsum/KiPI/pull/39): copper graphic shapes, LDO dropout and VRM input range, unconverged groups, KiCad 10.0.1 stackup
+> - [Typical / worst-case solve](https://github.com/drewsum/KiPI/pull/40): maximum load currents and DC connection resistances, unknown currents
+> - [Minimum supply voltage per load](https://github.com/drewsum/KiPI/pull/41)
+> - [Via plating rules, filled vias, load heat](https://github.com/drewsum/KiPI/pull/42)
+> - [Import a power tree from a Tomachie .pdn.json](https://github.com/drewsum/KiPI/pull/43)
+>
+> The rest of this README is Drew's.
+
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![KiCad 9.0+](https://img.shields.io/badge/KiCad-9.0%2B-314cb0.svg?logo=kicad&logoColor=white)](#requirements)
