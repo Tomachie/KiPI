@@ -3,12 +3,14 @@
 import copy
 
 import pytest
+from shapely.geometry import box
 
+from kipi.model.board import BoardSnapshot, CopperLayer, DielectricLayer, Net, Stackup, Zone
 from kipi.pi.importers.pdn_figures import dc_resistance
 from kipi.pi.importers.tomachie_pdn import PdnImportError, TomachiePdnImporter, path_to_rail
 from kipi.pi.model import validate
 from kipi.pi.tree import solve_tree
-from test_tree import board, by_name
+from test_tree import B, F, T, board, by_name, pad, poly
 
 PDN = {
     "schema": "tomachie-pdn", "schema_version": 1, "spec_revision": 2,
@@ -142,3 +144,84 @@ def test_rail_whose_source_is_not_on_the_board_is_noted():
     pdn["rails"][1]["source"].update(pins=[], output_net="NOWHERE")
     _, notes = run(pdn)
     assert any(n.startswith("Rail +3V3: regulator U1 output pins not found") for n in notes)
+
+
+def _load_switch(**reg):
+    """U1 as a power switch passing VIN (12 V) to its output rail."""
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["voltage"] = {"nominal": 12.0, "min": "not_specified",
+                                  "max": "not_specified", "basis": "net_name"}
+    pdn["rails"][1]["source"]["output_path"] = []
+    pdn["regulators"][0] = {"refdes": "U1", "type": "load_switch", "type_basis": "schematic",
+                            "input_rails": ["VIN"], "output_rails": ["+3V3"], **reg}
+    return pdn
+
+
+def test_load_switch_is_a_dc_connection_with_its_on_resistance():
+    figs = [{"spec": "rds_on", "typ": "89", "max": "120", "unit": "mΩ", "page": 4}]
+    setup, notes = run(_load_switch(datasheet_resistances=figs,
+                                    quiescent_current={"amps": 9e-5, "basis": "typ"}))
+    # Not a VRM: an LDO making 12 V from 12 V would be out of regulation.
+    assert [v.name for v in setup.vrms] == ["J1 VIN"]
+    u1 = by_name(setup.links, "U1")
+    assert (u1.side_a.net, u1.side_a.pins, u1.side_b.net, u1.side_b.pins) == \
+        ("VIN", ["1"], "+3V3", ["2"])
+    assert (u1.resistance, u1.resistance_max) == (pytest.approx(0.089), pytest.approx(0.120))
+    # Its quiescent current is drawn at its input pins.
+    iq = by_name(setup.loads, "U1 quiescent")
+    assert (iq.supply.net, iq.current) == ("VIN", 9e-5)
+    assert validate(setup) == []
+    assert any("U1 (+3V3): load switch, imported as a DC connection" in n for n in notes)
+    res = solve_tree(board(), setup)
+    assert by_name(res.loads, "U2").passed is True
+
+
+def test_load_switch_without_an_on_resistance_is_a_short_and_said():
+    setup, notes = run(_load_switch())
+    u1 = by_name(setup.links, "U1")
+    assert (u1.resistance, u1.resistance_max) == (0.0, None)
+    assert [l.name for l in setup.loads] == ["U2"]       # no quiescent current in the file
+    assert any("U1: on-resistance not known; modeled as a short" in n for n in notes)
+
+
+def filtered_board():
+    """J1 -> VIN -> FB1 -> VIN_F -> U1 (switch) -> SWOUT -> FB2 -> +3V3 -> U2."""
+    copper = [CopperLayer(F, "F.Cu", 0, T, 1.5 + T), CopperLayer(B, "B.Cu", 1, T, 0.0)]
+    st = Stackup(copper, [DielectricLayer(1.5, "FR4", 4.5, F, B)], 1.5 + 2 * T)
+    spans = {"VIN": (0, 7), "VIN_F": (8, 10), "SWOUT": (12, 14), "+3V3": (15, 22)}
+    pads = [pad("j1_1", "VIN", "J1", "1", box(0, 0, 1, 1)),
+            pad("fb1_1", "VIN", "FB1", "1", box(6, 0, 7, 1)),
+            pad("fb1_2", "VIN_F", "FB1", "2", box(8, 0, 9, 1)),
+            pad("u1_1", "VIN_F", "U1", "1", box(9, 0, 10, 1)),
+            pad("u1_2", "SWOUT", "U1", "2", box(12, 0, 13, 1)),
+            pad("fb2_1", "SWOUT", "FB2", "1", box(13, 0, 14, 1)),
+            pad("fb2_2", "+3V3", "FB2", "2", box(15, 0, 16, 1)),
+            pad("u2_1", "+3V3", "U2", "1", box(21, 0, 22, 1)),
+            pad("j1_2", "GND", "J1", "2", box(0, 0, 1, 1), B),
+            pad("u1_3", "GND", "U1", "3", box(10, 0, 11, 1), B),
+            pad("u2_2", "GND", "U2", "2", box(21, 0, 22, 1), B)]
+    zones = [Zone(n, n, "", 0, {F: [poly(box(a, 0, b, 1))]}) for n, (a, b) in spans.items()]
+    zones.append(Zone("gnd", "GND", "", 0, {B: [poly(box(0, 0, 22, 1))]}))
+    nets = [Net(i + 1, n) for i, n in enumerate([*spans, "GND"])]
+    return BoardSnapshot("filtered", "", st, nets, [], [], pads, [], zones, [])
+
+
+def test_load_switch_behind_an_input_filter_with_a_part_on_its_output():
+    ferrite = {"class": "ferrite", "resistance_ohm": "unknown",
+               "datasheet_figures": [{"spec": "dcr", "max": "0.080", "unit": "ohm"},
+                                     {"spec": "impedance_at_frequency", "typ": "330",
+                                      "unit": "ohm"}]}
+    pdn = _load_switch(datasheet_resistances=[{"spec": "rds_on", "typ": "0.089",
+                                               "unit": "ohm"}])
+    pdn["rails"][0]["loads"][0].update(
+        input_net="VIN_F", input_filter=[dict(ferrite, refdes="FB1", net_in="VIN",
+                                              net_out="VIN_F")])
+    pdn["rails"][1]["source"].update(output_net="SWOUT", output_path=[
+        dict(ferrite, refdes="FB2", net_in="SWOUT", net_out="+3V3")])
+    setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
+    links = {k.name: (k.side_a.net, k.side_b.net, k.resistance) for k in setup.links}
+    assert links == {"U1": ("VIN_F", "SWOUT", pytest.approx(0.089)),
+                     "FB1": ("VIN", "VIN_F", pytest.approx(0.08)),
+                     "FB2": ("SWOUT", "+3V3", pytest.approx(0.08))}
+    assert [l.name for l in setup.loads] == ["U2"]       # powered through all three
+    assert by_name(solve_tree(filtered_board(), setup).loads, "U2").passed is True
