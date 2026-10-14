@@ -49,15 +49,8 @@ class ThermalResult:
         return float(self.x[j]), float(self.y[i]), float(self.temps[i, j])
 
     def sampler(self):
-        from scipy.interpolate import RegularGridInterpolator
-        filled = np.where(np.isnan(self.temps), self.settings.ambient_c, self.temps)
-        f = RegularGridInterpolator((self.y, self.x), filled, bounds_error=False, fill_value=None)
-
-        def T(xy):
-            xy = np.atleast_2d(xy)
-            return f(np.column_stack([np.clip(xy[:, 1], self.y[0], self.y[-1]),
-                                      np.clip(xy[:, 0], self.x[0], self.x[-1])]))
-        return T
+        from kipi.thermal.model import TemperatureMap
+        return TemperatureMap(self.x, self.y, self.temps, self.settings.ambient_c)
 
 
 class _Heat:

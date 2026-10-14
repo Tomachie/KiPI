@@ -172,3 +172,22 @@ def test_laminate_conductance_follows_stackup_materials():
         m.deposit(heat, np.array([[20.0, 20.0]]), np.array([0.5]))
         peaks.append(np.nanmax(m.solve(heat)))
     assert peaks[0] > 2 * peaks[1]
+
+
+def test_electrothermal_results_save_and_reload(tmp_path):
+    """Save results after an electro-thermal solve: the temperature map each solution
+    keeps must pickle, and the reloaded map gives the same temperatures."""
+    from kipi.pi.report import load_results, save_results
+    snap = board()
+    s = setup("ldo")
+    s.loads[0].current = 5.0
+    tree = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=2, grid_mm=0.5))
+    path = save_results(tmp_path / "board.kipi-results", tree, {}, snap, s)
+    back = load_results(path)["tree"]
+    xy = np.array([[1.0, 0.5], [15.0, 0.5]])
+    for name, g in tree.groups.items():
+        before = g.result.solution.problem.temperature
+        after = back.groups[name].result.solution.problem.temperature
+        assert after is not None
+        assert np.allclose(after(xy), before(xy))
+    assert np.allclose(back.thermal.sampler()(xy), tree.thermal.sampler()(xy))
