@@ -107,6 +107,10 @@ class Load:
     # The lowest supply voltage the part's datasheet allows (its recommended
     # operating minimum): the load FAILS when its worst supply pin is below it.
     min_v: Optional[float] = None
+    # Heat the part puts into the board. None: all the power it takes from its supply
+    # pins (V x I). Set it for a part that passes power on, such as a load switch or an
+    # LED or motor driver, whose own loss is far less than what flows through it.
+    dissipation_w: Optional[float] = None
 
     def total_current(self) -> Optional[float]:
         """Typical total; None when it is not known."""
@@ -176,7 +180,8 @@ class PISetup:
                         groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""),
                                          g.get("current_max"))
                                 for g in l.get("groups", [])],
-                        min_v=l.get("min_v"))
+                        min_v=l.get("min_v"),
+                        dissipation_w=l.get("dissipation_w"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], resistance_max=k.get("resistance_max"))
@@ -187,8 +192,7 @@ class PISetup:
             html_report=bool(d.get("html_report", False)),
             nets=list(d["nets"]) if d.get("nets") is not None else None,
             corner=d.get("corner", "typ"),
-            settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
-                                      if k in known}),
+            settings=_settings(d.get("settings", {}), known),
         )
 
     def save(self, path) -> Path:
@@ -199,6 +203,16 @@ class PISetup:
     @staticmethod
     def load(path) -> "PISetup":
         return PISetup.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+
+
+def _settings(d: dict, known) -> SolveSettings:
+    """Solve settings from a setup file. A file from before via rules carries one
+    "plating_mm" for every hole: it becomes the plating of every default rule."""
+    s = SolveSettings(**{k: v for k, v in d.items() if k in known})
+    if "plating_mm" in d and "via_rules" not in d:
+        for r in s.via_rules:
+            r.plating_mm = float(d["plating_mm"])
+    return s
 
 
 def setup_path(board_file_or_name: str, project_dir: str) -> Path:
@@ -288,6 +302,8 @@ def validate(setup: PISetup) -> List[str]:
     names = [x.name for x in [*setup.vrms, *setup.loads, *setup.links]]
     if setup.corner not in CORNERS:
         errors.append(f"Unknown solve corner {setup.corner!r}")
+    from kipi.solver.via_barrel import rule_errors
+    errors.extend(rule_errors(setup.settings.via_rules))
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         errors.append(f"Names must be unique: {', '.join(dupes)}")
@@ -336,6 +352,8 @@ def validate(setup: PISetup) -> List[str]:
         pairs = [(l.current, l.current_max)] + [(g.current, g.current_max) for g in l.groups]
         if any(typ is not None and mx is not None and abs(mx) < abs(typ) for typ, mx in pairs):
             errors.append(f"Load {l.name}: a maximum current is below its typical current")
+        if l.dissipation_w is not None and l.dissipation_w < 0:
+            errors.append(f"Load {l.name}: heat cannot be negative")
         if l.groups:
             seen_pins: Dict[str, int] = {}
             for gi, g in enumerate(l.groups):
