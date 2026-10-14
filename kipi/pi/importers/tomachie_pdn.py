@@ -15,7 +15,8 @@ current. What maps where:
   pins with its on-resistance, and its quiescent current a load on its input pins;
 * a load -> a load with its typical and maximum current. A current the file does not
   know stays not known, and so does the current of a part that draws what it drives;
-  power leaving the board at a connector pin is a load whose current is not known.
+  power leaving the board at a connector pin is a load whose current is not known
+  and which puts no heat into the board.
   KiPI marks every result those touch INCOMPLETE rather than passing it.
 
 Nothing is guessed. Whatever cannot be placed on the board is listed in the notes.
@@ -332,8 +333,10 @@ class TomachiePdnImporter:
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
+                # Its power is spent off the board, so it heats nothing here; the copper
+                # carrying its current still heats through the solve.
                 self.setup.loads.append(Load(self._unique(f"{pin} (off-board)"), supply, None,
-                                             tolerance_pct=tol))
+                                             tolerance_pct=tol, dissipation_w=0.0))
 
     def _loads(self):
         for name, r in self.rails.items():

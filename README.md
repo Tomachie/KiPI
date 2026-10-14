@@ -135,8 +135,9 @@ dropout and input range, the parts in series between rails (fuses, ferrites, 0 Î
 FETs, a switcher's inductor) with their datasheet DC resistance, and each load's typical and
 maximum current and datasheet minimum supply voltage. A current the file does not know stays
 not known, and so does the draw of a part that passes power on; power leaving the board at a
-connector pin is a load of unknown current. Everything that cannot be placed on the board is
-written to the log, never guessed. Review the result, then solve.
+connector pin is a load of unknown current with no heat (its power is spent off the board).
+Everything that cannot be placed on the board is written to the log, never guessed.
+Review the result, then solve.
 
 **By hand:**
 

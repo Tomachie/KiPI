@@ -225,3 +225,22 @@ def test_load_switch_behind_an_input_filter_with_a_part_on_its_output():
                      "FB2": ("SWOUT", "+3V3", pytest.approx(0.08))}
     assert [l.name for l in setup.loads] == ["U2"]       # powered through all three
     assert by_name(solve_tree(filtered_board(), setup).loads, "U2").passed is True
+
+
+def test_off_board_load_puts_no_heat_into_the_board():
+    """Power leaving the board at a connector pin is spent off the board: the load keeps
+    its current (copper I^2R still heats through the solve) but has no heat of its own."""
+    from kipi.thermal.cosim import solve_electrothermal
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["offboard_pins"] = ["U2_1"]
+    setup, _ = run(pdn)
+    off = by_name(setup.loads, "U2_1 (off-board)")
+    assert off.dissipation_w == 0.0 and off.current is None
+    off.current = 0.5                                  # entered by the user
+    setup.thermal.enabled, setup.thermal.iterations, setup.thermal.grid_mm = True, 1, 0.5
+    res = solve_electrothermal(board(), setup, setup.thermal)
+    u2 = by_name(res.loads, "U2")
+    assert by_name(res.loads, "U2_1 (off-board)").current == pytest.approx(0.5)
+    heat = res.thermal.heat_by_kind
+    assert heat["loads"] == pytest.approx(abs(u2.v_effective * u2.current), rel=1e-9)
+    assert heat["copper"] > 0
