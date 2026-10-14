@@ -339,3 +339,76 @@ def test_unconverged_group_leaves_its_loads_unjudged(monkeypatch):
     assert ld.passed is None and ld.verdict == NOT_CONVERGED
     assert res.groups["VIN"].converged is False
     assert by_name(res.loads, "U2").passed is True     # its own rail converged
+
+
+def test_worst_case_solves_the_maximum_current():
+    s = setup("ldo")
+    s.loads[0].current_max = 2.0
+    typ = by_name(solve_tree(board(), s).loads, "U2")
+    s.corner = "max"
+    res = solve_tree(board(), s)
+    worst = by_name(res.loads, "U2")
+    assert res.corner == "max" and worst.basis == "max"
+    assert worst.current == pytest.approx(2.0)
+    assert worst.drop == pytest.approx(2.0 * typ.drop, rel=1e-9)   # one strip, linear
+
+
+def test_worst_case_without_a_maximum_says_typical_was_used():
+    s = setup("ldo")
+    s.corner = "max"
+    res = solve_tree(board(), s)
+    assert by_name(res.loads, "U2").basis == "typ (no max)"
+    assert any("no maximum given for U2" in w for w in res.warnings)
+
+
+def test_worst_case_link_resistance_resolves_to_its_maximum():
+    from kipi.pi.corner import resolve
+    s = setup("ldo")
+    s.links = [DcLink("FB1", PinRef("U1", "+3V3", ["2"]), PinRef("U2", "+3V3", ["1"]), 0.05,
+                      resistance_max=0.08),
+               DcLink("FB2", PinRef("U1", "+3V3", ["2"]), PinRef("U2", "+3V3", ["1"]), 0.05),
+               DcLink("R0", PinRef("U1", "+3V3", ["2"]), PinRef("U2", "+3V3", ["1"]), 0.0)]
+    s.corner = "max"
+    out, info = resolve(s)
+    assert [k.resistance for k in out.links] == [0.08, 0.05, 0.0]
+    assert info.typical_used == ["U2", "DC connection FB2"]   # a short is not listed
+    s.corner = "typ"
+    out, info = resolve(s)
+    assert [k.resistance for k in out.links] == [0.05, 0.05, 0.0] and not info.typical_used
+
+
+def test_unknown_current_marks_its_rail_and_upstream_incomplete():
+    s = setup("ldo")
+    s.loads.append(Load("U3", PinRef("U2", "+3V3", ["1"]), None))
+    s.loads.append(Load("J1in", PinRef("U1", "VIN", ["1"]), 0.0, tolerance_pct=50.0))
+    res = solve_tree(board(), s)
+    assert by_name(res.loads, "U2").verdict == "INCOMPLETE"       # same rail
+    assert by_name(res.loads, "J1in").verdict == "INCOMPLETE"     # rail feeding it
+    assert by_name(res.loads, "U3").current == 0.0
+    assert any("not known" in w for w in res.warnings)
+
+
+def test_incomplete_rail_still_fails_a_load_that_fails():
+    s = setup("ldo")
+    s.loads[0].tolerance_pct = 0.01                     # 1 A over R(8) is 0.12 %: fails
+    s.loads.append(Load("U3", PinRef("U2", "+3V3", ["1"]), None))
+    assert by_name(solve_tree(board(), s).loads, "U2").verdict == "FAIL"
+
+
+def test_max_below_typical_is_a_setup_error():
+    s = setup("ldo")
+    s.loads[0].current_max = 0.5
+    assert any("below its typical" in e for e in validate(s))
+
+
+def test_typ_max_and_corner_round_trip(tmp_path):
+    s = setup("ldo")
+    s.loads[0].current_max = 1.5
+    s.loads.append(Load("U3", PinRef("U2", "+3V3", ["1"]), None, current_max=0.2))
+    s.corner = "max"
+    s.save(tmp_path / "s.json")
+    back = PISetup.load(tmp_path / "s.json")
+    assert back.corner == "max"
+    assert by_name(back.loads, "U2").current_max == 1.5
+    u3 = by_name(back.loads, "U3")
+    assert u3.current is None and u3.current_max == 0.2
