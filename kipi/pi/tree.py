@@ -27,8 +27,11 @@ group whose iteration did not converge leaves its loads unjudged.
 
 Currents and resistances are resolved for the setup's corner (typical or worst case)
 first, see :mod:`kipi.pi.corner`. A load whose current is not known solves as 0 A, so its
-group and every group feeding it carry too little current: a load there that passes is
-INCOMPLETE, never PASS; one that fails anyway still fails.
+group, every group feeding it and every group those feed carry the wrong current (a rail
+upstream looks better than it is, so a regulator downstream of it may pass a dropout or
+input-range check it should not), and so does its ground return: a load on any of those
+rails, or with ground pins on that ground, that passes is INCOMPLETE, never PASS; one that
+fails anyway still fails.
 """
 
 from __future__ import annotations
@@ -215,24 +218,33 @@ class _TreeSolver:
         if vrm.input:
             yield from self._feeding(self.groups[vrm.input.net])
 
-    def _incomplete_groups(self, warnings: List[str]) -> set:
-        """Groups carrying a current that is not known: its own and every one upstream."""
-        out = set()
+    def _incomplete_groups(self, warnings: List[str]) -> Tuple[set, set]:
+        """Rails and grounds whose solution misses a current that is not known.
+
+        Rails: the load's own, every one upstream of it, and every one fed from those (an
+        upstream rail that looks better than it is lets a regulator further down pass a
+        dropout or input-range check it should not). Grounds: the load's ground net, when
+        it has ground pins, since its return current is missing there too."""
+        rails, grounds = set(), set()
         unknown = set(self.info.unknown_current)
         for l in self.setup.loads:
             names = [l.name] + [f"{l.name} [{g.name or ','.join(g.pins)}]" for g in l.groups]
             if unknown.intersection(names):
-                out.update(self._feeding(self.groups[l.supply.net]))
+                for up in self._feeding(self.groups[l.supply.net]):
+                    rails.update(self._fed_from(up))
+                if l.ground:
+                    grounds.add(self.groups[l.ground.net])
         if self.info.unknown_current:
             warnings.append("Currents not known (solved as 0 A): "
                             + ", ".join(self.info.unknown_current)
-                            + f". Loads on the rails they draw from, and on every rail "
-                            f"upstream, are marked {INCOMPLETE} unless they fail anyway.")
+                            + f". Loads on the rails they draw from, on every rail upstream "
+                            f"and every rail those feed, and loads sharing their ground "
+                            f"return, are marked {INCOMPLETE} unless they fail anyway.")
         if self.info.typical_used:
             warnings.append("Worst case: no maximum given for "
                             + ", ".join(self.info.typical_used)
                             + "; their typical value is used.")
-        return out
+        return rails, grounds
 
     def _fed_from(self, g: Group) -> Iterator[Group]:
         """``g`` and every group powered through it."""
@@ -438,9 +450,10 @@ class _TreeSolver:
         out.warnings.extend(warnings)
         regulation = {v.name: self._regulation(v) for v in self.setup.vrms}
         out_of_reg = self._groups_out_of_regulation(regulation, out.warnings)
-        incomplete = self._incomplete_groups(out.warnings)
+        incomplete, incomplete_grounds = self._incomplete_groups(out.warnings)
         out.corner = self.info.corner
-        out.loads = [self._load_report(l, out_of_reg, incomplete) for l in self.setup.loads]
+        out.loads = [self._load_report(l, out_of_reg, incomplete, incomplete_grounds)
+                     for l in self.setup.loads]
         out.vrms = [self._vrm_report(v, regulation[v.name]) for v in self.setup.vrms]
         out.solve_s = time.perf_counter() - t0
         self.progress.info(f"Power tree solved: {len(self.order)} rail(s), "
@@ -483,7 +496,8 @@ class _TreeSolver:
         return [pid for grp in l.groups
                 for pid in self.pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))]
 
-    def _load_report(self, l: Load, out_of_reg: set, incomplete: set) -> LoadReport:
+    def _load_report(self, l: Load, out_of_reg: set, incomplete: set,
+                     incomplete_grounds: set) -> LoadReport:
         g = self.groups[l.supply.net]
         sol = self.rail_solutions[g]
         sv = _pad_voltages(sol, self._supply_pads(l))
@@ -510,7 +524,8 @@ class _TreeSolver:
             rep.status, rep.passed = OUT_OF_REGULATION, False
         else:
             rep.passed = self._judge(l, rep, nominal)
-        if g in incomplete and rep.passed is not False and not rep.status:
+        shares_ground = l.ground is not None and self.groups[l.ground.net] in incomplete_grounds
+        if (g in incomplete or shares_ground) and rep.passed is not False and not rep.status:
             rep.status, rep.passed = INCOMPLETE, None
         rep.basis = self.info.basis.get(l.name, "")
         return rep
