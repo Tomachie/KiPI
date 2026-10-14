@@ -24,7 +24,10 @@
       },
       "ground_sense": null,
       "phases": [],
-      "current_limit_a": null
+      "current_limit_a": null,
+      "dropout_v": 0.0,
+      "vin_min": null,
+      "vin_max": null
     },
     {
       "name": "U1",
@@ -138,7 +141,10 @@
           }
         }
       ],
-      "current_limit_a": null
+      "current_limit_a": null,
+      "dropout_v": 0.0,
+      "vin_min": null,
+      "vin_max": null
     }
   ],
   "loads": [

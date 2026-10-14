@@ -95,6 +95,17 @@ def test_electrothermal_cosim_heats_and_raises_drop():
     assert dts[-1] < dts[0]                         # settling
 
 
+def test_first_iteration_solves_copper_at_ambient():
+    snap = board()
+    s = setup("ldo")
+    at_20 = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1,
+                                                          ambient_c=20.0, grid_mm=0.5))
+    at_85 = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1,
+                                                          ambient_c=85.0, grid_mm=0.5))
+    ratio = by_name(at_85.loads, "U2").drop / by_name(at_20.loads, "U2").drop
+    assert ratio == pytest.approx(1 + TCR * 65.0, rel=1e-3)
+
+
 @pytest.mark.parametrize("name,k,assumed", [
     ("FR4", 0.8, False), ("FR4 core", 0.8, False), ("FR408-HR", 0.8, False), ("370HR", 0.8, False),
     ("2116 RC54%", 0.6, False), ("3313 RC57%", 0.6, False), ("Prepreg", 0.6, False),
