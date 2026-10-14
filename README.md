@@ -179,9 +179,9 @@ To try it without a design of your own, open the example board in
 **Loads tab**: one entry per consumer.
 
 * **Supply pins** and **Current** (typical) and **Max current**. A current can be left
-  **not known**: it is solved as 0 A, and every load on that rail and on every rail
-  upstream of it is marked **INCOMPLETE** instead of PASS (a load that fails anyway still
-  fails). Pin groups take a typical and a maximum current each. With several supply pins,
+  **not known**: it is solved as 0 A, and every load on that rail, on every rail
+  upstream of it and on every rail those feed, and every load sharing its ground return, is
+  marked **INCOMPLETE** instead of PASS (a load that fails anyway still fails). Pin groups take a typical and a maximum current each. With several supply pins,
   **Current split** chooses between splitting the current evenly over all pins and giving
   explicit **pin groups**, each with its own current (**Add pin group**, or **One group per
   pin**). Use groups when one part draws different currents on different rails or pins, e.g.
