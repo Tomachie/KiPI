@@ -412,3 +412,38 @@ def test_typ_max_and_corner_round_trip(tmp_path):
     assert by_name(back.loads, "U2").current_max == 1.5
     u3 = by_name(back.loads, "U3")
     assert u3.current is None and u3.current_max == 0.2
+
+
+# A load whose current is not known, on VIN (upstream of U1 making +3V3), with or without
+# ground pins. Its 0 A makes VIN, and so U1's input, look better than it is, and leaves
+# its return current out of the ground.
+def _unknown_on_vin(ground_pins: bool, ground=True, regulated=True):
+    s = setup("ldo", ground=ground)
+    s.loads[0].tolerance_pct = 5.0
+    if not regulated:                        # U1 an independent source: no path through VIN
+        s.vrms[1].kind, s.vrms[1].input = "source", None
+    s.loads.append(Load("X", PinRef("U1", "VIN", ["1"]), None,
+                        ground=PinRef("U1", "GND", ["3"]) if ground_pins else None))
+    return solve_tree(board(), s)
+
+
+def test_unknown_load_marks_the_rails_its_rail_feeds():
+    res = _unknown_on_vin(ground_pins=False, ground=False)
+    assert by_name(res.loads, "U2").verdict == "INCOMPLETE"      # +3V3, fed from VIN
+
+
+def test_unknown_load_with_ground_pins_marks_the_rails_its_rail_feeds():
+    res = _unknown_on_vin(ground_pins=True)
+    assert by_name(res.loads, "U2").verdict == "INCOMPLETE"
+
+
+def test_unknown_load_with_ground_pins_marks_loads_sharing_its_ground():
+    # +3V3 is not fed from VIN here: only the shared GND return ties U2 to X.
+    res = _unknown_on_vin(ground_pins=True, regulated=False)
+    assert by_name(res.loads, "U2").verdict == "INCOMPLETE"
+    assert any("ground" in w for w in res.warnings if "not known" in w)
+
+
+def test_unknown_load_without_ground_pins_leaves_an_unrelated_rail_judged():
+    res = _unknown_on_vin(ground_pins=False, regulated=False)
+    assert by_name(res.loads, "U2").verdict == "PASS"

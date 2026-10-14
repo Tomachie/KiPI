@@ -450,7 +450,8 @@ class LoadEditor(_Editor):
         self.mode.addItem("Per pin group", "groups")
         self.current = _optional_spin(-1000, 1000, 4, " A", 0.01, "not known")
         self.current.setToolTip("Typical current. Not known: solved as 0 A, and every result "
-                                "on this rail and upstream is marked INCOMPLETE")
+                                "on this rail, upstream, every rail those feed and its ground "
+                                "return is marked INCOMPLETE")
         self.current_max = _optional_spin(-1000, 1000, 4, " A", 0.01)
         self.current_max.setToolTip("Maximum current, used by a worst-case solve")
         self.groups = QTableWidget(0, 5)
