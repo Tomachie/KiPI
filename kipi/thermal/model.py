@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable
 
 import numpy as np
 import scipy.sparse as sp
@@ -49,6 +48,31 @@ class ThermalSettings:
 
     def h_w_mm2_k(self) -> float:
         return (H_NATURAL_W_M2K + H_PER_M_S * max(self.airflow_m_s, 0.0)) * 1e-6
+
+
+class TemperatureMap:
+    """Board temperature T(xy), degC, by bilinear interpolation on the thermal grid;
+    points off the grid take the nearest edge value. A plain object holding only the
+    grid data, so the results that keep it can be pickled ("Save results")."""
+
+    def __init__(self, x: np.ndarray, y: np.ndarray, temps: np.ndarray, ambient_c: float):
+        self.x = np.asarray(x, dtype=float)
+        self.y = np.asarray(y, dtype=float)
+        self.temps = np.where(np.isnan(temps), ambient_c, temps)
+        self._f = None
+
+    def __call__(self, xy: np.ndarray) -> np.ndarray:
+        if self._f is None:
+            self._f = RegularGridInterpolator((self.y, self.x), self.temps,
+                                              bounds_error=False, fill_value=None)
+        xy = np.atleast_2d(xy)
+        return self._f(np.column_stack([np.clip(xy[:, 1], self.y[0], self.y[-1]),
+                                        np.clip(xy[:, 0], self.x[0], self.x[-1])]))
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state["_f"] = None           # rebuilt on first use
+        return state
 
 
 class BoardThermalModel:
@@ -151,17 +175,9 @@ class BoardThermalModel:
         t[self.inside] = self.settings.ambient_c + rise
         return t
 
-    def sampler(self, temps: np.ndarray) -> Callable[[np.ndarray], np.ndarray]:
+    def sampler(self, temps: np.ndarray) -> "TemperatureMap":
         """T(xy) by bilinear interpolation; points off the grid use the nearest value."""
-        filled = np.where(np.isnan(temps), self.settings.ambient_c, temps)
-        f = RegularGridInterpolator((self.y, self.x), filled, bounds_error=False, fill_value=None)
-
-        def T(xy: np.ndarray) -> np.ndarray:
-            xy = np.atleast_2d(xy)
-            pts = np.column_stack([np.clip(xy[:, 1], self.y[0], self.y[-1]),
-                                   np.clip(xy[:, 0], self.x[0], self.x[-1])])
-            return f(pts)
-        return T
+        return TemperatureMap(self.x, self.y, temps, self.settings.ambient_c)
 
 
 def _board_geometry(snap: BoardSnapshot):
