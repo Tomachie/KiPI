@@ -25,7 +25,7 @@ jobs:
         run: ruff check --output-format=github .
 
   test:
-    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }}${{ matrix.kipy && format(', kicad-python {0}', matrix.kipy) || '' }})
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }}${{ matrix.kipy && format(', kicad-python {0}', matrix.kipy) || '' }}${{ matrix.pardiso && ', PARDISO' || '' }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -45,6 +45,8 @@ jobs:
           - { os: macos-latest,   python: "3.12" }
           # The oldest kicad-python requirements.txt allows: the API calls must exist there too.
           - { os: ubuntu-latest,  python: "3.11", kipy: "0.7.1" }
+          # With the optional multithreaded direct solver (README: faster solves).
+          - { os: windows-latest, python: "3.11", pardiso: true }
     env:
       QT_QPA_PLATFORM: offscreen
       PYVISTA_OFF_SCREEN: "true"
@@ -74,11 +76,17 @@ jobs:
         if: matrix.kipy
         run: pip install "kicad-python==${{ matrix.kipy }}"
 
+      - name: Install optional PARDISO solver
+        if: matrix.pardiso
+        run: |
+          pip install pypardiso
+          python -c "from kipi.core.solver import direct; assert direct.backend() == 'pardiso', direct.backend_note()"
+
       - name: Validate plugin manifest
         run: python -m kipy.packaging validate .
 
       - name: Import GUI modules
-        run: python -c "import kipi.gui.main_window, kipi.gui.viewer3d, kipi.gui.pi_panel, kipi_entry"
+        run: python -c "import kipi.gui.main_window, kipi.gui.viewer3d, kipi.dc.gui.pi_panel, kipi_entry"
 
       - name: Run tests
         run: python -m pytest -v

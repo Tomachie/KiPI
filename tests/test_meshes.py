@@ -2,8 +2,8 @@ import pytest
 
 pv = pytest.importorskip("pyvista")
 
-from kipi.geometry.copper import net_copper
-from kipi.viz.meshes import build_scene, triangulate
+from kipi.core.geometry.copper import net_copper
+from kipi.core.viz.meshes import build_scene, triangulate
 from synthetic import F, IN1, make_board
 
 
@@ -30,3 +30,16 @@ def test_scene_builds_closed_slabs():
     assert scene.nets["GND"].vias is None         # GND has no vias
     assert set(scene.nets["+3V3"].pads) == {F}
     assert scene.board is not None
+
+
+def test_board_body_clears_every_copper_face():
+    """A body face coplanar with copper z-fights with it: speckle that moves as the view
+    rotates (issue #36)."""
+    from kipi.core.viz.meshes import board_body
+    snap = make_board()
+    body, _ = board_body(snap)
+    z_lo, z_hi = body.bounds[4], body.bounds[5]
+    faces = [z for c in snap.stackup.copper for z in (c.z_bottom_mm, c.z_top_mm)]
+    assert min(abs(z - zf) for zf in faces for z in (z_lo, z_hi)) > 1e-3
+    outer = sorted(snap.stackup.copper, key=lambda c: c.z_bottom_mm)
+    assert outer[0].z_top_mm < z_lo and z_hi < outer[-1].z_bottom_mm

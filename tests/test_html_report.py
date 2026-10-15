@@ -5,11 +5,11 @@ import pytest
 pytest.importorskip("plotly")
 pytest.importorskip("matplotlib")
 
-from kipi.pi.tree import solve_tree
-from kipi.report.html import write_report
-from kipi.thermal.cosim import solve_electrothermal
-from kipi.thermal.model import ThermalSettings
-from kipi.viz.results import build_result_scene
+from kipi.dc.pi.tree import solve_tree
+from kipi.dc.report.html import write_report
+from kipi.dc.thermal.cosim import solve_electrothermal
+from kipi.dc.thermal.model import ThermalSettings
+from kipi.dc.viz.results import build_result_scene
 from test_tree import board, setup
 
 
@@ -32,5 +32,6 @@ def test_report_contents(tmp_path, thermal):
     for l in tree.loads:
         assert l.name in text
     assert ("Electro-thermal" in text) == thermal
+    assert ("Copper temperature by layer" in text) == thermal
     import re
     assert not re.search(r"<script[^>]+src=", text)        # plotly.js embedded: works offline

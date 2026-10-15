@@ -11,13 +11,14 @@ pytest.importorskip("qtpy")
 pytest.importorskip("pyvista")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from qtpy.QtCore import Signal  # noqa: E402
 from qtpy.QtWidgets import QApplication, QMessageBox, QWidget  # noqa: E402
 from shapely.geometry import box  # noqa: E402
 
-from kipi.model.board import Net, Zone  # noqa: E402
-from kipi.pi.model import DcLink, Load, PinRef  # noqa: E402
-from kipi.pi.tree import solve_tree  # noqa: E402
-from kipi.viz.results import build_result_scene  # noqa: E402
+from kipi.core.model.board import Net, Zone  # noqa: E402
+from kipi.dc.pi.model import DcLink, Load, PinRef  # noqa: E402
+from kipi.dc.pi.tree import solve_tree  # noqa: E402
+from kipi.dc.viz.results import build_result_scene  # noqa: E402
 from test_tree import F, board, pad, poly, setup  # noqa: E402
 
 
@@ -33,6 +34,8 @@ def window(app, monkeypatch, tmp_path):
 
     class ResultView(QWidget):
         zscale = 1.0
+        models_shown = models_wanted = True
+        result_shown = Signal(bool)
 
         def __init__(self, parent=None):
             super().__init__(parent)

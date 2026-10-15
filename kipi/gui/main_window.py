@@ -14,25 +14,28 @@ import numpy as np
 from qtpy.QtCore import Qt, QTimer
 from qtpy.QtGui import QAction, QColor, QIcon, QPixmap, QTextCursor
 from qtpy.QtWidgets import (
-    QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
-    QPlainTextEdit, QProgressBar, QPushButton, QSlider, QSplitter, QTextBrowser, QToolBar,
-    QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSlider,
+    QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolBar, QVBoxLayout, QWidget,
 )
 
 from kipi import __version__
+from kipi.ac.gui.panel import ACPanel
+from kipi.core.model.board import BoardSnapshot
+from kipi.core.model.nets import classify_nets, sorted_nets
+from kipi.dc.gui.pi_panel import PIPanel
+from kipi.dc.pi.tree import fmt_drop
 from kipi.gui.viewer3d import Viewer3D
-from kipi.gui.pi_panel import PIPanel
 from kipi.gui.worker import QtProgress, Task
-from kipi.model.board import BoardSnapshot
-from kipi.model.nets import classify_nets, sorted_nets
-from kipi.pi.tree import fmt_drop
 
 log = logging.getLogger("kipi")
 
 _KIND_TAG = {"power": "PWR", "ground": "GND", "signal": ""}
 _KIND_COLOR = {"power": "#e07050", "ground": "#70a0e0", "signal": "#a0a0a0"}
 MAX_AUTO_NETS = 4
+# Analysis modes, chosen in the toolbar: (key, label, setup dock title).
+MODES = (("dc", "DC", "PI setup"), ("ac", "AC", "AC setup"))
 VIA_PICK_PX = 10      # a click this close to a via barrel on screen selects it
 
 
@@ -61,12 +64,36 @@ class MainWindow(QMainWindow):
         self._ui_beat_timer.timeout.connect(kipi_app.ui_alive)
         self._ui_beat_timer.start()
         self._checked_cache: Optional[frozenset] = None  # None = recompute from the list
+        # Part 3D models: ref -> mesh, or None when the part has no model KiCad can find.
+        self._model_cache: Dict[str, object] = {}
+        self._model_task: Optional[Task] = None
+        self._model_gen = 0                 # bumped per board; stale loads are dropped
+        self._models_pending = False        # wanted parts changed while a load ran
+        self._model_source = None           # (kicad-cli, board file), False if unusable
+        self._kicad_cli = None              # found once per session
+        self._cli_looked = False
+        self._closed = False
+        self._layer_colors_from = None      # where the layer colors were last read from
+        self._model_timer = QTimer(self)    # coalesce setup edits into one update
+        self._model_timer.setSingleShot(True)
+        self._model_timer.setInterval(300)
+        self._model_timer.timeout.connect(self._sync_models)
         self._last_fraction_t = 0.0
         self._picked = None   # ("pad"|"via", id)
+        self.mode = "dc"
 
-        self.viewer = Viewer3D(self)
-        self.setCentralWidget(self.viewer)
+        # The central area: the 3D view and, in AC mode, the impedance plot as a second tab.
+        from kipi.ac.gui.plot import ImpedancePlot
+        self.views = QTabWidget(self)
+        self.views.setDocumentMode(True)
+        self.viewer = Viewer3D(self.views)
+        self.plot = ImpedancePlot(self.views)
+        self.views.addTab(self.viewer, "3D view")
+        self.views.addTab(self.plot, "Impedance")
+        self.setCentralWidget(self.views)
         self.viewer.on_click(self._on_click)
+        self.plot.cursor_moved.connect(self._show_cursor)
+        self._set_plot_tab_shown(False)
 
         self._build_toolbar()
         self._build_left_panel()
@@ -98,22 +125,104 @@ class MainWindow(QMainWindow):
         self.chk_refill.setToolTip("Refill all zones in KiCad before reading (recommended)")
         tb.addWidget(self.chk_refill)
         tb.addSeparator()
-        act("Open snapshot…", self.open_snapshot, "Load a saved board snapshot (.json / .json.gz)")
+        act("Open snapshot…", self.open_snapshot,
+            "Load a saved board snapshot (.json / .json.gz), without KiCad running")
         self.act_save = act("Save snapshot…", self.save_snapshot,
                             "Save the extracted board for offline use")
         tb.addSeparator()
-        act("Top", self.viewer.view_top)
-        act("Bottom", self.viewer.view_bottom)
-        act("Iso", self.viewer.view_iso)
-        act("Screenshot…", self.save_screenshot)
+        act("Top", lambda: self._show_3d(self.viewer.view_top), "Look down on the top of the board")
+        act("Bottom", lambda: self._show_3d(self.viewer.view_bottom),
+            "Look up at the bottom of the board")
+        act("Iso", lambda: self._show_3d(self.viewer.view_iso), "Isometric view of the board")
+        act("Screenshot…", self.save_screenshot,
+            "Save the 3D view, or the impedance plot if it is showing, as a PNG")
         tb.addSeparator()
-        act("Open results…", self.open_results, "Reopen a saved power-tree solve")
+        self.act_open_results = act("Open results…", self.open_results,
+                                    "Reopen a saved DC power-tree solve (.kipi-results); load "
+                                    "the board first")
         tb.addSeparator()
+        self.act_help = act("Help", self.show_help, "Open the KiPI user guide in your browser (F1)")
+        self.act_help.setShortcut("F1")
         self.act_about = act("About", self.show_about, "Version, author and project links")
+
+        # Analysis mode, at the far right.
+        spacer = QWidget(tb)
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        tb.addWidget(QLabel("Mode: ", tb))
+        self.mode_buttons = QButtonGroup(self)
+        tips = {"dc": "DC power integrity: IR drop, current density, electro-thermal",
+                "ac": "AC power integrity: PDN impedance over frequency at probe points"}
+        for key, label, _ in MODES:
+            rb = QRadioButton(label, tb)
+            rb.setObjectName(f"mode_{key}")
+            rb.setToolTip(tips[key])
+            rb.setChecked(key == self.mode)
+            rb.toggled.connect(lambda on, k=key: on and self.set_mode(k))
+            self.mode_buttons.addButton(rb)
+            tb.addWidget(rb)
+
+    def set_mode(self, mode: str):
+        """Switch the analysis mode: the setup dock shows that mode's panel. The DC setup
+        and results are kept while in AC mode, and come back with DC."""
+        if mode == self.mode:
+            return
+        if self._busy():
+            QMessageBox.information(self, "KiPI", "Wait for the current operation to finish "
+                                                  "before changing the analysis mode.")
+            self._check_mode_button(self.mode)
+            return
+        self.mode = mode
+        self._check_mode_button(mode)
+        # VRMs and series links are shared: show the other panel's edits.
+        if mode == "dc":
+            self.solve_panel.reload_shared()
+        else:
+            self.ac_panel.reload()
+        self.setup_stack.setCurrentWidget(self.solve_panel if mode == "dc" else self.ac_panel)
+        self.solve_dock.setWindowTitle(next(t for k, _, t in MODES if k == mode))
+        self.act_open_results.setEnabled(mode == "dc")
+        self._set_plot_tab_shown(mode == "ac")
+        if mode == "dc":
+            if self._tree:
+                self._show_group(self.solve_panel.cmb_group.currentText())
+        else:
+            self.viewer.clear_result()        # DC results do not apply; show the copper
+            if self.plot.result is not None:
+                self.views.setCurrentWidget(self.plot)
+        self.log(f"Analysis mode: {mode.upper()}")
+
+    def _set_plot_tab_shown(self, shown: bool):
+        """Show the impedance tab only in AC mode. QTabWidget.setTabVisible needs Qt 5.15;
+        older Qt disables the tab instead."""
+        i = self.views.indexOf(self.plot)
+        if hasattr(self.views, "setTabVisible"):
+            self.views.setTabVisible(i, shown)
+        else:
+            self.views.setTabEnabled(i, shown)
+        if not shown and self.views.currentIndex() == i:
+            self.views.setCurrentWidget(self.viewer)
+
+    def _show_3d(self, then=None):
+        """Bring the 3D view to the front (from the impedance tab), then run ``then``."""
+        self.views.setCurrentWidget(self.viewer)
+        if then is not None:
+            then()
+
+    def _check_mode_button(self, mode: str):
+        rb = self.findChild(QRadioButton, f"mode_{mode}")
+        if rb is not None and not rb.isChecked():
+            rb.blockSignals(True)
+            rb.setChecked(True)          # the group unchecks the other button
+            rb.blockSignals(False)
 
     def show_about(self):
         from kipi.gui.about import AboutDialog
         AboutDialog(self).exec()
+
+    def show_help(self):
+        from kipi.gui.help import open_help
+        open_help(self)
 
     def _build_left_panel(self):
         panel = QWidget(self)
@@ -125,17 +234,23 @@ class MainWindow(QMainWindow):
         ln = QVBoxLayout(g_nets)
         self.net_filter = QLineEdit(g_nets)
         self.net_filter.setPlaceholderText("Filter nets…")
+        self.net_filter.setToolTip("Show only nets whose name contains this text")
         self.net_filter.textChanged.connect(self._apply_net_filter)
         self.chk_power_only = QCheckBox("Power && ground only", g_nets)
         self.chk_power_only.setChecked(True)
+        self.chk_power_only.setToolTip("Hide signal nets that are not ticked. Power and ground "
+                                       "nets are recognized by name, net class and zones.")
         self.chk_power_only.toggled.connect(self._apply_net_filter)
         self.net_list = QListWidget(g_nets)
         self.net_list.itemChanged.connect(self._on_net_item_changed)
+        self.net_list.setToolTip("Tick the nets to analyze: they are drawn in 3D and offered "
+                                 "in the setup's pin pickers")
         row = QHBoxLayout()
         btn_power = QPushButton("All power", g_nets)
-        btn_power.setToolTip("Show every power and ground net")
+        btn_power.setToolTip("Tick every power and ground net (keeps the nets already ticked)")
         btn_power.clicked.connect(self._check_power_nets)
         btn_none = QPushButton("None", g_nets)
+        btn_none.setToolTip("Untick every net")
         btn_none.clicked.connect(lambda: self._set_checked(lambda it: False))
         row.addWidget(btn_power, 1)
         row.addWidget(btn_none, 1)
@@ -149,13 +264,27 @@ class MainWindow(QMainWindow):
         ll = QVBoxLayout(g_layers)
         self.layer_list = QListWidget(g_layers)
         self.layer_list.itemChanged.connect(self._on_layer_item_changed)
+        self.layer_list.setToolTip("Show or hide each copper layer. Result colors stretch "
+                                   "over the layers that are shown.")
+        lrow = QHBoxLayout()
+        btn_all_layers = QPushButton("All", g_layers)
+        btn_all_layers.setToolTip("Show every copper layer")
+        btn_all_layers.clicked.connect(lambda: self._set_layers_checked(True))
+        btn_no_layers = QPushButton("None", g_layers)
+        btn_no_layers.setToolTip("Hide every copper layer")
+        btn_no_layers.clicked.connect(lambda: self._set_layers_checked(False))
+        lrow.addWidget(btn_all_layers, 1)
+        lrow.addWidget(btn_no_layers, 1)
         ll.addWidget(self.layer_list)
+        ll.addLayout(lrow)
 
         # --- display options
         g_view = QGroupBox("Display", panel)
         fv = QFormLayout(g_view)
         self.cmb_color = QComboBox(g_view)
         self.cmb_color.addItems(["By layer", "By net"])
+        self.cmb_color.setToolTip("Color the copper by layer, in the PCB editor's layer colors, "
+                                  "or by net (plain geometry view)")
         self.cmb_color.currentIndexChanged.connect(
             lambda i: self.viewer.set_color_mode("net" if i == 1 else "layer"))
         self.spin_z = QDoubleSpinBox(g_view)
@@ -163,26 +292,57 @@ class MainWindow(QMainWindow):
         self.spin_z.setSingleStep(1.0)
         self.spin_z.setValue(5.0)
         self.spin_z.setSuffix(" ×")
-        self.spin_z.setToolTip("Z exaggeration (stackup thickness only)")
+        self.spin_z.setToolTip("Stretch the stackup vertically to see the layers apart. "
+                               "Only the drawing changes, not the solve.")
         self.spin_z.valueChanged.connect(self.viewer.set_zscale)
         self.viewer.set_zscale(self.spin_z.value())
+        opac = QHBoxLayout()
+        self.sld_opacity = QSlider(Qt.Horizontal, g_view)
+        self.sld_opacity.setRange(5, 100)
+        self.sld_opacity.setValue(100)
+        self.sld_opacity.setToolTip("How solid the copper layers and pads are drawn. Lower "
+                                    "it to see the layers beneath; vias stay solid.")
+        self.lbl_opacity = QLabel("100%", g_view)
+        self.lbl_opacity.setMinimumWidth(self.lbl_opacity.fontMetrics()
+                                         .horizontalAdvance("100%") + 4)
+        self.sld_opacity.valueChanged.connect(self._opacity_changed)
+        opac.addWidget(self.sld_opacity, 1)
+        opac.addWidget(self.lbl_opacity)
         feats = QHBoxLayout()
-        for name, label in (("vias", "Vias"), ("pads", "Pads"), ("board", "Board")):
+        feat_tips = {"vias": "Show via and plated-hole barrels",
+                     "pads": "Show pads", "board": "Show the board outline and laminate",
+                     "models": "Show the 3D models of the parts in the setup (VRMs, loads, "
+                               "series links and capacitors) on the nets shown. KiCad's "
+                               "kicad-cli reads them from the saved board file. The copper "
+                               "and result views each remember this; over results they "
+                               "start off."}
+        for name, label in (("vias", "Vias"), ("pads", "Pads"), ("board", "Board"),
+                            ("models", "Models")):
             cb = QCheckBox(label, g_view)
             cb.setChecked(True)
+            cb.setToolTip(feat_tips[name])
             cb.toggled.connect(lambda v, n=name: self.viewer.set_feature_visible(n, v))
             feats.addWidget(cb)
+        self.chk_models = cb
+        self.chk_models.toggled.connect(lambda _: self._model_timer.start())
+        # The copper and result views each keep their own Models setting.
+        self.viewer.result_shown.connect(
+            lambda _: self.chk_models.setChecked(self.viewer.models_shown))
         fv.addRow("Color", self.cmb_color)
         fv.addRow("Z scale", self.spin_z)
+        fv.addRow("Opacity", opac)
         fv.addRow(feats)
         cut = QHBoxLayout()
         self.cmb_cut = QComboBox(g_view)
         self.cmb_cut.addItems(["Off", "X", "Y", "Z"])
-        self.cmb_cut.setToolTip("Cut the view with a plane across this axis")
+        self.cmb_cut.setToolTip("Cut the view with a plane across this axis, to look inside "
+                                "the stackup")
         self.sld_cut = QSlider(Qt.Horizontal, g_view)
         self.sld_cut.setRange(0, 1000)
         self.sld_cut.setValue(500)
+        self.sld_cut.setToolTip("Where the cutting plane sits along its axis")
         self.chk_cut_flip = QCheckBox("Flip", g_view)
+        self.chk_cut_flip.setToolTip("Keep the other side of the cutting plane")
         for w in (self.cmb_cut, self.sld_cut, self.chk_cut_flip):
             cut.addWidget(w, 1 if w is self.sld_cut else 0)
         self.cmb_cut.currentIndexChanged.connect(self._cut_changed)
@@ -195,8 +355,11 @@ class MainWindow(QMainWindow):
         li = QVBoxLayout(g_info)
         self.info = QTextBrowser(g_info)
         self.info.setOpenExternalLinks(False)
+        self.info.setToolTip("What you last clicked in the 3D view, or the impedance "
+                             "plot's cursor values")
         self.btn_select_kicad = QPushButton("Select in KiCad", g_info)
         self.btn_select_kicad.setEnabled(False)
+        self.btn_select_kicad.setToolTip("Select the picked pad or via in the KiCad PCB editor")
         self.btn_select_kicad.clicked.connect(self._select_in_kicad)
         li.addWidget(self.info, 1)
         li.addWidget(self.btn_select_kicad)
@@ -230,10 +393,21 @@ class MainWindow(QMainWindow):
         self._tree = None
         self._scenes = {}
         self._setup_path = None
-        dock = QDockWidget("PI setup", self)
+        self.ac_panel = ACPanel(self)
+        self.ac_panel.save_requested.connect(self._save_setup)
+        self.ac_panel.solve_requested.connect(self.run_ac_solve)
+        self.ac_panel.result_selected.connect(self._show_ac_result)
+        for panel in (self.solve_panel, self.ac_panel):
+            panel.setup_changed.connect(self._model_timer.start)
+        # One setup dock; it shows the panel of the current analysis mode.
+        self.setup_stack = QStackedWidget(self)
+        self.setup_stack.addWidget(self.solve_panel)
+        self.setup_stack.addWidget(self.ac_panel)
+        dock = QDockWidget(MODES[0][2], self)
         dock.setObjectName("solve_dock")
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-        dock.setWidget(self.solve_panel)
+        dock.setWidget(self.setup_stack)
+        self.solve_dock = dock
         dock.setMinimumWidth(420)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self._result = None
@@ -251,6 +425,7 @@ class MainWindow(QMainWindow):
         self.progress_bar.setMaximumHeight(14)
         self.btn_cancel = QPushButton("Cancel", w)
         self.btn_cancel.setEnabled(False)
+        self.btn_cancel.setToolTip("Stop the running operation")
         self.btn_cancel.clicked.connect(self._cancel_task)
         row.addWidget(self.lbl_stage, 2)
         row.addWidget(self.progress_bar, 3)
@@ -262,6 +437,7 @@ class MainWindow(QMainWindow):
         lay.addLayout(row)
         lay.addWidget(self.log_view)
         dock = QDockWidget("Log", self)
+        self.log_dock = dock
         dock.setObjectName("log_dock")
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         dock.setWidget(w)
@@ -338,7 +514,9 @@ class MainWindow(QMainWindow):
         kipi_app.watchdog_stop()
         log.info("Task finished")
         self.solve_panel.set_busy(False)
+        self.ac_panel.set_busy(False)
         pending, self._pending_solve = getattr(self, "_pending_solve", None), None
+        pending_ac, self._pending_ac = getattr(self, "_pending_ac", None), None
         self.btn_cancel.setEnabled(False)
         self.act_reload.setEnabled(True)
         self.progress_bar.setRange(0, 1000)
@@ -350,6 +528,8 @@ class MainWindow(QMainWindow):
             self._sync_timer.start()
         if pending is not None:
             QTimer.singleShot(0, lambda: self.run_solve(pending))
+        elif pending_ac is not None:
+            QTimer.singleShot(0, lambda: self.run_ac_solve(*pending_ac))
 
     def _on_task_failed(self, name: str, tb: str):
         log.error(tb)
@@ -365,7 +545,8 @@ class MainWindow(QMainWindow):
         refill = self.chk_refill.isChecked()
 
         def work(progress):
-            from kipi.kicad_io.extract import connect, extract_board
+            from kipi.core.kicad_io.extract import connect, extract_board, require_single_kicad
+            require_single_kicad()     # a second KiCad may have been opened since the last load
             if self._board is None:
                 self._kicad, self._board = connect(progress=progress)
             snap = extract_board(self._board, refill_zones=refill, progress=progress)
@@ -382,7 +563,7 @@ class MainWindow(QMainWindow):
                                               "KiPI snapshot (*.json *.json.gz)")
         if not path:
             return
-        from kipi.kicad_io.snapshot import load
+        from kipi.core.kicad_io.snapshot import load
 
         self._run(lambda progress: load(path), self._set_snapshot, "Opening snapshot")
 
@@ -395,14 +576,17 @@ class MainWindow(QMainWindow):
                                               "KiPI snapshot (*.json.gz *.json)")
         if not path:
             return
-        from kipi.kicad_io.snapshot import save
+        from kipi.core.kicad_io.snapshot import save
         save(self.snapshot, path)
         self.log(f"Snapshot saved to {path}")
 
     def save_screenshot(self):
         path, _ = QFileDialog.getSaveFileName(self, "Save screenshot", "kipi.png", "PNG (*.png)")
         if path:
-            self.viewer.screenshot(path)
+            if self.views.currentWidget() is self.plot:
+                self.plot.save_png(path)
+            else:
+                self.viewer.screenshot(path)
             self.log(f"Screenshot saved to {path}")
 
     def _set_snapshot(self, snap: BoardSnapshot):
@@ -413,9 +597,13 @@ class MainWindow(QMainWindow):
                 else None)
         self.snapshot = snap
         self._copper_cache.clear()
+        self._model_cache.clear()
+        self._model_gen += 1
+        self._model_source = None
         self._picked = None
         self.btn_select_kicad.setEnabled(False)
         self.setWindowTitle(f"KiPI {__version__} — {snap.board_name}")
+        self._load_layer_colors(snap)
         self._populate_layers()
         self._result = None
         self._tree = None
@@ -423,13 +611,24 @@ class MainWindow(QMainWindow):
         setup = self._load_setup(snap)
         self._populate_nets(keep if keep is not None else setup.nets, setup)
         self._show_board_summary()
-        from kipi.viz.meshes import board_body
+        from kipi.core.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
         self.sync_nets()
 
+    def _load_layer_colors(self, snap: BoardSnapshot):
+        """Color the copper layers like the PCB editor's color theme, read again on every
+        load so a theme changed in KiCad shows after Load from KiCad."""
+        from kipi.core.kicad_io.colors import copper_theme
+        from kipi.core.viz.meshes import set_layer_colors
+        colors, source = copper_theme(snap.kicad_version)
+        set_layer_colors(colors)
+        if source != self._layer_colors_from:
+            self._layer_colors_from = source
+            self.log(f"Layer colors: {source}")
+
     # ============================================================ lists
     def _populate_layers(self):
-        from kipi.viz.meshes import layer_color
+        from kipi.core.viz.meshes import layer_color
         st = self.snapshot.stackup
         self.layer_list.blockSignals(True)
         self.layer_list.clear()
@@ -530,6 +729,18 @@ class MainWindow(QMainWindow):
     def _on_layer_item_changed(self, item):
         self.viewer.set_layer_visible(item.data(Qt.UserRole), item.checkState() == Qt.Checked)
 
+    def _opacity_changed(self, value: int):
+        self.lbl_opacity.setText(f"{value}%")
+        self.viewer.set_layer_opacity(value / 100.0)
+
+    def _set_layers_checked(self, on: bool):
+        """Tick (show) or untick (hide) every copper layer."""
+        state = Qt.Checked if on else Qt.Unchecked
+        for i in range(self.layer_list.count()):
+            it = self.layer_list.item(i)
+            if it.checkState() != state:
+                it.setCheckState(state)      # itemChanged updates the viewer
+
     # ============================================================ scene
     def sync_nets(self):
         """Make the 3D view match the checked nets.
@@ -540,7 +751,9 @@ class MainWindow(QMainWindow):
         if self.snapshot is None:
             return
         self.solve_panel.set_nets(list(self._checked_set()))
+        self.ac_panel.set_nets(list(self._checked_set()))
         self.solve_panel.setup.nets = self._checked_nets()   # saved with the setup
+        self._model_timer.start()
         if self._busy():
             self._resync_pending = True
             return
@@ -556,8 +769,8 @@ class MainWindow(QMainWindow):
         cache = self._copper_cache
 
         def work(progress):
-            from kipi.geometry.copper import net_copper
-            from kipi.viz.meshes import build_net_scene
+            from kipi.core.geometry.copper import net_copper
+            from kipi.core.viz.meshes import build_net_scene
             built = 0
             with progress.timed(f"Building {len(todo)} net(s)"):
                 for i, net in enumerate(todo):
@@ -592,10 +805,100 @@ class MainWindow(QMainWindow):
             task.canceled.connect(lambda: self._set_checked(
                 lambda it: it.data(Qt.UserRole) in self.viewer.nets()))
 
+    # ============================================================ part models
+    def _wanted_models(self) -> List[str]:
+        """Parts in the setup with a pad on a ticked net, like the copper drawn."""
+        snap = self.snapshot
+        if snap is None or not self.viewer.models_wanted:
+            return []
+        on_nets = {p.footprint for net in self._checked_set()
+                   for p in snap.items_on_net(net)[2]}
+        return sorted(self.solve_panel.setup.part_refs() & on_nets)
+
+    def _sync_models(self):
+        """Show the models of the wanted parts, loading those not seen yet."""
+        snap = self.snapshot
+        if snap is None or self._closed:
+            return
+        wanted = self._wanted_models()
+        todo = [r for r in wanted if r not in self._model_cache]
+        if todo and self._model_task is None:
+            self._load_models(todo)
+        elif todo:
+            self._models_pending = True
+        side = {f.reference: f.side for f in snap.footprints}
+        shown = {r: (self._model_cache[r], side.get(r, "top")) for r in wanted
+                 if self._model_cache.get(r) is not None}
+        self.viewer.set_models(shown, snap.stackup.board_thickness_mm)
+
+    def _models_source(self):
+        """``(kicad-cli, board file)``, or False (said once per board) if either is
+        missing."""
+        if self._model_source is None:
+            from kipi.core.kicad_io import models3d
+            if not self._cli_looked:
+                self._cli_looked = True
+                self._kicad_cli = models3d.find_kicad_cli(self._kicad)
+            board = models3d.board_file(self.snapshot)
+            if self._kicad_cli is None:
+                self.log("3D models are read with KiCad's kicad-cli, which KiPI could not "
+                         f"find; set {models3d.CLI_ENV} to its path to show them",
+                         logging.WARNING)
+            elif board is None:
+                self.log(f"3D models: the board file {self.snapshot.board_name} was not "
+                         "found next to the project, so no models are shown",
+                         logging.WARNING)
+            self._model_source = ((self._kicad_cli, board)
+                                  if self._kicad_cli and board else False)
+        return self._model_source
+
+    def _load_models(self, refs: List[str]):
+        source = self._models_source()
+        if not source:
+            self._model_cache.update({r: None for r in refs})
+            return
+        cli, board = source
+        gen = self._model_gen
+
+        def work(progress):
+            from kipi.core.kicad_io.models3d import load_models
+            from kipi.core.progress import Canceled
+            progress.info(f"Loading 3D models of {len(refs)} part(s) with kicad-cli")
+            try:
+                found = load_models(cli, board, refs, progress)
+            except Canceled:
+                raise
+            except Exception as e:  # noqa: BLE001 - models are a nicety; never fail on them
+                progress.warn(f"Could not load 3D models: {e}")
+                return {r: None for r in refs}
+            n = sum(m is not None for m in found.values())
+            progress.info(f"3D models: {n} of {len(refs)} part(s) have one")
+            return found
+
+        prog = QtProgress()
+        prog.sig_message.connect(self.log)
+        task = Task(work, prog, self)
+        task.done.connect(lambda found: self._models_loaded(gen, found))
+        task.finished.connect(self._model_task_finished)
+        self._model_task = task
+        task.start()
+
+    def _models_loaded(self, gen: int, found: dict):
+        if gen != self._model_gen:          # a board loaded since; these are its parts
+            return
+        self._model_cache.update(found)
+        self._sync_models()
+
+    def _model_task_finished(self):
+        self._model_task = None
+        if self._models_pending:
+            self._models_pending = False
+            self._model_timer.start()
+
     # ============================================================ solve
     # ------------------------------------------------------------ setup file
     def _load_setup(self, snap):
-        from kipi.pi.model import PISetup, setup_path
+        from kipi.dc.pi.model import PISetup, setup_path
         project_dir = snap.project_dir
         if not project_dir and snap.source and snap.source != "kicad":
             project_dir = str(Path(snap.source).parent)
@@ -612,6 +915,8 @@ class MainWindow(QMainWindow):
                 label = f"Could not read {path.name}; starting empty"
         self._setup_path = path
         self.solve_panel.set_board(snap, setup, label)
+        self.ac_panel.set_board(snap, setup, label)
+        self.plot.clear()
         return setup
 
     def _save_setup(self):
@@ -622,6 +927,7 @@ class MainWindow(QMainWindow):
         try:
             self.solve_panel.setup.save(self._setup_path)
             self.solve_panel.lbl_file.setText(f"Setup: {self._setup_path}")
+            self.ac_panel.set_label(f"Setup: {self._setup_path}")
             self.log(f"Saved PI setup to {self._setup_path}")
         except OSError as e:
             self.log(f"Could not save the setup: {e}", logging.WARNING)
@@ -646,13 +952,13 @@ class MainWindow(QMainWindow):
             report_path = self._setup_path.parent / f"{self._results_stem()}_kipi_report.html"
 
         def work(progress):
-            from kipi.mesh.mesher import MeshError
-            from kipi.pi.tree import solve_tree
-            from kipi.solver import SolveError
-            from kipi.viz.results import build_result_scene
+            from kipi.core.mesh.mesher import MeshError
+            from kipi.dc.pi.tree import solve_tree
+            from kipi.dc.solver import SolveError
+            from kipi.dc.viz.results import build_result_scene
             try:
                 if frozen.thermal.enabled:
-                    from kipi.thermal.cosim import solve_electrothermal
+                    from kipi.dc.thermal.cosim import solve_electrothermal
                     tree = solve_electrothermal(snap, frozen, frozen.thermal, progress)
                 else:
                     tree = solve_tree(snap, frozen, progress)
@@ -667,7 +973,7 @@ class MainWindow(QMainWindow):
                     progress.info(f"  {name}: {g.result.mesh.n_tris} triangles")
                     scenes[name] = build_result_scene(snap, g.result, temperature=temp)
             if report_path is not None:
-                from kipi.report.html import write_report
+                from kipi.dc.report.html import write_report
                 with progress.timed("Writing HTML report"):
                     try:
                         tree.report_path = write_report(report_path, tree, scenes, snap, frozen,
@@ -693,6 +999,70 @@ class MainWindow(QMainWindow):
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)
 
+    # ------------------------------------------------------------ AC solve
+    def run_ac_solve(self, setup, vrm_name: str, gnd: str):
+        snap = self.snapshot
+        if snap is None:
+            return
+        if self._busy():
+            self._pending_ac = (setup, vrm_name, gnd)
+            self.ac_panel.set_busy(True, queued=True)
+            self.log("AC solve queued until the current task finishes")
+            return
+        self._save_setup()
+        import copy
+        frozen = copy.deepcopy(setup)
+        report_path = None
+        if frozen.ac.html_report and self._setup_path is not None:
+            from kipi.ac.html_report import report_name
+            report_path = self._setup_path.parent / report_name(self._results_stem(), vrm_name)
+
+        def work(progress):
+            from kipi.ac.solver import ACError, solve_ac
+            from kipi.core.mesh.mesher import MeshError
+            from kipi.dc.solver import SolveError
+            try:
+                result = solve_ac(snap, frozen, vrm_name, gnd, progress)
+            except (ACError, MeshError, SolveError) as e:
+                progress.warn(str(e))
+                return None, str(e)
+            if report_path is not None:
+                from kipi.ac.html_report import write_ac_report
+                with progress.timed("Writing HTML report"):
+                    try:
+                        result.report_path = write_ac_report(report_path, result, snap, frozen,
+                                                             progress)
+                    except Exception as e:        # the solve's results stand without it
+                        progress.warn(f"Could not write the report: {type(e).__name__}: {e}")
+            return result, None
+
+        def done(out):
+            result, error = out
+            if result is None:
+                self.ac_panel.show_error(error)
+                return
+            self.ac_panel.show_result(result)
+
+        if self._run(work, done, "AC impedance solve") is not None:
+            self.ac_panel.set_busy(True)
+
+    def _show_ac_result(self, result):
+        """The AC panel's shown result: a new solve, or another rail's earlier one (None:
+        that rail has not been solved)."""
+        if result is None:
+            self.plot.clear()
+            return
+        self.plot.set_result(result)
+        self.views.setCurrentWidget(self.plot)
+
+    def _show_cursor(self, text: str):
+        """The impedance plot's cursor values, in the Info pane in place of the last pick."""
+        if not text:
+            return
+        self._picked = None
+        self.btn_select_kicad.setEnabled(False)
+        self.info.setHtml(text)
+
     def _cut_changed(self, *_):
         axis = self.cmb_cut.currentText().lower()
         self.sld_cut.setEnabled(axis != "off")
@@ -702,6 +1072,7 @@ class MainWindow(QMainWindow):
 
     def _show_via(self, group: str, owner_id: str):
         """Jump to a via from the results table: show its group, center and select it."""
+        self._show_3d()
         if self.solve_panel.cmb_group.currentText() != group:
             self.solve_panel.cmb_group.setCurrentText(group)
         elif self.viewer.result is None:          # the copper view is up ("Show copper")
@@ -720,7 +1091,7 @@ class MainWindow(QMainWindow):
     def _export(self, kind: str):
         if not self._tree:
             return
-        from kipi.pi import report
+        from kipi.dc.pi import report
         start = str(self._setup_path.parent) if self._setup_path else ""
         try:
             if kind == "results":
@@ -737,7 +1108,8 @@ class MainWindow(QMainWindow):
                 return
             if kind == "csv":
                 paths = report.export_csv(self._tree, self.snapshot, folder, self._results_stem(),
-                                          self.solve_panel.setup.via_current_limit_a)
+                                          self.solve_panel.setup.via_current_limit_a,
+                                          self.solve_panel.setup.thermal)
             else:
                 paths = report.export_vtk(self._tree, self._scenes, self.snapshot, folder,
                                           self._results_stem())
@@ -746,7 +1118,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "KiPI", f"Export failed: {e}")
 
     def open_results(self):
-        from kipi.pi import report
+        from kipi.dc.pi import report
         if self.snapshot is None:
             # The tables and probing need the board (pads, layers); results files hold
             # only the solution.
@@ -895,7 +1267,7 @@ class MainWindow(QMainWindow):
 
         pad_hit = pth_obj
         from shapely.geometry import Point
-        from kipi.geometry.copper import poly_to_shapely
+        from kipi.core.geometry.copper import poly_to_shapely
         p0 = Point(x, y)
         for p in ([] if pad_hit is not None or best_via is not None else s.pads):
             if p.net not in shown or cu.id not in p.shapes:
@@ -975,8 +1347,12 @@ class MainWindow(QMainWindow):
 
     # ============================================================ close
     def closeEvent(self, event):
-        if self._task is not None and self._task.isRunning():
-            self._task.progress.cancel()
-            self._task.wait(3000)
+        self._model_timer.stop()            # start no kicad-cli for a closed window
+        self._models_pending = False
+        self._closed = True
+        for task in (self._task, self._model_task):
+            if task is not None and task.isRunning():
+                task.progress.cancel()
+                task.wait(3000)
         self.viewer.close()
         super().closeEvent(event)

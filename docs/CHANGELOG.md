@@ -4,6 +4,190 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
+## 0.7.0 (in development): AC impedance analysis, faster solves
+
+### Added
+- **AC analysis: PDN impedance over frequency.** The right end of the toolbar has
+  *Mode: DC / AC*. DC is the default and works as before; AC swaps the PI setup panel for
+  an AC setup, and the DC setup and results come back when DC is chosen again.
+  - The AC setup shares the VRMs and series links with DC (series links gain an ESL), and
+    adds capacitor models (C, ESL, ESR, assigned to parts, with *Models from values*),
+    probes, the sweep and its own mesh settings.
+  - A rail and its ground are field-solved as a 2.5D model with two faces per copper
+    sheet: plane resistance with skin effect, spreading and via inductance, plane
+    capacitance and cavity resonances. The parts are attached at every sweep frequency,
+    and the copper is solved at fewer frequencies and interpolated in between.
+  - The **Impedance** tab beside the 3D view plots |Z| for every probe with its target. A
+    cursor tracks a curve (click, drag, arrow keys) and shows frequency, |Z|, phase, R, X,
+    equivalent L or C and the target margin in the Info box.
+  - Probe targets are flat up to a frequency, or a custom piecewise-linear mask. The
+    *Target Impedance/Frequency Calculator* derives a flat target from the AC voltage
+    tolerance, load step and slew rate, and links the paper that introduced the method
+    (Smith et al., IEEE Trans. Advanced Packaging, 1999).
+  - The VRM is left out of circuit, so the solve gives the open-loop PDN impedance. Targets
+    apply only above the VRM's *Control loop bandwidth*, where the converter's loop no
+    longer holds the rail. The plot draws them only there, marks the bandwidth, and judges
+    PASS/FAIL, worst |Z| and margin only above it. If the bandwidth is at or above the
+    target frequency, or above the sweep, the whole target is judged and the results say
+    why.
+  - Each rail keeps its last result; switching the rail shows its curves without solving
+    again. *Export CSV…* writes |Z|, R and X per probe.
+  - *HTML report* next to *Solve rail* also writes `<board>_<rail>_ac_report.html`, a
+    single offline file like the DC report, and *Report* opens it. It contains the probe
+    table with margins and PASS/FAIL, an interactive |Z| and phase plot with the targets and
+    each capacitor model's own curve, and a board map of the rail's copper with the probes
+    and capacitors. It also lists the capacitor models, series links, settings and solver
+    statistics.
+- **User guide and tooltips.** *Help* in the toolbar (or F1) opens `docs/help.html`, an
+  offline guide to every button, the workflows and the results, with collapsible sections.
+  Every button, box and table in KiPI now has a tooltip.
+- **Pre-filled setup fields.** Picking pins fills in what usually follows from them, and
+  every guess can be overwritten:
+  - The ground pins of a VRM, load or probe, from the same part. The ground net is a
+    ground the setup already uses, a net named like a ground, or else the board's biggest
+    net.
+  - An LDO or switcher's input pins, when its output part has exactly one other rail.
+  - A series link's side B, when side A is on a two-terminal part (not a capacitor, and
+    not across to ground).
+  - New phases of a multi-phase VRM, on the next parts in sequence (`L1` → `L2`).
+  - VRM names follow the output part, as load and link names already did.
+  - The set voltage from the net name now reads negative rails (`-5V`) and leaves the
+    voltage alone when the name has none, instead of setting 1 V.
+- **Thermal limits.** *Max copper temperature* and *Max rise above ambient* grade an
+  electro-thermal solve; a new Thermal results tab lists the hottest copper on each layer
+  with PASS/FAIL.
+- **Solve only some nets (restored).** The DC setup's Solve tab lists every net group with
+  a checkbox, so rails that are not modeled or routed yet can be left out while the rest is
+  solved. It was written for 0.6.0 but never reached a release. Only the ticked groups are
+  validated, and the choice is saved with the setup. Where a solved group meets an
+  excluded one:
+  - A VRM whose output is excluded becomes a constant load on its input pins, drawing the
+    input current its rail would need at nominal voltages.
+  - A VRM whose input is excluded is treated as an ideal source.
+  - Ground pins on an excluded ground are ignored.
+  - The Notes tab lists what was left out and these substitutions.
+- **Optional multithreaded solver.** If `pypardiso` is installed (Windows and Linux on
+  x86-64), KiPI solves with Intel MKL's PARDISO, and directly for rails of up to 1M
+  unknowns. A 645k-unknown rail solves in 1.2 s instead of about 8 s.
+  - It is opt-in because of its size. MKL and its libraries are about 210 MB to download
+    on Windows (about 320 MB on Linux) and about 630 MB on disk. That takes KiPI's plugin
+    environment from about 860 MB to about 1.5 GB. The README explains how to add it.
+  - Without it, or if it fails on a system, KiPI falls back to SciPy.
+  - *Copy version info* names the solver in use.
+- **All and None buttons for the copper layers.** They show or hide every layer at once.
+- **Layer opacity slider.** *Display → Opacity* draws the copper layers and pads see-through
+  (5% to 100%), in the plain and result views, to see the layers beneath. Vias stay solid.
+- **KiCad's layer colors.** Colored by layer, the copper and the layer list use the
+  copper colors of the PCB editor's color theme, read from KiCad's settings folder
+  (`pcbnew.json` and `colors/<theme>.json`) on every load. A built-in, missing or unreadable
+  theme, or a layer the theme leaves out, gets KiCad's default theme color; the log names
+  the theme used.
+- **Welcome screen.** KiPI shows the animated logo, its version, the plugin identifier and
+  the versions of Python and its main packages while it starts. It closes on its own after
+  a few seconds (or on a click); if it cannot be shown, KiPI starts without it.
+- **One KiPI at a time.** Starting KiPI while one is open brings the open one to the front
+  instead of opening a second. A KiPI that crashed does not block the next one, and if the
+  lock cannot be written KiPI starts anyway.
+- **One KiCad at a time.** KiPI refuses to connect, at start or on *Load from KiCad*, while
+  more than one KiCad (project manager or standalone PCB editor) is open for this user, and
+  names them with their PIDs. If the processes cannot be listed it carries on;
+  `KIPI_ALLOW_MULTIPLE_KICAD=1` skips the check.
+- **3D models of the modeled parts.** The geometry view draws the KiCad 3D models of the
+  parts named in the setup (VRMs, loads, series links and capacitor models) that have a
+  pad on a net shown, like the copper. *Display → Models* hides them. Over results they
+  start hidden and *Models* shows them; the geometry and result views each keep their own
+  setting.
+  - KiCad's `kicad-cli` exports them (`pcb export glb`, no board body, just those parts),
+    so KiCad resolves the model paths and reads STEP as well as VRML. It reads the saved
+    board file, in the background; parts without a model KiCad can find are named in the
+    log.
+  - The Z scale stretches the board but not the parts; top-side parts sit on the stretched
+    board. Clicks go through the models to the copper.
+  - Fallbacks: kicad-cli is found through the connected KiCad, the PATH, the usual install
+    folders or KiCad's Flatpak (or `KIPI_KICAD_CLI`); an older kicad-cli is asked again
+    without the options it does not know. With no kicad-cli or no board file on disk, KiPI
+    says so once and draws no models.
+
+### Changed
+- **Faster solves.** Rails of up to 200k unknowns now get a direct solve rather than AMG,
+  which on board meshes is 2–3× faster and exact, and makes later power-tree passes nearly
+  free. The example board's power tree solves in 1.7 s instead of 3.0 s.
+- **Faster electro-thermal runs on large boards.** Each iteration reuses the previous
+  iteration's AMG hierarchy as the preconditioner rather than building a new one, because
+  only the copper's resistivity has changed (89 s → 78 s for four iterations at 645k
+  unknowns; 34 s with PARDISO).
+- **AC sweeps about 5× faster with PARDISO.** The AC model is now factorized as a complex
+  symmetric matrix by calling MKL directly, rather than as a real system twice its size
+  through pypardiso. The matrix ordering is computed once per sweep rather than at every
+  frequency, and the matrix is assembled with precomputed sparse products. On a 2M-unknown,
+  68-port rail each field frequency takes 12.6 s instead of 69 s, so a full
+  1 kHz–300 MHz sweep takes 24 min instead of about 2 h. Each factorization is still
+  checked, and one that fails falls back to the real-equivalent PARDISO solve and then to
+  SuperLU, as before.
+
+### Fixed
+- **Result colors no longer flicker on coincident copper.** Overlapping copper surfaces
+  z-fought in the 3D view, so DC results showed speckled patches; they now render
+  smoothly.
+- Saving results after an electro-thermal solve failed ("Can't pickle local object").
+  Saved problems now leave out the live temperature field, keeping its effect on
+  resistivity and the temperature map itself.
+- **The window fits a 1080p screen again.** Its minimum size had grown to 1764 × 1106 px,
+  so maximized on a 1080p screen its bottom was cut off, and dragging the log taller pushed
+  more of it off the screen. The VRM, load and other setup editors now scroll instead of
+  setting the window's height, and the impedance plot's hint text wraps. The minimum is
+  now about 1280 × 790.
+
+### Development
+- CI also runs the tests on Windows with PARDISO installed.
+- **Package restructured for more than one analysis.** Code shared by every analysis
+  (board model and extraction, geometry, meshing, sparse solvers, copper views) moved to
+  `kipi.core`; the DC analysis (power tree, conduction solver, thermal, reports, result
+  views, setup panel) moved to `kipi.dc`; the AC analysis is in `kipi.ac`. The
+  direct / AMG-CG solver moved out of the DC FEM into `kipi.core.solver.spd`. Results
+  files saved by earlier versions still open (`kipi.compat` maps the old module paths).
+
+## Merged after 0.6.5 (2026-10-14): Regulation checks and copper shapes
+
+Merged to main as PR #39 (contributed by CJ Clark) without a version number of its own;
+it ships with 0.7.0.
+
+### Added
+- **LDO dropout and VRM input range.** Beside the output current limit, a VRM takes a
+  dropout (LDOs) and an optional minimum and maximum input voltage. A VRM that cannot hold
+  its set point marks every load it feeds, directly or downstream, **VRM OUT OF
+  REGULATION** (FAIL). A multi-phase VRM is judged on its worst phase.
+- **Copper graphic shapes are copper.** Lines, arcs, circles, rectangles, polygons and
+  Béziers on a copper layer that carry a net, on the board or inside a footprint, are
+  solved as filled copper. Shapes with no net are left out, and a warning counts them.
+
+### Changed
+- **LDOs are checked against their input.** An LDO whose input sits below its output plus
+  its dropout now fails its loads. With the default dropout of 0 V, a part modelled as an
+  LDO that passes a lower voltage through (a load switch, say) now fails where it passed
+  before. Model such parts as a DC connection instead.
+- **One verdict for each load** feeds the results table, the CSV export and the HTML
+  report, so the three always agree, including the new VRM OUT OF REGULATION and NOT
+  CONVERGED.
+- **Stricter setup checks.** Negative quiescent current, dropout or DC connection
+  resistance, and an input range whose minimum is above its maximum, are setup errors.
+
+### Fixed
+- **Loads on a rail that did not converge** could read PASS. They now read **NOT
+  CONVERGED** and are not judged.
+- **The board's stackup was ignored on KiCad 10.0.1**, which leaves every layer's
+  enabled flag unset. A default 1.6 mm stackup with 17.5 µm inner copper replaced the
+  board's own. Disabled layers are now skipped only when KiCad reports the flag.
+- **Electro-thermal iteration 1** solved the copper at the 20 °C reference rather than at
+  ambient.
+- The log no longer reports the ground sense as converged when it was not.
+
+### Development
+- `solve_tree` is split into `_TreeSolver`, one method per step. The result classes moved
+  to `pi/results.py` and can still be imported from `pi/tree.py`, so saved results open.
+- The kicad-python geometry converters moved to `kicad_io/convert.py`, shared by the board
+  reader and the new copper-shape reader (`kicad_io/copper_shapes.py`).
+
 ## 0.6.5 (2026-10-13): Drop and boost, limits and fixes
 
 ### Added

@@ -10,8 +10,8 @@ pv = pytest.importorskip("pyvista")
 pytest.importorskip("pyvistaqt")
 
 from kipi.gui.viewer3d import Viewer3D, _copper_clim  # noqa: E402
-from kipi.pi.tree import solve_tree  # noqa: E402
-from kipi.viz.results import FIELDS, build_result_scene  # noqa: E402
+from kipi.dc.pi.tree import solve_tree  # noqa: E402
+from kipi.dc.viz.results import FIELDS, build_result_scene  # noqa: E402
 from test_multiphase import board, two_phase  # noqa: E402
 
 
@@ -28,8 +28,9 @@ def test_scale_bar_layout(field):
     # Just the drawing state Viewer3D needs, on an off-screen plotter (no Qt window).
     v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field=field,
            _result_actors={}, _result_via_actor=None, _scalar_bars=[], _zscale=1.0,
-           _hidden_layers=set())
+           _hidden_layers=set(), _layer_opacity=1.0)
     v._style_bar = lambda title: Viewer3D._style_bar(v, title)
+    v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
     _, assoc, label, unit = FIELDS[field]
     title = f"{label} ({unit})"
     if assoc == "via":
@@ -71,8 +72,9 @@ def test_hiding_a_layer_rescales_the_drawn_result():
     scene, lid = _scene_with_outlier_layer()
     v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field="voltage",
            _result_actors={}, _result_via_actor=None, _scalar_bars=[], _zscale=1.0,
-           _hidden_layers=set())
+           _hidden_layers=set(), _layer_opacity=1.0)
     v._style_bar = lambda title: Viewer3D._style_bar(v, title)
+    v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
     Viewer3D._draw_copper_result(v, scene, "V", "point", "Voltage (V)")
     v._hidden_layers.add(99)
     Viewer3D._rescale_result(v)

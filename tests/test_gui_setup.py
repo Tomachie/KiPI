@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from kipi.gui.pi_panel import PIPanel  # noqa: E402
+from kipi.dc.gui.pi_panel import PIPanel  # noqa: E402
 from test_multiphase import board, two_phase  # noqa: E402
 
 
@@ -35,7 +35,7 @@ def test_ticking_nets_does_not_edit_the_selected_items(app):
 
 
 def test_vrm_current_limit_edits_and_shows_in_results(app):
-    from kipi.pi.tree import solve_tree
+    from kipi.dc.pi.tree import solve_tree
     setup = two_phase()
     panel = PIPanel()
     panel.set_board(board(), setup, "test")
@@ -56,7 +56,7 @@ def test_vrm_current_limit_edits_and_shows_in_results(app):
 
 
 def _board_with_bridges():
-    from kipi.model.board import Footprint, Net, Pad
+    from kipi.core.model.board import Footprint, Net, Pad
     from synthetic import make_board
     snap = make_board()
     snap.nets.append(Net(4, "VSNS"))
@@ -69,7 +69,7 @@ def _board_with_bridges():
 
 
 def test_dc_connection_takes_a_resistors_value(app):
-    from kipi.pi.model import PISetup
+    from kipi.dc.pi.model import PISetup
     setup = PISetup()
     panel = PIPanel()
     panel.set_board(_board_with_bridges(), setup, "test")
@@ -95,3 +95,22 @@ def test_dc_connection_takes_a_resistors_value(app):
     pick("R5")
     assert k.resistance == pytest.approx(0.01) and ed.r.value() == pytest.approx(10.0)
     panel.close()
+
+
+def test_solve_tab_excludes_unticked_groups(app):
+    from qtpy.QtCore import Qt
+
+    from kipi.dc.pi.model import Load, PinRef
+    setup = two_phase(ground=True, sense=True)
+    setup.loads.append(Load("U9", PinRef("U9", "+5V"), 0.5))   # no VRM drives +5V
+    panel = PIPanel()
+    panel.set_board(board(), setup, "test")
+    assert not panel.btn_solve.isEnabled()
+    lst = panel.lst_groups
+    row = next(i for i in range(lst.count()) if lst.item(i).text().startswith("+5V"))
+    lst.item(row).setCheckState(Qt.Unchecked)
+    assert setup.excluded_nets == ["+5V"]
+    assert panel.btn_solve.isEnabled(), panel.lbl_errors.text()
+    assert panel.btn_solve.text() == f"Solve {lst.count() - 1} of {lst.count()} net groups"
+    panel._tick_all_groups(True)
+    assert setup.excluded_nets == [] and panel.btn_solve.text() == "Solve all"

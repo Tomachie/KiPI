@@ -9,11 +9,12 @@ import pyvista as pv
 from pyvistaqt import QtInteractor
 from vtkmodules.vtkCommonDataModel import vtkPlane
 from vtkmodules.vtkRenderingCore import vtkActor, vtkCellPicker, vtkPolyDataMapper
+from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
-from kipi.viz.batch import Chunk, MeshBatcher
-from kipi.viz.results import FIELDS, ResultScene
-from kipi.viz.meshes import NetScene
+from kipi.core.viz.batch import Chunk, MeshBatcher
+from kipi.dc.viz.results import FIELDS, ResultScene
+from kipi.core.viz.meshes import NetScene
 
 _NET_COLORS = [(0.90, 0.35, 0.25), (0.25, 0.60, 0.90), (0.95, 0.75, 0.20), (0.40, 0.80, 0.45),
                (0.80, 0.45, 0.85), (0.30, 0.80, 0.80), (0.95, 0.55, 0.30), (0.65, 0.65, 0.65)]
@@ -24,6 +25,10 @@ _BOARD_COLOR = (0.15, 0.40, 0.20)
 
 # Surface properties per mesh category: (opacity, specular)
 _CATEGORY_LOOK = {"cu": (1.0, 0.4), "pad": (0.9, 0.0), "via": (1.0, 0.6)}
+# Copper drawn under the via-current view, for context
+_VIA_VIEW_COPPER_OPACITY = 0.35
+DEPTH_PEELS = 4          # see-through layers sorted per pixel (pyvista's default)
+_MODEL_SPECULAR = 0.3
 
 
 def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
@@ -74,7 +79,7 @@ def _copper_clim(scene: ResultScene, field: str, hidden=()) -> Tuple[float, floa
     return lo, hi, log_scale
 
 
-def _chunk_actor(category) -> vtkActor:
+def _chunk_actor(category, layer_opacity: float = 1.0) -> vtkActor:
     """A bare VTK actor colored by the chunk's per-cell ``rgb`` array.
 
     Chunk actors bypass ``Plotter.add_mesh``: its name bookkeeping walks every actor in
@@ -90,10 +95,49 @@ def _chunk_actor(category) -> vtkActor:
     actor.SetMapper(mapper)
     opacity, specular = _CATEGORY_LOOK[category[0]]
     prop = actor.GetProperty()
-    prop.SetOpacity(opacity)
+    prop.SetOpacity(opacity * (layer_opacity if category[0] in ("cu", "pad") else 1.0))
     prop.SetSpecular(specular)
     prop.SetSpecularPower(20.0)
     prop.SetInterpolationToFlat()
+    return actor
+
+
+def _merge_models(meshes: List[pv.PolyData]) -> Optional[pv.PolyData]:
+    """One mesh of many part models, keeping each triangle's ``rgb`` and, when every
+    model has them, the point normals that smooth its curved faces."""
+    meshes = [m for m in meshes if m is not None and m.n_cells]
+    if not meshes:
+        return None
+    offsets = np.cumsum([0] + [m.n_points for m in meshes[:-1]])
+    faces = np.concatenate([m.regular_faces + o for m, o in zip(meshes, offsets)])
+    cells = np.empty((len(faces), 4), dtype=np.int64)
+    cells[:, 0] = 3
+    cells[:, 1:] = faces
+    out = pv.PolyData(np.concatenate([m.points for m in meshes]), cells.ravel())
+    out.cell_data["rgb"] = np.concatenate([np.asarray(m.cell_data["rgb"]) for m in meshes])
+    if all("Normals" in m.point_data for m in meshes):
+        out.point_data["Normals"] = np.concatenate([np.asarray(m.point_data["Normals"])
+                                                    for m in meshes])
+        out.point_data.active_normals_name = "Normals"
+    return out
+
+
+def _model_actor(mesh: pv.PolyData) -> vtkActor:
+    """A bare actor for part models, colored by their per-triangle ``rgb``. Models are
+    never picked: a click is meant for the copper beneath them."""
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(mesh)
+    mapper.SetScalarModeToUseCellFieldData()
+    mapper.SelectColorArray("rgb")
+    mapper.SetColorModeToDirectScalars()
+    mapper.ScalarVisibilityOn()
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    actor.PickableOff()
+    prop = actor.GetProperty()
+    prop.SetSpecular(_MODEL_SPECULAR)
+    prop.SetSpecularPower(20.0)
+    prop.SetInterpolationToGouraud()
     return actor
 
 
@@ -103,6 +147,9 @@ class Viewer3D(QWidget):
     Nets are packed into a few merged meshes by :class:`MeshBatcher`; edits mark chunks
     dirty and :meth:`render` rebuilds only those before drawing.
     """
+
+    #: Emitted with True when results replace the copper view and False when they go.
+    result_shown = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -125,8 +172,15 @@ class Viewer3D(QWidget):
         self._show_pads = True
         self._show_vias = True
         self._show_board = True
+        self._show_models = True            # in the copper (geometry) view
+        self._show_models_result = False    # over results: off until asked for
+        self._models: Dict[str, Tuple[pv.PolyData, str]] = {}   # ref -> (mesh, side)
+        self._model_actors: Dict[str, vtkActor] = {}             # side -> actor
+        self._board_top = 0.0
         self._color_mode = "layer"
         self._zscale = 1.0
+        self._layer_opacity = 1.0
+        self._depth_peeling = False
         self._pick_cb: Optional[Callable[[Tuple[float, float, float]], None]] = None
         self._result: Optional[ResultScene] = None
         self._result_field = "voltage"
@@ -153,11 +207,13 @@ class Viewer3D(QWidget):
         for a in self._chunk_actors.values():
             renderer.RemoveActor(a)
         self._chunk_actors.clear()
+        self._remove_model_actors()
+        self._models = {}
         self._batch = MeshBatcher()
         self._net_color.clear()
         self._layer_color.clear()
         self._clear_result_actors()
-        self._result = None
+        self._set_result(None)
         p.clear_actors()
         self._board_actors.clear()
         self._hidden_layers.clear()
@@ -209,6 +265,45 @@ class Viewer3D(QWidget):
         if render:
             self.render()
 
+    # ------------------------------------------------------------ part models
+    def models(self) -> List[str]:
+        return list(self._models)
+
+    def set_models(self, models: Dict[str, Tuple[pv.PolyData, str]], board_top_mm: float):
+        """Draw these part models (ref -> (mesh, "top" or "bottom")) in place of any shown.
+
+        Meshes are in the view's frame at true height (see
+        :func:`kipi.core.kicad_io.models3d.to_mesh`). The Z scale stretches the board but
+        not the parts: the top side's parts are lifted to sit on the stretched board.
+        """
+        if (models.keys() == self._models.keys() and board_top_mm == self._board_top
+                and all(models[r][0] is self._models[r][0] for r in models)):
+            return
+        self._models = dict(models)
+        self._board_top = float(board_top_mm)
+        self._remove_model_actors()
+        renderer = self.plotter.renderer
+        for side in ("top", "bottom"):
+            mesh = _merge_models([m for m, s in self._models.values() if s == side])
+            if mesh is None:
+                continue
+            actor = _model_actor(mesh)
+            renderer.AddActor(actor)
+            self._model_actors[side] = actor
+        self._place_models()
+        self._apply_visibility()
+
+    def _remove_model_actors(self):
+        renderer = self.plotter.renderer
+        for actor in self._model_actors.values():
+            renderer.RemoveActor(actor)
+        self._model_actors.clear()
+
+    def _place_models(self):
+        top = self._model_actors.get("top")
+        if top is not None:
+            top.SetPosition(0.0, 0.0, self._board_top * (self._zscale - 1.0))
+
     def _flush(self):
         """Rebuild changed chunks and sync their actors."""
         renderer = self.plotter.renderer
@@ -221,7 +316,7 @@ class Viewer3D(QWidget):
                     del self._chunk_actors[chunk]
                 continue
             if actor is None:
-                actor = _chunk_actor(chunk.category)
+                actor = _chunk_actor(chunk.category, self._layer_opacity)
                 actor.SetScale(1.0, 1.0, self._zscale)
                 renderer.AddActor(actor)
                 self._chunk_actors[chunk] = actor
@@ -255,8 +350,20 @@ class Viewer3D(QWidget):
         self._apply_visibility()
 
     def set_feature_visible(self, feature: str, visible: bool):
+        if feature == "models" and self._result is not None:
+            feature = "models_result"       # the result view keeps its own setting
         setattr(self, f"_show_{feature}", visible)
         self._apply_visibility()
+
+    @property
+    def models_shown(self) -> bool:
+        """Whether part models are shown in the current view (copper or results)."""
+        return self._show_models_result if self._result is not None else self._show_models
+
+    @property
+    def models_wanted(self) -> bool:
+        """Whether either view shows part models, so they are worth loading."""
+        return self._show_models or self._show_models_result
 
     def _apply_actor_visibility(self, category, actor):
         kind, lid = category
@@ -286,6 +393,9 @@ class Viewer3D(QWidget):
                                                  or self._result_field == "via_current")
         for a in self._board_actors:
             a.SetVisibility(self._show_board)
+        models = self._show_models_result if showing_result else self._show_models
+        for a in self._model_actors.values():
+            a.SetVisibility(models)
         self.plotter.render()
 
     def set_zscale(self, s: float):
@@ -300,6 +410,7 @@ class Viewer3D(QWidget):
             self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         for a in self._arrow_actors.values():
             a.SetScale(1.0, 1.0, self._zscale)
+        self._place_models()
         if self._clip is not None:
             self._apply_clip_all()
         self.plotter.reset_camera_clipping_range()
@@ -309,6 +420,49 @@ class Viewer3D(QWidget):
     def zscale(self) -> float:
         return self._zscale
 
+    def set_layer_opacity(self, opacity: float):
+        """Draw the copper layers (plain and result) and their pads at ``opacity`` (0..1)
+        of their usual opacity, to see the layers beneath. Vias and arrows stay solid."""
+        self._layer_opacity = min(1.0, max(0.0, float(opacity)))
+        for chunk, actor in self._chunk_actors.items():
+            kind = chunk.category[0]
+            if kind in ("cu", "pad"):
+                actor.GetProperty().SetOpacity(_CATEGORY_LOOK[kind][0] * self._layer_opacity)
+        for actor in self._result_actors.values():
+            self._apply_result_opacity(actor)
+        self._set_depth_peeling(self._layer_opacity < 1.0)
+        self.plotter.render()
+
+    def _apply_result_opacity(self, actor):
+        base = _VIA_VIEW_COPPER_OPACITY if self._result_field == "via_current" else 1.0
+        actor.GetProperty().SetOpacity(base * self._layer_opacity)
+
+    def _set_depth_peeling(self, on: bool):
+        """Sort see-through layers properly while any are see-through. Some graphics
+        drivers lack depth peeling; VTK then blends unsorted, which only looks a little
+        off, so a failure here is ignored.
+
+        The renderers are set directly rather than through pyvista's
+        ``enable_depth_peeling``: that first renders a probe scene in a hidden window of
+        its own, which crashes the process (an access violation, not an exception) on
+        some drivers, e.g. Windows without a GPU. VTK checks support itself when it
+        renders and falls back to unsorted blending."""
+        if on == self._depth_peeling:
+            return
+        try:
+            for renderer in self.plotter.renderers:
+                renderer.SetUseDepthPeeling(on)
+                if on:
+                    renderer.SetMaximumNumberOfPeels(DEPTH_PEELS)
+                    renderer.SetOcclusionRatio(0.0)
+            self._depth_peeling = on
+        except Exception:
+            pass
+
+    @property
+    def layer_opacity(self) -> float:
+        return self._layer_opacity
+
     # ---------------------------------------------------------------- results
     @property
     def result(self) -> Optional[ResultScene]:
@@ -317,7 +471,7 @@ class Viewer3D(QWidget):
     def show_result(self, scene: ResultScene, field: Optional[str] = None):
         """Replace the copper view with solver results colored by ``field``."""
         self._clear_result_actors()
-        self._result = scene
+        self._set_result(scene)
         if field is not None:
             self._result_field = field
         self._draw_result()
@@ -330,8 +484,14 @@ class Viewer3D(QWidget):
 
     def clear_result(self):
         self._clear_result_actors()
-        self._result = None
+        self._set_result(None)
         self._apply_visibility()
+
+    def _set_result(self, scene: Optional[ResultScene]):
+        was = self._result is not None
+        self._result = scene
+        if was != (scene is not None):
+            self.result_shown.emit(scene is not None)
 
     def _clear_result_actors(self):
         p = self.plotter
@@ -415,6 +575,7 @@ class Viewer3D(QWidget):
     def _all_actors(self):
         out = list(self._chunk_actors.values()) + list(self._board_actors)
         out += list(self._result_actors.values()) + list(self._arrow_actors.values())
+        out += list(self._model_actors.values())
         if self._result_via_actor is not None:
             out.append(self._result_via_actor)
         return out
@@ -461,6 +622,7 @@ class Viewer3D(QWidget):
                                show_scalar_bar=first, scalar_bar_args=bar,
                                name=f"result:{lid}", reset_camera=False, render=False)
             actor.SetScale(1.0, 1.0, self._zscale)
+            self._apply_result_opacity(actor)
             self._result_actors[lid] = actor
             first = False
         self._style_bar(title)
@@ -474,10 +636,11 @@ class Viewer3D(QWidget):
         """Vias colored by current; copper drawn as muted gray for context."""
         p = self.plotter
         for lid, lr in scene.layers.items():
-            actor = p.add_mesh(lr.mesh, color="#7a7f88", opacity=0.35, smooth_shading=False,
-                               name=f"result:{lid}", reset_camera=False, render=False,
-                               pickable=True)
+            actor = p.add_mesh(lr.mesh, color="#7a7f88", opacity=_VIA_VIEW_COPPER_OPACITY,
+                               smooth_shading=False, name=f"result:{lid}",
+                               reset_camera=False, render=False, pickable=True)
             actor.SetScale(1.0, 1.0, self._zscale)
+            self._apply_result_opacity(actor)
             self._result_actors[lid] = actor
         if scene.vias is None:
             return
