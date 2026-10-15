@@ -282,7 +282,8 @@ def export_vtk(tree, scenes: Dict[str, object], snap: BoardSnapshot, folder,
 def save_results(path, tree, scenes, snap: BoardSnapshot, setup) -> Path:
     """Write a results file (gzipped pickle). Only open results files you created."""
     path = Path(path)
-    payload = {"format": RESULTS_FORMAT, "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
+    payload = {"format": RESULTS_FORMAT, "kind": "dc",
+               "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
                "board": snap.board_name, "tree": tree, "scenes": scenes, "setup": setup}
     with gzip.open(path, "wb", compresslevel=4) as fh:
         pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
@@ -295,4 +296,6 @@ def load_results(path) -> dict:
         payload = compat.Unpickler(fh).load()
     if not isinstance(payload, dict) or payload.get("format", 0) > RESULTS_FORMAT:
         raise ValueError("Not a KiPI results file, or from a newer KiPI")
+    if payload.get("kind", "dc") != "dc":           # files before 0.7.1 have no kind
+        raise ValueError("This holds AC results: open it in AC mode")
     return payload

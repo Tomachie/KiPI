@@ -137,9 +137,8 @@ class MainWindow(QMainWindow):
         act("Screenshot…", self.save_screenshot,
             "Save the 3D view, or the impedance plot if it is showing, as a PNG")
         tb.addSeparator()
-        self.act_open_results = act("Open results…", self.open_results,
-                                    "Reopen a saved DC power-tree solve (.kipi-results); load "
-                                    "the board first")
+        self.act_open_results = act("Open results…", self.open_results)
+        self._set_open_results_tip()
         tb.addSeparator()
         self.act_help = act("Help", self.show_help, "Open the KiPI user guide in your browser (F1)")
         self.act_help.setShortcut("F1")
@@ -181,7 +180,7 @@ class MainWindow(QMainWindow):
             self.ac_panel.reload()
         self.setup_stack.setCurrentWidget(self.solve_panel if mode == "dc" else self.ac_panel)
         self.solve_dock.setWindowTitle(next(t for k, _, t in MODES if k == mode))
-        self.act_open_results.setEnabled(mode == "dc")
+        self._set_open_results_tip()
         self._set_plot_tab_shown(mode == "ac")
         if mode == "dc":
             if self._tree:
@@ -191,6 +190,12 @@ class MainWindow(QMainWindow):
             if self.plot.result is not None:
                 self.views.setCurrentWidget(self.plot)
         self.log(f"Analysis mode: {mode.upper()}")
+
+    def _set_open_results_tip(self):
+        self.act_open_results.setToolTip(
+            "Reopen a saved DC power-tree solve (.kipi-results); load the board first"
+            if self.mode == "dc" else
+            "Reopen saved AC impedance results (.kipi-ac-results); load the board first")
 
     def _set_plot_tab_shown(self, shown: bool):
         """Show the impedance tab only in AC mode. QTabWidget.setTabVisible needs Qt 5.15;
@@ -397,6 +402,7 @@ class MainWindow(QMainWindow):
         self.ac_panel.save_requested.connect(self._save_setup)
         self.ac_panel.solve_requested.connect(self.run_ac_solve)
         self.ac_panel.result_selected.connect(self._show_ac_result)
+        self.ac_panel.results_saved.connect(lambda path: self.log(f"Saved AC results to {path}"))
         for panel in (self.solve_panel, self.ac_panel):
             panel.setup_changed.connect(self._model_timer.start)
         # One setup dock; it shows the panel of the current analysis mode.
@@ -1118,13 +1124,16 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "KiPI", f"Export failed: {e}")
 
     def open_results(self):
-        from kipi.dc.pi import report
         if self.snapshot is None:
             # The tables and probing need the board (pads, layers); results files hold
             # only the solution.
             QMessageBox.information(self, "KiPI", "Load the board (from KiCad or a snapshot) "
                                                   "before opening its results.")
             return
+        if self.mode == "ac":
+            self._open_ac_results()
+            return
+        from kipi.dc.pi import report
         start = str(self._setup_path.parent) if self._setup_path else ""
         path, _ = QFileDialog.getOpenFileName(self, "Open results", start,
                                               "KiPI results (*.kipi-results)")
@@ -1143,6 +1152,31 @@ class MainWindow(QMainWindow):
         self.solve_panel.show_results(self._tree, first)
         self._show_group(first)
         self.log(f"Opened results saved {data['saved']} from {path}")
+
+    def _open_ac_results(self):
+        from kipi.ac import report
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open AC results", start,
+                                              f"KiPI AC results (*{report.RESULTS_SUFFIX})")
+        if not path:
+            return
+        try:
+            data = report.load_results(path)
+        except Exception as e:  # noqa: BLE001 - any unreadable file
+            QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{e}")
+            return
+        if data["board"] != self.snapshot.board_name:
+            self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
+                     logging.WARNING)
+        left_out = self.ac_panel.load_results(data["results"])
+        if left_out:
+            self.log(f"No VRM in the setup for rail(s) {', '.join(left_out)}; their results "
+                     f"were left out", logging.WARNING)
+        if not data["results"] or len(left_out) == len(data["results"]):
+            QMessageBox.information(self, "KiPI", "None of the rails in this file has a VRM "
+                                                  "in the setup, so there is nothing to show.")
+            return
+        self.log(f"Opened AC results saved {data['saved']} from {path}")
 
     def _show_group(self, name: str):
         if not self._tree or name not in self._scenes:

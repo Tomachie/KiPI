@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import html
 import re
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -409,6 +410,7 @@ class ACPanel(QWidget):
     save_requested = Signal()
     result_selected = Signal(object)               # ACResult shown in the plot; None clears it
     setup_changed = Signal()                       # any edit to the setup
+    results_saved = Signal(str)                    # path of a saved results file
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -527,7 +529,13 @@ class ACPanel(QWidget):
         self.btn_export.setToolTip("Write |Z|, R and X at every probe and sweep frequency to a "
                                    "CSV file")
         self.btn_export.clicked.connect(self._export_csv)
+        self.btn_save = QPushButton("Save results…", g_res)
+        self.btn_save.setEnabled(False)
+        self.btn_save.setToolTip("Save every solved rail's results to reopen later with "
+                                 "Open results… (in AC mode), without solving again")
+        self.btn_save.clicked.connect(self._save_results)
         row.addStretch(1)
+        row.addWidget(self.btn_save)
         row.addWidget(self.btn_export)
         lr.addWidget(self.tbl_probes)
         lr.addWidget(self.txt_notes)
@@ -679,6 +687,7 @@ class ACPanel(QWidget):
         names = {v.name for v in self.setup.vrms}
         for gone in set(self._results) - names:        # a VRM was removed or renamed
             del self._results[gone]
+        self.btn_save.setEnabled(bool(self._results))
         self._fill_grounds()
         if self.cmb_rail.currentData() != was or (self.result is not None
                                                   and self.result.rail not in names):
@@ -827,6 +836,7 @@ class ACPanel(QWidget):
     def clear_results(self):
         """Forget every rail's results (a new board)."""
         self._results.clear()
+        self.btn_save.setEnabled(False)
         self._clear_table()
 
     def _clear_table(self):
@@ -853,6 +863,7 @@ class ACPanel(QWidget):
     def show_result(self, result):
         """A finished solve: kept for its rail, and shown if that rail is still selected."""
         self._results[result.rail] = result
+        self.btn_save.setEnabled(True)
         if result.rail == (self.cmb_rail.currentData() or ""):
             self._display(result)
         else:                                          # the rail was changed while solving
@@ -860,6 +871,21 @@ class ACPanel(QWidget):
                     f"its results.")
             text = self.txt_notes.text() if self.result is not None else ""
             self.txt_notes.setText(f"{text}<br>{note}" if text else note)
+
+    def load_results(self, results: Dict[str, object]) -> List[str]:
+        """Results opened from a file, in place of the ones held. Rails whose VRM is not in
+        the setup cannot be selected, so they are left out; their names are returned. The
+        selected rail's results are shown, or else the first opened rail is selected."""
+        names = {v.name for v in self.setup.vrms}
+        self._results = {k: r for k, r in results.items() if k in names}
+        self.btn_save.setEnabled(bool(self._results))
+        rail = self.cmb_rail.currentData() or ""
+        if rail not in self._results and self._results:
+            first = next(v.name for v in self.setup.vrms if v.name in self._results)
+            self.cmb_rail.setCurrentIndex(self.cmb_rail.findData(first))   # shows it
+        else:
+            self._show_rail_result()
+        return sorted(set(results) - names)
 
     def _display(self, result):
         self.result = result
@@ -899,6 +925,24 @@ class ACPanel(QWidget):
             from qtpy.QtCore import QUrl
             from qtpy.QtGui import QDesktopServices
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def _save_results(self):
+        if not self._results or self.snapshot is None:
+            return
+        from kipi.ac.report import RESULTS_SUFFIX, save_results
+        start = self.snapshot.project_dir
+        stem = f"{Path(self.snapshot.board_name).stem or 'kipi'}{RESULTS_SUFFIX}"
+        path, _ = QFileDialog.getSaveFileName(self, "Save AC results", f"{start}/{stem}"
+                                              if start else stem,
+                                              f"KiPI AC results (*{RESULTS_SUFFIX})")
+        if not path:
+            return
+        try:
+            save_results(path, self._results, self.snapshot.board_name, self.setup)
+        except OSError as e:
+            QMessageBox.warning(self, "KiPI", f"Saving failed: {e}")
+            return
+        self.results_saved.emit(path)
 
     def _export_csv(self):
         if self.result is None:

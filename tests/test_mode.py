@@ -50,12 +50,12 @@ def test_ac_swaps_the_setup_panel_and_dc_brings_it_back(window):
     assert window.mode == "ac" and not _mode(window, "dc").isChecked()
     assert window.setup_stack.currentWidget() is window.ac_panel
     assert window.solve_dock.windowTitle() == "AC setup"
-    assert not window.act_open_results.isEnabled()
+    assert "AC" in window.act_open_results.toolTip()       # opens AC results here
     _mode(window, "dc").setChecked(True)
     assert window.mode == "dc"
     assert window.setup_stack.currentWidget() is window.solve_panel
     assert window.solve_panel.setup is setup          # the DC setup was kept
-    assert window.act_open_results.isEnabled()
+    assert "DC" in window.act_open_results.toolTip()
 
 
 def test_mode_does_not_change_while_a_task_runs(window, monkeypatch):
