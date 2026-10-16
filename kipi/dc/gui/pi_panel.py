@@ -19,12 +19,12 @@ from contextlib import contextmanager
 from functools import partial
 from typing import Callable, Dict, List, Optional
 
-from qtpy.QtCore import QSettings, Qt, Signal
+from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
+    QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTabWidget,
     QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -39,30 +39,19 @@ from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, VrmPhase, active_setup, group_name, net_groups,
     validate,
 )
-from kipi.gui.sortable import make_sortable, reset_sort, set_row
+from kipi.gui.sortable import make_sortable, reset_sort, set_row, sorted_rows
+from kipi.gui.unit_spin import UnitSpinBox
 from kipi.dc.pi.tree import fmt_drop
 from kipi.dc.viz.results import FIELDS
 
 NONE = "(none)"
-UOHM_CM = 1e-5          # 1 µΩ·cm in Ω·mm, the unit the solver works in
-# Copper thickness display units, as mm per unit. 1 oz/ft² is taken as 35 µm, the usual
-# nominal value (KiCad's default 35 µm and 17.5 µm foils read as 1 oz and ½ oz).
-THICKNESS_UNITS = {"µm": 1e-3, "mil": 0.0254, "oz": 0.035}
-
-
-def format_thickness(mm: float, unit: str) -> str:
-    value = mm / THICKNESS_UNITS[unit]
-    if unit == "µm":
-        return f"{value:.1f} µm"
-    if unit == "mil":
-        return f"{value:.2f} mil"
-    return f"{value:.3g} oz"
 
 
 def _spin(lo, hi, value, decimals, suffix, step=None) -> QDoubleSpinBox:
-    s = QDoubleSpinBox()
+    """A value field in ``suffix`` units that also takes SI prefixes ("10n" in µF)."""
+    s = UnitSpinBox()
+    s.setShownDecimals(decimals)
     s.setRange(lo, hi)
-    s.setDecimals(decimals)
     s.setValue(value)
     s.setSuffix(suffix)
     if step:
@@ -144,6 +133,15 @@ def parts_on_net(snap: BoardSnapshot, net: str):
 # ---------------------------------------------------------------------------
 # Pin picker: net + part + pin numbers
 # ---------------------------------------------------------------------------
+
+
+def _load_heat(th) -> str:
+    """' (of which x W from loads)' when the solve heated the board with the loads (#62)."""
+    loads = getattr(th, "load_heat_w", {}) or {}
+    if not getattr(th.settings, "load_power", False):
+        return ""
+    return f" (of which {sum(max(v, 0.0) for v in loads.values()):.3g} W from loads)"
+
 
 class PinPicker(QWidget):
     changed = Signal()
@@ -603,7 +601,8 @@ class LoadEditor(_Editor):
         self.groups.setMinimumHeight(110)
         self.btn_group = QPushButton("Add pin group")
         self.btn_group.setToolTip("Add a group of supply pins with its own current")
-        self.btn_group.clicked.connect(lambda: (self._add_group_row("", "", 0.0), self._store()))
+        self.btn_group.clicked.connect(
+            lambda: (self._add_group_row("", "", 0.0), reset_sort(self.groups), self._store()))
         self.btn_each = QPushButton("One group per pin")
         self.btn_each.setToolTip("Replace the groups with one group per supply pin")
         self.btn_each.clicked.connect(self._group_per_pin)
@@ -640,7 +639,9 @@ class LoadEditor(_Editor):
                            "voltage: no pin drops below it or is boosted above it by more")):
             tip(f, w, text)
         self.groups.setToolTip("Pin groups: an optional name, the pin numbers (e.g. 15,28) "
-                               "and the current into those pins")
+                               "and the current into those pins. Click a column header to "
+                               "sort by it.")
+        make_sortable(self.groups, self._sort_groups, columns=(0, 1, 2))
         self._watch(self.name, self.current, self.tol, self.mode)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
@@ -678,6 +679,15 @@ class LoadEditor(_Editor):
                 self._store()
                 return
 
+    def _sort_groups(self, col: int, descending: bool):
+        """Rebuild the pin group rows ordered by name, pins or current."""
+        rows = [[g.name, ",".join(g.pins), g.current] for g in self._groups_value()]
+        rows = sorted_rows(rows, col, descending)
+        self.groups.setRowCount(0)
+        for name, pins, current in rows:
+            self._add_group_row(name, pins, current)
+        self._store()
+
     def _supply_pins(self) -> List[str]:
         ref = self.supply.value()
         if ref is None or self.panel.snapshot is None:
@@ -688,6 +698,7 @@ class LoadEditor(_Editor):
     def _fill_per_pin(self, total: float):
         pins = self._supply_pins()
         self.groups.setRowCount(0)
+        reset_sort(self.groups)
         for pin in pins:
             self._add_group_row(f"pin {pin}", pin, total / max(1, len(pins)))
 
@@ -711,6 +722,7 @@ class LoadEditor(_Editor):
         self.supply.set_value(l.supply)
         self.current.setValue(l.current)
         self.groups.setRowCount(0)
+        reset_sort(self.groups)
         for g in l.groups:
             self._add_group_row(g.name, ",".join(g.pins), g.current)
         self.mode.setCurrentIndex(1 if l.groups else 0)
@@ -1009,7 +1021,6 @@ class PIPanel(QWidget):
         self.tabs.addTab(self.link_list, "Series links")
         self.tabs.addTab(self._solve_tab(), "Solve")
         self.tabs.addTab(self._settings_tab(), "Mesh")
-        self.tabs.addTab(self._copper_tab(), "Copper")
         self.tabs.addTab(self._thermal_tab(), "Thermal")
         for i, text in enumerate((
                 "Regulators and supplies: where each rail is driven, and from where",
@@ -1018,7 +1029,6 @@ class PIPanel(QWidget):
                 "switches, 0 Ω links)",
                 "Choose which net groups to solve",
                 "Mesh density and via barrel plating",
-                "Copper resistivity and its temperature coefficient, per layer",
                 "Electro-thermal co-simulation: losses heat the board, hot copper "
                 "resists more")):
             self.tabs.setTabToolTip(i, text)
@@ -1129,9 +1139,8 @@ class PIPanel(QWidget):
 
     def _open_report(self):
         if self.report_path:
-            from qtpy.QtCore import QUrl
-            from qtpy.QtGui import QDesktopServices
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.report_path)))
+            from kipi.gui.browser import open_in_browser
+            open_in_browser(self.report_path)
 
     def _set_temperature_field(self, available: bool):
         i = self.cmb_field.findData("temperature")
@@ -1208,8 +1217,8 @@ class PIPanel(QWidget):
                       f"</span>: {html.escape(limits_text(limits))}.")
         self.lbl_thermal.setText(
             f"Peak board temperature <b>{tmax:.1f} °C</b> ({tmax - ambient:+.1f} °C) at "
-            f"({x:.1f}, {y:.1f}) mm; {th.heat_w:.3g} W into the board, ambient {ambient:g} °C, "
-            f"airflow {th.settings.airflow_m_s:g} m/s.<br>{judged}")
+            f"({x:.1f}, {y:.1f}) mm; {th.heat_w:.3g} W into the board{_load_heat(th)}, "
+            f"ambient {ambient:g} °C, airflow {th.settings.airflow_m_s:g} m/s.<br>{judged}")
         details = ["Iterations: " + ", ".join(
             f"{h['iteration']}: {h['t_max']:.2f} °C (Δ {h['dt_max']:.3f})" for h in th.history)]
         if th.dielectrics:
@@ -1347,85 +1356,6 @@ class PIPanel(QWidget):
             sp.valueChanged.connect(self._settings_changed)
         return w
 
-    def _copper_tab(self) -> QWidget:
-        w = QWidget()
-        lay = QVBoxLayout(w)
-        f = QFormLayout()
-        s = self.setup.settings
-        self.spin_rho = _spin(0.5, 100.0, s.rho_ohm_mm / UOHM_CM, 3, " µΩ·cm", 0.01)
-        self.spin_rho.setToolTip("Resistivity at 20 °C of every layer without its own value, "
-                                 "and of via barrel plating. Annealed copper is 1.724 µΩ·cm.")
-        self.spin_tcr = _spin(0.0, 0.02, s.tcr_per_c, 5, " /°C", 0.0001)
-        self.spin_tcr.setToolTip("Temperature coefficient of resistance, used by the "
-                                 "electro-thermal co-simulation. Copper is 0.00393 /°C.")
-        f.addRow("Resistivity", self.spin_rho)
-        f.addRow("TCR", self.spin_tcr)
-        for sp in (self.spin_rho, self.spin_tcr):
-            f.labelForField(sp).setToolTip(sp.toolTip())
-        self.cmb_thk_unit = QComboBox()
-        self.cmb_thk_unit.addItems(list(THICKNESS_UNITS))
-        self.cmb_thk_unit.setToolTip("Unit for the layer thicknesses below (1 oz = 35 µm). "
-                                     "Thicknesses come from the board stackup in KiCad.")
-        unit = QSettings("KiPI", "KiPI").value("copper/thickness_unit", "µm")
-        self.cmb_thk_unit.setCurrentText(unit if unit in THICKNESS_UNITS else "µm")
-        self.cmb_thk_unit.currentTextChanged.connect(self._thickness_unit_changed)
-        f.addRow("Thickness unit", self.cmb_thk_unit)
-        f.labelForField(self.cmb_thk_unit).setToolTip(self.cmb_thk_unit.toolTip())
-        lay.addLayout(f)
-        self.tbl_rho = self._table(["Layer", "Thickness", "Resistivity at 20 °C"])
-        self.tbl_rho.setSelectionMode(QAbstractItemView.NoSelection)
-        lay.addWidget(self.tbl_rho, 1)
-        note = QLabel("Per-layer values override the resistivity above, e.g. for thin "
-                      "electroplated or rolled-annealed foil. 'default' uses the value above.")
-        note.setWordWrap(True)
-        note.setStyleSheet("color: #999;")
-        lay.addWidget(note)
-        for sp in (self.spin_rho, self.spin_tcr):
-            sp.valueChanged.connect(self._copper_changed)
-        return w
-
-    def _fill_rho_table(self):
-        t = self.tbl_rho
-        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
-        overrides = self.setup.settings.rho_by_layer
-        t.setRowCount(len(layers))
-        for r, cu in enumerate(layers):
-            t.setItem(r, 0, QTableWidgetItem(cu.name))
-            item = QTableWidgetItem()
-            item.setTextAlignment(Qt.AlignRight | Qt.AlignVCenter)
-            t.setItem(r, 1, item)
-            sp = _spin(0.0, 100.0, overrides.get(cu.name, 0.0) / UOHM_CM, 3, " µΩ·cm", 0.01)
-            sp.setSpecialValueText("default")
-            sp.setToolTip(f"Resistivity of {cu.name} at 20 °C ('default' uses the "
-                          f"Resistivity setting above)")
-            sp.valueChanged.connect(partial(self._layer_rho_changed, cu.name))
-            t.setCellWidget(r, 2, sp)
-        self._show_thicknesses()
-
-    def _show_thicknesses(self):
-        unit = self.cmb_thk_unit.currentText()
-        layers = self.snapshot.stackup.copper if self.snapshot is not None else []
-        for r, cu in enumerate(layers):
-            self.tbl_rho.item(r, 1).setText(format_thickness(cu.thickness_mm, unit))
-
-    def _thickness_unit_changed(self, unit: str):
-        QSettings("KiPI", "KiPI").setValue("copper/thickness_unit", unit)
-        self._show_thicknesses()
-
-    def _layer_rho_changed(self, name: str, value: float):
-        overrides = self.setup.settings.rho_by_layer
-        if value > 0:
-            overrides[name] = value * UOHM_CM
-        else:
-            overrides.pop(name, None)
-        self._on_changed()
-
-    def _copper_changed(self, *_):
-        s = self.setup.settings
-        s.rho_ohm_mm = self.spin_rho.value() * UOHM_CM
-        s.tcr_per_c = self.spin_tcr.value()
-        self._on_changed()
-
     def _thermal_tab(self) -> QWidget:
         w = QWidget()
         f = QFormLayout(w)
@@ -1452,6 +1382,13 @@ class PIPanel(QWidget):
         f.addRow("Airflow", self.spin_airflow)
         f.addRow("Grid", self.spin_tgrid)
         f.addRow("Laminate k", self.spin_lam_k)
+        self.chk_load_power = QCheckBox("Include load power dissipation")
+        self.chk_load_power.setChecked(t.load_power)
+        self.chk_load_power.setToolTip(
+            "Heat the board with the power each load draws too: the sum over its supply and "
+            "ground pins of pin current × pin voltage, spread over those pins. Off: only "
+            "copper, via, DC connection and VRM conversion losses heat the board.")
+        f.addRow(self.chk_load_power)
         tip(f, self.spin_ambient, "Temperature of the air around the board")
         tip(f, self.spin_iters, "Electrical and thermal solves to alternate. Three is usually "
                                 "enough; the Notes tab shows how much each one changed.")
@@ -1472,12 +1409,14 @@ class PIPanel(QWidget):
         for sp in (self.spin_max_t, self.spin_max_rise):
             f.labelForField(sp).setToolTip(sp.toolTip())
         note = QLabel("Heat from every net and layer (copper, vias, DC parts, VRM conversion "
-                      "loss) spreads through the board's copper and laminate and leaves both "
-                      "faces by convection: h = 10 + 3.8·v W/m²K per face.")
+                      "loss and, if ticked, load power) spreads through the board's copper "
+                      "and laminate and leaves both faces by convection: h = 10 + 3.8·v W/m²K "
+                      "per face.")
         note.setWordWrap(True)
         note.setStyleSheet("color: #999;")
         f.addRow(note)
         self.chk_thermal.toggled.connect(self._thermal_changed)
+        self.chk_load_power.toggled.connect(self._thermal_changed)
         for wdg in (self.spin_ambient, self.spin_airflow, self.spin_tgrid, self.spin_lam_k,
                     self.spin_max_t, self.spin_max_rise):
             wdg.valueChanged.connect(self._thermal_changed)
@@ -1492,10 +1431,11 @@ class PIPanel(QWidget):
         t.airflow_m_s = self.spin_airflow.value()
         t.grid_mm = self.spin_tgrid.value()
         t.laminate_k_w_mk = self.spin_lam_k.value()
+        t.load_power = self.chk_load_power.isChecked()
         t.max_temp_c = self.spin_max_t.value() or None
         t.max_rise_c = self.spin_max_rise.value() or None
         for wdg in (self.spin_ambient, self.spin_iters, self.spin_airflow, self.spin_tgrid,
-                    self.spin_lam_k, self.spin_max_t, self.spin_max_rise):
+                    self.spin_lam_k, self.chk_load_power, self.spin_max_t, self.spin_max_rise):
             wdg.setEnabled(t.enabled)
         self.btn_solve.setText(self._solve_label())
         if getattr(self, "_tree", None) is not None:
@@ -1586,13 +1526,10 @@ class PIPanel(QWidget):
         self.lbl_file.setText(file_label)
         for sp, v in ((self.spin_edge, setup.settings.max_edge_mm),
                       (self.spin_grading, setup.settings.grading),
-                      (self.spin_plating, setup.settings.plating_mm * 1000),
-                      (self.spin_rho, setup.settings.rho_ohm_mm / UOHM_CM),
-                      (self.spin_tcr, setup.settings.tcr_per_c)):
+                      (self.spin_plating, setup.settings.plating_mm * 1000)):
             sp.blockSignals(True)
             sp.setValue(v)
             sp.blockSignals(False)
-        self._fill_rho_table()
         self.clear_results()
         self.spin_via_limit.blockSignals(True)
         self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)
@@ -1603,7 +1540,8 @@ class PIPanel(QWidget):
                          (self.spin_lam_k, t.laminate_k_w_mk),
                          (self.spin_max_t, t.max_temp_c or 0.0),
                          (self.spin_max_rise, t.max_rise_c or 0.0),
-                         (self.chk_thermal, t.enabled), (self.chk_report, setup.html_report)):
+                         (self.chk_thermal, t.enabled), (self.chk_load_power, t.load_power),
+                         (self.chk_report, setup.html_report)):
             wdg.blockSignals(True)
             (wdg.setChecked if isinstance(wdg, QCheckBox) else wdg.setValue)(val)
             wdg.blockSignals(False)
@@ -1773,7 +1711,8 @@ class PIPanel(QWidget):
         th = getattr(tree, "thermal", None)
         if th is not None:
             x, y, tmax = th.hottest()
-            notes.insert(0, f"<b>Electro-thermal:</b> {th.heat_w:.3g} W into the board, peak "
+            notes.insert(0, f"<b>Electro-thermal:</b> {th.heat_w:.3g} W into the board"
+                            f"{_load_heat(th)}, peak "
                             f"<b>{tmax:.1f} °C</b> at ({x:.1f}, {y:.1f}) mm, ambient "
                             f"{th.settings.ambient_c:g} °C, airflow {th.settings.airflow_m_s:g} m/s "
                             "(details in the Thermal tab)")

@@ -54,6 +54,7 @@ class Stackup:
     dielectrics: List[DielectricLayer]
     board_thickness_mm: float
     from_board: bool = True  # False when a default stackup had to be synthesized
+    edited: bool = False     # thicknesses changed in KiPI (see kipi.core.model.stackup)
 
     def layer(self, layer_id: int) -> Optional[CopperLayer]:
         for layer in self.copper:
@@ -133,6 +134,7 @@ class Footprint:
     position: Point
     side: str               # "top" or "bottom"
     pad_ids: List[str] = field(default_factory=list)
+    footprint: str = ""     # library footprint, e.g. "Capacitor_SMD:C_0402_1005Metric"
 
 
 @dataclass

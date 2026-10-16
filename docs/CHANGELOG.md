@@ -4,7 +4,119 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.7.1 (in development)
+## 0.7.2 (in development)
+
+### Added
+- **PI Models in the 3D view** (#84): in DC mode, a new **PI Models** checkbox under
+  Display marks the setup's VRMs (green), loads (cyan), series links (magenta) and
+  capacitors with a model (white) on the copper, with a dot on each of their pads on the
+  nets shown (smaller on ground) and the part's name. It starts unticked; the marks follow
+  setup edits and are hidden over results. The **Models** checkbox is now **3D Models**.
+- **Solver accuracy tests** (#70): eight validation boards in `examples/validation`
+  (thin and arc tracks, right-angle routes, a layer change through vias, planes, a power
+  chain with a series link, and AC plane, decoupling-capacitor and ferrite boards), each
+  solved and compared with hand calculations. They run in `tests/accuracy`, as a separate
+  final CI job on pull requests into `main`, and open in KiPI like any snapshot.
+- **Click-to-sort tables everywhere** (#85): the capacitor parts table, a probe's custom
+  target points and a load's pin groups sort by a clicked column header, as do every table
+  in the DC and AC HTML reports. Values with SI prefixes sort by value (100 nF before
+  10 µF, 4u7 as 4.7 µ), references sort naturally (C9 before C10), ticked parts can be
+  sorted first, and blanks go last. A table keeps its order when ticking a part refills it.
+- **Footprints in the capacitor parts table** (#64): each capacitor's footprint shows in
+  its own column (the library in its tooltip) and the filter matches it. **Tick same
+  footprint** and **Tick same value + footprint** join **Tick same value**, so e.g. the
+  0402 and 0603 100 nF parts can get their own models. Snapshots now keep each
+  footprint's library name; boards saved earlier show it once read again from KiCad.
+- **Power tree** toolbar button: a block diagram of the VRMs (each type in its own colour and
+  tag), rails, series links, loads and capacitors, laid out in the direction power flows,
+  saveable as a PNG. Rails with many loads or capacitor groups pack them into grids shaped
+  so the whole tree fits the window (#58).
+- Thermal settings: **Include load power dissipation** (off by default) heats the board
+  with each load's power, the sum over its supply and ground pins of pin current × pin
+  voltage, spread over those pins. The DC report lists each load's and DC connection's
+  heat in a new Component power dissipation table (#62).
+- **SI prefixes in value fields** (#60). A value can be typed with a prefix and unit, which
+  is converted to the field's unit. For example, `10n` or `10 nF` in a µF field, `2 mOhm`
+  or `4k7` for a resistance, `1.2 MHz` in a kHz field, or `3.3 V` in a mV field. This
+  works in every field whose unit is an SI unit (Ω, F, H, Hz, A, V, W, m). A field keeps
+  its usual decimals but shows more when a small typed value needs them, so 10 pF in a µF
+  field reads 0.00001 µF instead of rounding to zero. See *Typing values* in the help.
+- **Stackup window** (#61). The new **Stackup** toolbar button opens a window listing
+  every copper and dielectric layer with its thickness, each dielectric's material, εr and
+  in-plane thermal conductivity, and each copper layer's resistivity. Thicknesses show in
+  µm, mm, mil or oz. The stackup is locked to KiCad's values by default. Untick **Lock to
+  imported values** to try other thicknesses, materials and εr. Each dielectric's material
+  is a drop-down of the materials KiPI knows; choosing one sets its typical εr and thermal
+  conductivity. Each copper layer has a conductor drop-down too (annealed, electrodeposited
+  or rolled-annealed copper, silver, gold, aluminum, nickel or tin), which sets that
+  layer's resistivity, TCR and thermal conductivity; the DC solve and the electro-thermal
+  model use a TCR and a thermal conductivity per layer. The layers restack, and every DC and AC analysis, the 3D view and the reports use the
+  edited stackup. The PI setup keeps it. KiCad's API cannot change a board's stackup yet, so
+  edits stay in KiPI.
+- **AC Board map tab** (#67). In AC mode a **Board map** tab beside **Impedance** shows the
+  report's board map in the GUI: the solver's mesh of the rail and its ground (all layers,
+  or one layer at a time, with or without the triangle edges), the board outline, the
+  probes, and the capacitors in the model coloured by model, with those left out for want
+  of a model crossed. It fills in while the rail solves, the parts first and then the mesh,
+  and the Impedance tab comes to the front when the results arrive. Hover a part for its
+  model. The view is fixed, fitted to the board. Saved AC results keep the map.
+- **Every pin's voltage and current in the DC reports** (#71). The CSV export adds
+  `<stem>_pins.csv`, and the HTML report adds a **Pins** section with a collapsible
+  table per net group. Both list every pin each group was solved with: VRM output, phase,
+  input and sense pins, load supply and ground pins, and DC connection pins. Each row has
+  the pin's position, voltage, drop or boost from the set point, and current. VRM output
+  pin currents are solved, so they show how the current shares between a VRM's pins. A
+  load's current is split equally across its pins, which is how the solver applies it.
+  Results saved before 0.7.2 have no pin list.
+
+### Changed
+- HTML report file names carry the date and time of the solve
+  (`<board>_kipi_report_<date>_<time>.html`,
+  `<board>_<rail>_ac_report_<date>_<time>.html`), so a new solve no longer overwrites the
+  last report, and **Save results…** suggests a time-stamped `.kipi-results` /
+  `.kipi-ac-results` name (#66).
+- The DC setup's **Copper** tab is gone. Its resistivity, TCR and per-layer resistivity
+  moved to the Stackup window, since the AC solve uses them too.
+- The **Cut** plane (axis, slider and **Flip**) is gone from the Display options.
+- The multiphase buck example has a 10 µF input capacitor (C20-C23) on VIN beside each
+  power stage, with a `10u` model in its setup, so an AC solve of VIN shows decoupling.
+  Its setup probes VIN at all four power stages (Q1-Q4).
+- HTML reports open in the default web browser as soon as a DC or AC solve writes them
+  (Python's `webbrowser` is the fallback where the desktop cannot open the file). **Report**
+  still reopens them later.
+- The AC HTML report's impedance plot shows |Z| only; the phase plot under it is gone.
+  Hovering a curve still gives R and X.
+- **Flat current arrows** (#63). The current-density view's arrows are flat 2D arrows
+  drawn on each copper layer instead of 3D cone-and-cylinder models. They lie on the
+  copper's top face and are repeated on its bottom face, so they show from above and
+  below, and they are unlit, so they stay plain white at any viewing angle.
+- **Dielectric constant from the KiCad stackup in AC mode** (#65). A dielectric made of
+  several sublayers (for example, two prepreg sheets) now gets all of their εr, combined
+  in series. Before, the first sublayer's εr was used for the whole thickness. The AC
+  solve's log and the HTML report list the εr used for each dielectric and mark where
+  *Default εr* stood in.
+- The version number is 0.7.2. The 0.7.1 release still reported itself as 0.7.0.
+- Tests are grouped into `tests/core`, `tests/dc`, `tests/ac`, `tests/gui` and
+  `tests/scripts`, with shared test boards in `tests/helpers` instead of being imported from
+  other test files. CI shows each folder's results in its own log group.
+
+### Fixed
+- **Online user guide link**: when the local guide is missing, KiPI now points to the
+  guide on GitHub Pages (https://drewsum.github.io/KiPI/help.html) rather than to the
+  file's HTML source on GitHub.
+- Clicking a results table's column header a second time now reverses the sort; it used
+  to sort ascending every time, because Qt flips its own sort indicator before the click
+  reaches KiPI (#85).
+- The AC HTML report no longer leaves a large blank space between the board map and the
+  capacitor models. The map's plot shared its id with the section heading, so Plotly drew
+  the map inside the heading and left the map's own space empty. The map's height now also
+  follows the page width, so a narrow window doesn't leave blank bands above and below the
+  board.
+- When KiPI cannot read the board's stackup, its default stackup no longer fixes εr at 4.5.
+  The AC *Default εr* setting now applies there, as it does for any dielectric the stackup
+  gives no value for.
+
+## 0.7.1
 
 ### Added
 - **Save and open AC results** (#56). *Save results…* in the AC panel writes every rail
@@ -19,9 +131,12 @@ milestones rather than versions that were ever set.
   `stats` branch, so no token ships with the plugin; the dialog fetches them in the
   background once a session and shows the last ones fetched when offline.
 - Each release gets a `KiPI-<version>.zip` to unzip into KiCad's plugins folder, which is
-  also what makes its downloads countable.
+  also what makes its downloads countable. The README's install steps mention it as the
+  way to install without git.
+- The *Open results…* tooltip and the user guide describe what it opens in each mode, and
+  the guide's About entry explains where the statistics come from.
 
-## 0.7.0 (in development): AC impedance analysis, faster solves
+## 0.7.0: AC impedance analysis, faster solves
 
 ### Added
 - **AC analysis: PDN impedance over frequency.** The right end of the toolbar has

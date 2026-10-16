@@ -228,6 +228,18 @@
         "C12",
         "C13"
       ]
+    },
+    {
+      "name": "10u",
+      "capacitance_f": 1e-05,
+      "esl_h": 5e-10,
+      "esr_ohm": 0.005,
+      "refs": [
+        "C20",
+        "C21",
+        "C22",
+        "C23"
+      ]
     }
   ],
   "probes": [
@@ -304,6 +316,23 @@
       },
       "ground": {
         "ref": "Q3",
+        "net": "GND",
+        "pins": []
+      },
+      "target_ohm": null,
+      "target_hz": null,
+      "target_custom": false,
+      "target_points": []
+    },
+    {
+      "name": "Q4",
+      "rail": {
+        "ref": "Q4",
+        "net": "VIN",
+        "pins": []
+      },
+      "ground": {
+        "ref": "Q4",
         "net": "GND",
         "pins": []
       },

@@ -73,6 +73,8 @@ class Solution:
     # differ from the problem's own (VRM sense correction, power-tree VRM input currents).
     source_voltage: Dict[str, float] = field(default_factory=dict)
     load_current: Dict[str, float] = field(default_factory=dict)
+    # A each source delivers at each of its pads, in the source's pad order (#71).
+    source_pad_current: Dict[str, List[float]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -105,12 +107,14 @@ def _merge_groups(n: int, groups: List[np.ndarray]) -> Tuple[np.ndarray, int]:
     return labels, count
 
 
-def _rho_factor(problem: NetProblem, xy: np.ndarray) -> Optional[np.ndarray]:
-    """rho(T) / rho(REF_TEMP_C) at the given points, or None when no temperature."""
+def _rho_factor(problem: NetProblem, xy: np.ndarray, tcr=None) -> Optional[np.ndarray]:
+    """rho(T) / rho(REF_TEMP_C) at the given points, or None when no temperature. ``tcr`` is
+    the temperature coefficient at each point (default: the setup's)."""
     if problem.temperature is None:
         return None
     t = np.asarray(problem.temperature(xy), dtype=float)
-    return np.maximum(1.0 + problem.settings.tcr_per_c * (t - REF_TEMP_C), 0.05)
+    tcr = problem.settings.tcr_per_c if tcr is None else tcr
+    return np.maximum(1.0 + tcr * (t - REF_TEMP_C), 0.05)
 
 
 def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
@@ -146,7 +150,11 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         raise SolveError("Degenerate triangles in mesh")
     gs = np.array([sheet_g[l] for l in mesh.tri_layer]) if len(set(mesh.tri_layer)) > 1 \
         else np.full(len(mesh.tris), sheet_g[mesh.tri_layer[0]])
-    rho_factor = _rho_factor(problem, mesh.points[mesh.tris].mean(axis=1))
+    tcr = {lid: s.tcr_for(st.layer(lid).name) for lid in mesh.layers}
+    # One value for a single layer (or several alike), else one per triangle.
+    tri_tcr = (np.array([tcr[l] for l in mesh.tri_layer]) if len(set(tcr.values())) > 1
+               else next(iter(tcr.values()), None))
+    rho_factor = _rho_factor(problem, mesh.points[mesh.tris].mean(axis=1), tri_tcr)
     if rho_factor is not None:
         gs = gs / rho_factor
     coef = gs / (4 * area)
@@ -318,6 +326,11 @@ class LinearSystem:
         flow = self.K @ np.nan_to_num(u_all) - f
         source_current = {name: float(flow[us].sum())
                           for name, us in self.source_unknowns.items()}
+        # Per pad: pads that touch share one unknown, and so share its current.
+        source_pad_current = {}
+        for src in prob.sources:
+            us = [self.pad_unknown[pid] for pid in src.pad_ids]
+            source_pad_current[src.name] = [float(flow[u]) / us.count(u) for u in us]
         series_current = {}
         for e in self.series:
             if e.g is None:
@@ -332,7 +345,8 @@ class LinearSystem:
                         stats=stats, warnings=list(self.warnings),
                         series_elements=self.series, series_current=series_current,
                         tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho,
-                        source_voltage=volts, load_current=amps)
+                        source_voltage=volts, load_current=amps,
+                        source_pad_current=source_pad_current)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,

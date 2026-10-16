@@ -150,6 +150,22 @@ def _layer_names(board, cu_ids, stackup_layers) -> Dict[int, str]:
     return names
 
 
+def combined_epsilon_r(sublayers) -> float:
+    """The εr of a dielectric made of ``sublayers`` ((thickness mm, εr) pairs), as one layer.
+
+    The sublayers are stacked between the same two coppers, so they combine in series:
+    t / Σ(tᵢ/εᵣᵢ). Sublayers with no εr (0) are left out; 0 when none has one. Without
+    thicknesses, the first sublayer's εr is used.
+    """
+    known = [(t, er) for t, er in sublayers if er > 0]
+    if not known:
+        return 0.0
+    total = sum(t for t, _ in known)
+    if total <= 0:
+        return known[0][1]
+    return total / sum(t / er for t, er in known)
+
+
 def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
     from kipy.proto.board import board_pb2
 
@@ -174,7 +190,7 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
                 subs = diel.layers if diel is not None else []
                 t = sum(mm(s.thickness) for s in subs) or mm(sl.thickness)
                 mat = subs[0].material_name if subs else sl.material_name
-                er = subs[0].epsilon_r if subs else 0.0
+                er = combined_epsilon_r([(mm(s.thickness), s.epsilon_r) for s in subs])
                 entries.append(("diel", -1, t, mat, er))
     except Exception as e:  # noqa: BLE001 - stackup is optional; fall back below
         progress.warn(f"Could not read board stackup layers ({e}); using defaults")
@@ -191,7 +207,7 @@ def extract_stackup(board, progress: ProgressReporter = NULL) -> Stackup:
         for i, lid in enumerate(cu_ids):
             entries.append(("cu", lid, cu_t[i], "", 0.0))
             if i < n - 1:
-                entries.append(("diel", -1, diel_t, "FR4", 4.5))
+                entries.append(("diel", -1, diel_t, "FR4", 0.0))   # εr: AC Default εr
 
     total = sum(e[2] for e in entries)
     z = total
@@ -254,6 +270,16 @@ def _field_text(field) -> str:
             return field.text.as_text().value
         except Exception:  # noqa: BLE001
             return ""
+
+
+def _footprint_name(fp) -> str:
+    """'library:name' of a footprint instance, or "" if this kicad-python can't tell."""
+    try:
+        lib_id = fp.definition.id
+        lib, name = lib_id.library, lib_id.name
+    except Exception:  # noqa: BLE001
+        return ""
+    return f"{lib}:{name}" if lib and name else name or ""
 
 
 def _pad_shapes(board, pads, layer_ids: Iterable[int], progress) -> Dict[str, Dict[int, List[Poly]]]:
@@ -472,7 +498,7 @@ def extract_board(board, refill_zones: bool = False,
                 id=fp.id.value, reference=ref, value=_field_text(fp.value_field),
                 position=pt(fp.position),
                 side="bottom" if fp.layer == BoardLayer.BL_B_Cu else "top",
-                pad_ids=[p.id.value for p in fpads]))
+                pad_ids=[p.id.value for p in fpads], footprint=_footprint_name(fp)))
             for p in fpads:
                 pad_ref[p.id.value] = ref
             kpads.extend(fpads)

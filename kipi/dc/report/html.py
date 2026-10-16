@@ -1,7 +1,7 @@
 """Self-contained HTML report for a solved power tree.
 
 One ``.html`` file with:
-* a summary and the load / VRM / DC connection / loss / via tables,
+* a summary and the load / VRM / DC connection / pin / loss / via tables,
 * per net group: an interactive 3D view (Plotly, rotate and zoom in the browser), a
   per-layer table and top-down voltage and current-density maps for every layer,
 * the board temperature map and iteration history when an electro-thermal solve ran.
@@ -24,6 +24,8 @@ import numpy as np
 
 from kipi import __version__
 from kipi.core.model.board import BoardSnapshot
+from kipi.core.model.stackup import summary as stackup_summary
+from kipi.core.naming import timestamp
 from kipi.dc.pi.tree import fmt_drop
 
 TRIANGLE_BUDGET = 60_000      # per group's 3D view
@@ -45,7 +47,7 @@ def _num(x, fmt=".4g") -> str:
 
 
 def _table(headers: List[str], rows: List[List[str]], cls: str = "") -> str:
-    head = "".join(f"<th>{_e(h)}</th>" for h in headers)
+    head = "".join(f"<th title='Click to sort'>{_e(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
     return f'<table class="{cls}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
@@ -215,14 +217,71 @@ th { background: #f0f0f0; } td:first-child, th:first-child { text-align: left; }
 .maps img { width: 520px; max-width: 100%; }
 .note { color: #666; font-size: 12px; }
 nav a { margin-right: 12px; }
+details > summary { cursor: pointer; margin: 6px 0; }
+thead th { cursor: pointer; user-select: none; }
+thead th[data-sort=asc]::after { content: " \\25B2"; } thead th[data-sort=desc]::after { content: " \\25BC"; }
 """
+
+# Click a column header to sort the table by it; click again to reverse (#85). The keys
+# match the plugin's tables (kipi.gui.sortable): numbers with SI prefixes, natural text,
+# blanks last either way.
+SORT_JS = r"""
+(function () {
+  var NUM = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?/;
+  var PRE = /^\s?([pnuµμmkKMG])(?=$|[FHΩRVAWsSz]|\d|\s)(\d*)/;
+  var SCALE = {p: 1e-12, n: 1e-9, u: 1e-6, "µ": 1e-6, "μ": 1e-6, m: 1e-3, k: 1e3, K: 1e3,
+               M: 1e6, G: 1e9};
+  function key(text) {
+    var t = text.replace(/±/g, "").trim();
+    if (!t) return [2, 0];
+    var m = NUM.exec(t);
+    if (!m) return [1, t];
+    var x = parseFloat(m[0]), p = PRE.exec(t.slice(m[0].length));
+    if (p && m[2] === undefined) {
+      if (p[2] && m[0].indexOf(".") < 0) x = parseFloat(m[0] + "." + p[2]);
+      x *= SCALE[p[1]];
+    }
+    return [0, x];
+  }
+  function compare(a, b) {
+    if (a[0] !== b[0]) return a[0] - b[0];
+    if (a[0] === 0) return a[1] - b[1];
+    return a[1].localeCompare(b[1], undefined, {numeric: true, sensitivity: "base"});
+  }
+  document.addEventListener("click", function (e) {
+    var th = e.target.closest ? e.target.closest("thead th") : null;
+    if (!th) return;
+    var table = th.closest("table"), body = table.tBodies[0];
+    if (!body) return;
+    var col = th.cellIndex, desc = th.getAttribute("data-sort") === "asc";
+    table.querySelectorAll("thead th").forEach(function (h) { h.removeAttribute("data-sort"); });
+    th.setAttribute("data-sort", desc ? "desc" : "asc");
+    var rows = Array.prototype.map.call(body.rows, function (r, i) {
+      var c = r.cells[col];
+      return {row: r, i: i, k: key(c ? c.textContent : "")};
+    });
+    rows.sort(function (a, b) {
+      var blank = (a.k[0] === 2) - (b.k[0] === 2);
+      if (blank) return blank;                      // blanks last either way
+      return (desc ? -1 : 1) * compare(a.k, b.k) || a.i - b.i;
+    });
+    rows.forEach(function (r) { body.appendChild(r.row); });
+  });
+})();
+"""
+
+
+def report_name(board_stem: str, when: Optional[_dt.datetime] = None) -> str:
+    """File name of the DC report: '<board>_kipi_report_<time stamp>.html', so each solve
+    keeps its own report (#66)."""
+    return f"{board_stem}_kipi_report_{timestamp(when)}.html"
 
 
 def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, setup,
                  progress=None) -> Path:
     import plotly.offline
     from kipi.dc.pi.report import (
-        layer_temps, limits_text, loss_rows, thermal_passed, via_rows,
+        layer_temps, limits_text, loss_rows, pin_rows, thermal_passed, via_rows,
     )
 
     def info(t):
@@ -240,7 +299,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{_e(snap.board_name)} "
                  f"· {now} · KiPI {__version__} · solved in {tree.solve_s:.1f} s</div>")
     nav = ["<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
-           "<a href='#losses'>Losses</a>", "<a href='#vias'>Vias</a>"]
+           "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",
+           "<a href='#vias'>Vias</a>"]
     if th is not None:
         nav.append("<a href='#thermal'>Thermal</a>")
     nav += [f"<a href='#g{i}'>{_e(n)}</a>" for i, n in enumerate(tree.groups)]
@@ -251,9 +311,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                  f"resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
                  f"(TCR {s.tcr_per_c:g}/°C)"
                  + ("; layer overrides: " + ", ".join(
-                     f"{_e(n)} {r * 1e-3:.4g} Ω·m" for n, r in sorted(s.rho_by_layer.items()))
+                     f"{_e(n)} {_e(s.conductor_by_layer.get(n, ''))} {r * 1e-3:.4g} Ω·m "
+                     f"(TCR {s.tcr_for(n):g}/°C)".replace("  ", " ")
+                     for n, r in sorted(s.rho_by_layer.items()))
                     if s.rho_by_layer else "")
                  + ".</p>")
+    parts.append(f"<p class='note'>Stackup, top to bottom: {_e(stackup_summary(snap.stackup))}.</p>")
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")
@@ -297,6 +360,35 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     if links:
         parts.append("<h3>DC connections</h3>" +
                      _table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"], links))
+    pins = pin_rows(tree, snap)
+    parts.append("<h2 id='pins'>Pins</h2>")
+    if pins:
+        for name in tree.groups:
+            rows = [r for r in pins if r.group == name]
+            if not rows:
+                continue
+            parts.append(
+                f"<details><summary><b>{_e(name)}</b>: {len(rows)} pin(s)</summary>" +
+                _table(["Terminal", "Role", "Pin", "x (mm)", "y (mm)", "V", "Drop / boost (mV)",
+                        "%", "I (mA)", "I is"],
+                       [[_e(r.terminal), _e(r.role),
+                         _e(f"{r.part}.{r.pin}" if r.part else r.pin), _num(r.x, ".3f"),
+                         _num(r.y, ".3f"), _num(r.v, ".6f"), fmt_drop(r.deviation, unit=""),
+                         _num(abs(100.0 * r.deviation / r.nominal), ".3f") if r.nominal else "",
+                         _num(None if r.current is None else r.current * 1e3, ".4g"),
+                         _e(r.current_is)] for r in rows]) +
+                "</details>")
+        parts.append("<p class='note'>Every pin each group was solved with: VRM outputs, "
+                     "phases, inputs and sense pins, load supply and ground pins and the pins "
+                     "of DC connections. I is the current drawn from the copper at the pin; "
+                     "negative is delivered into it (a VRM output, or a DC connection's far "
+                     "side). VRM output pin currents are solved; a load's current is shared "
+                     "equally by its pins, as the solver applies it, and a DC connection's by "
+                     "the pins on each side. Drop and boost are from the VRM set point (0 V "
+                     "for a ground).</p>")
+    else:
+        parts.append("<p class='note'>These results were saved before KiPI kept each pin "
+                     "(0.7.2); solve again to list them.</p>")
     losses = loss_rows(tree, snap)
     layers = [c.name for c in snap.stackup.copper if any(c.name in r.by_layer for r in losses)]
     parts.append("<h2 id='losses'>Losses</h2>")
@@ -320,9 +412,27 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         info("Report: thermal map")
         x, y, tmax = th.hottest()
         parts.append("<h2 id='thermal'>Electro-thermal</h2>")
-        parts.append(f"<p>{th.heat_w:.3g} W into the board; peak <b>{tmax:.1f} °C</b> at "
+        loads_w = getattr(th, "load_heat_w", {}) or {}
+        with_loads = getattr(th.settings, "load_power", False)
+        parts.append(f"<p>{th.heat_w:.3g} W into the board"
+                     + (f" ({sum(max(v, 0.0) for v in loads_w.values()):.3g} W of it from the "
+                        "loads)" if with_loads else ", load power not included")
+                     + f"; peak <b>{tmax:.1f} °C</b> at "
                      f"({x:.1f}, {y:.1f}) mm. Ambient {th.settings.ambient_c:g} °C, airflow "
                      f"{th.settings.airflow_m_s:g} m/s, {len(th.history)} iteration(s).</p>")
+        heat_rows = ([[_e(k), "load", _num(v)] for k, v in loads_w.items()] if with_loads
+                     else [])
+        heat_rows += [[_e(s.name), "DC connection", _num(s.power)]
+                      for g in tree.groups.values() for s in g.result.fields.series
+                      if s.power > 0]
+        if heat_rows:
+            parts.append("<h3>Component power dissipation</h3>" + _table(
+                ["Part", "Kind", "Power (W)"], heat_rows))
+            parts.append("<p class='note'>Heat put into the board at each part's pins. A DC "
+                         "connection dissipates I²R. "
+                         + ("A load dissipates the sum over its supply and ground pins of pin "
+                            "current × pin voltage." if with_loads else
+                            "Load power is not included (Thermal settings tab).") + "</p>")
         temps = layer_temps(tree, snap, setup.thermal)
         if temps:
             verdict = thermal_passed(temps)
@@ -402,7 +512,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     js = plotly.offline.get_plotlyjs()
     doc = (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
            f"<title>KiPI report — {_e(snap.board_name)}</title><style>{CSS}</style>"
-           f"<script type='text/javascript'>{js}</script></head><body>"
+           f"<script type='text/javascript'>{js}</script>"
+           f"<script type='text/javascript'>{SORT_JS}</script></head><body>"
            + "".join(parts) + "</body></html>")
     path.write_text(doc, encoding="utf-8")
     info(f"Report written: {path} ({path.stat().st_size / 1e6:.1f} MB)")

@@ -19,7 +19,7 @@ from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from kipi.ac.checks import capacitor_candidates, default_ground, validate_ac
@@ -32,7 +32,9 @@ from kipi.dc.gui.pi_panel import (
     new_link, new_vrm, parts_on_net, tip,
 )
 from kipi.dc.pi.model import PinRef, PISetup
-from kipi.gui.sortable import make_sortable, reset_sort, set_row
+from kipi.gui.sortable import (
+    SortItem, make_sortable, reset_sort, resort, set_row, sorted_rows,
+)
 
 TITLE = "AC setup"
 
@@ -48,7 +50,8 @@ class CapEditor(_Editor):
     nets ticked in the Board panel (so, between two power/ground nets). Ticking a part
     assigns it to this model (moving it from another model if it had one).
     """
-    COLS = ("", "Part", "Value", "Nets", "Model")
+    COLS = ("", "Part", "Value", "Footprint", "Nets", "Model")
+    C_VALUE, C_FOOTPRINT = 2, 3
 
     def __init__(self, panel: "ACPanel", parent=None):
         super().__init__(panel, parent)
@@ -76,9 +79,9 @@ class CapEditor(_Editor):
         self._watch(self.name, self.cap, self.esl, self.esr)
 
         self.filter = QLineEdit()
-        self.filter.setPlaceholderText("Filter parts (reference, value or net)…")
-        self.filter.setToolTip("Show only the parts whose reference, value, nets or model "
-                               "contain this text")
+        self.filter.setPlaceholderText("Filter parts (reference, value, footprint or net)…")
+        self.filter.setToolTip("Show only the parts whose reference, value, footprint, nets "
+                               "or model contain this text")
         self.filter.textChanged.connect(self._apply_filter)
         f.addRow(self.filter)
         self.table = QTableWidget(0, len(self.COLS))
@@ -92,19 +95,29 @@ class CapEditor(_Editor):
         self.table.itemChanged.connect(self._item_changed)
         self.table.setToolTip("Capacitors between nets ticked in the Board panel. Tick a part "
                               "to give it this model (taking it from any other model); grayed "
-                              "rows already use another model.")
+                              "rows already use another model. Click a column header to "
+                              "sort by it.")
+        make_sortable(self.table)
         f.addRow(self.table)
+        same = QHBoxLayout()
+        for label, cols, text in (
+                ("Tick same value", (self.C_VALUE,), "the value"),
+                ("Tick same footprint", (self.C_FOOTPRINT,), "the footprint"),
+                ("Tick same value + footprint", (self.C_VALUE, self.C_FOOTPRINT),
+                 "both the value and the footprint")):
+            b = QPushButton(label)
+            b.setToolTip(f"Tick every listed part with {text} of the selected row")
+            b.clicked.connect(lambda _=False, c=cols: self._tick_same(c))
+            same.addWidget(b)
+        f.addRow(same)
         row = QHBoxLayout()
-        b_val = QPushButton("Tick same value")
-        b_val.setToolTip("Tick every listed part with the value of the selected row")
-        b_val.clicked.connect(self._tick_same_value)
         b_all = QPushButton("Tick shown")
         b_all.setToolTip("Give this model to every part the filter shows")
         b_all.clicked.connect(lambda: self._tick_shown(True))
         b_none = QPushButton("Untick shown")
         b_none.setToolTip("Take this model off every part the filter shows")
         b_none.clicked.connect(lambda: self._tick_shown(False))
-        for b in (b_val, b_all, b_none):
+        for b in (b_all, b_none):
             row.addWidget(b)
         f.addRow(row)
         self.lbl_count = QLabel()
@@ -137,19 +150,27 @@ class CapEditor(_Editor):
         owner = {ref: m for m in panel.setup.caps for ref in m.refs}
         t.setRowCount(len(cands))
         for r, c in enumerate(cands):
-            chk = QTableWidgetItem()
+            chk = SortItem()
+            chk.row0 = r
             chk.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
             mine = self.obj is not None and owner.get(c.ref) is self.obj
             chk.setCheckState(Qt.Checked if mine else Qt.Unchecked)
             chk.setData(Qt.UserRole, c.ref)
             t.setItem(r, 0, chk)
             other = owner.get(c.ref)
-            cells = (c.ref, c.value, " / ".join(c.nets), other.name if other else "")
+            cells = (c.ref, c.value, c.footprint.split(":")[-1], " / ".join(c.nets),
+                     other.name if other else "")
             for col, text in enumerate(cells, start=1):
-                it = QTableWidgetItem(text)
+                it = SortItem(text)
+                it.row0 = r
+                if col == self.C_FOOTPRINT:
+                    it.setData(Qt.UserRole, c.footprint)
+                    it.setToolTip(c.footprint or "Footprint not known: re-read the board "
+                                                 "from KiCad to fill it in")
                 if other is not None and not mine:
                     it.setForeground(QColor("#999"))
                 t.setItem(r, col, it)
+        resort(t)                    # ticking a part keeps the order the user sorted
         self._filling = False
         self._apply_filter()
         self._update_count(len(cands))
@@ -190,16 +211,27 @@ class CapEditor(_Editor):
                 if not self.table.isRowHidden(r)]
         self._assign(refs, on)
 
-    def _tick_same_value(self):
+    def _tick_same(self, cols):
+        """Tick every part matching the selected row in columns ``cols`` (value, the full
+        library footprint)."""
         if self.obj is None:
             return
         r = self.table.currentRow()
         if r < 0:
             QMessageBox.information(self, "KiPI", "Select a part in the list first.")
             return
-        value = self.table.item(r, 2).text()
-        refs = [self.table.item(k, 0).data(Qt.UserRole) for k in range(self.table.rowCount())
-                if self.table.item(k, 2).text() == value]
+        t = self.table
+
+        def key(row):
+            return tuple(t.item(row, c).data(Qt.UserRole) if c == self.C_FOOTPRINT
+                         else t.item(row, c).text() for c in cols)
+        want = key(r)
+        if self.C_FOOTPRINT in cols and not t.item(r, self.C_FOOTPRINT).data(Qt.UserRole):
+            QMessageBox.information(self, "KiPI", "This part's footprint is not known. "
+                                    "Re-read the board from KiCad to fill footprints in.")
+            return
+        refs = [t.item(k, 0).data(Qt.UserRole) for k in range(t.rowCount())
+                if key(k) == want]
         self._assign(refs, True)
 
 
@@ -268,7 +300,8 @@ class ProbeEditor(_Editor):
         self.points.verticalHeader().setVisible(False)
         self.points.setMinimumHeight(130)
         self.points.setToolTip("Corner points of the custom target mask: a frequency and the "
-                               "target |Z| there")
+                               "target |Z| there. Click a column header to sort by it.")
+        make_sortable(self.points, self._sort_points, columns=(0, 1))
         self.btn_point = QPushButton("Add point")
         self.btn_point.setToolTip("Add a point a decade above the last one")
         self.btn_point.clicked.connect(self._add_point)
@@ -337,6 +370,15 @@ class ProbeEditor(_Editor):
         pts = self._points_value()
         f_hz, z_ohm = max(pts) if pts else (1e5, self.target.value() / 1e3 or 0.01)
         self._add_point_row(min(f_hz * 10, 1e10), z_ohm)
+        reset_sort(self.points)
+        self._store()
+
+    def _sort_points(self, col: int, descending: bool):
+        """Rebuild the point rows ordered by frequency (0) or |Z| (1)."""
+        pts = sorted_rows(self._points_value(), col, descending, keys={0: float, 1: float})
+        self.points.setRowCount(0)
+        for f_hz, z_ohm in pts:
+            self._add_point_row(f_hz, z_ohm)
         self._store()
 
     def _remove_point_of(self, widget):
@@ -369,6 +411,7 @@ class ProbeEditor(_Editor):
         self.target.setValue((p.target_ohm or 0.0) * 1e3)
         self.target_f.setValue((p.target_hz or 0.0) / 1e3)
         self.points.setRowCount(0)
+        reset_sort(self.points)
         for f_hz, z_ohm in sorted(p.target_points):
             self._add_point_row(f_hz, z_ohm)
         self.target_kind.setCurrentIndex(1 if p.target_custom else 0)
@@ -922,16 +965,16 @@ class ACPanel(QWidget):
     def _open_report(self):
         path = getattr(self.result, "report_path", None)
         if path:
-            from qtpy.QtCore import QUrl
-            from qtpy.QtGui import QDesktopServices
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+            from kipi.gui.browser import open_in_browser
+            open_in_browser(path)
 
     def _save_results(self):
         if not self._results or self.snapshot is None:
             return
         from kipi.ac.report import RESULTS_SUFFIX, save_results
+        from kipi.core.naming import stamped
         start = self.snapshot.project_dir
-        stem = f"{Path(self.snapshot.board_name).stem or 'kipi'}{RESULTS_SUFFIX}"
+        stem = f"{stamped(Path(self.snapshot.board_name).stem or 'kipi')}{RESULTS_SUFFIX}"
         path, _ = QFileDialog.getSaveFileName(self, "Save AC results", f"{start}/{stem}"
                                               if start else stem,
                                               f"KiPI AC results (*{RESULTS_SUFFIX})")

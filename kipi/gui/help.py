@@ -6,17 +6,14 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from qtpy.QtCore import QUrl
-from qtpy.QtGui import QDesktopServices
 from qtpy.QtWidgets import QMessageBox, QWidget
-
-from kipi.gui.about import REPO
 
 log = logging.getLogger("kipi")
 
 _DOCS = Path(__file__).resolve().parents[2] / "docs"
 # Shown when the local copy is missing (a partial install) or cannot be opened.
-ONLINE = REPO + "/blob/main/docs/help.html"
+# GitHub Pages serves docs/ from main, so this is the rendered page, not its source.
+ONLINE = "https://drewsum.github.io/KiPI/help.html"
 
 
 def help_path() -> Optional[Path]:
@@ -35,14 +32,9 @@ def open_help(parent: Optional[QWidget] = None) -> bool:
         QMessageBox.information(parent, "KiPI", f"The user guide is not installed with this "
                                                 f"copy of KiPI. It is online at:\n\n{ONLINE}")
         return False
-    if QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+    from kipi.gui.browser import open_in_browser
+    if open_in_browser(path):
         return True
-    try:
-        import webbrowser
-        if webbrowser.open(path.as_uri()):
-            return True
-    except Exception as e:  # noqa: BLE001 - any browser failure ends in the message below
-        log.warning("Could not open the user guide: %s", e)
     QMessageBox.information(parent, "KiPI", f"Could not open a web browser. The user guide "
                                             f"is at:\n\n{path}")
     return False

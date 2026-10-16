@@ -7,13 +7,16 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 import pyvista as pv
 from pyvistaqt import QtInteractor
-from vtkmodules.vtkCommonDataModel import vtkPlane
-from vtkmodules.vtkRenderingCore import vtkActor, vtkCellPicker, vtkPolyDataMapper
+from vtkmodules.util.numpy_support import numpy_to_vtk
+from vtkmodules.vtkCommonCore import vtkPoints, vtkStringArray
+from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
+from vtkmodules.vtkRenderingCore import vtkActor, vtkActor2D, vtkCellPicker, vtkPolyDataMapper
+from vtkmodules.vtkRenderingLabel import vtkLabeledDataMapper
 from qtpy.QtCore import Signal
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.core.viz.batch import Chunk, MeshBatcher
-from kipi.dc.viz.results import FIELDS, ResultScene
+from kipi.dc.viz.results import FIELDS, ResultScene, flat_arrows
 from kipi.core.viz.meshes import NetScene
 
 _NET_COLORS = [(0.90, 0.35, 0.25), (0.25, 0.60, 0.90), (0.95, 0.75, 0.20), (0.40, 0.80, 0.45),
@@ -29,6 +32,14 @@ _CATEGORY_LOOK = {"cu": (1.0, 0.4), "pad": (0.9, 0.0), "via": (1.0, 0.6)}
 _VIA_VIEW_COPPER_OPACITY = 0.35
 DEPTH_PEELS = 4          # see-through layers sorted per pixel (pyvista's default)
 _MODEL_SPECULAR = 0.3
+# PI Models markers (#84), by kind: (dot color, label color). Picked to stand out from
+# KiCad's red top and blue bottom copper and its yellow pads.
+_PI_COLORS = {"vrm": ((0.25, 1.0, 0.35), (0.10, 0.45, 0.16)),
+              "load": ((0.10, 0.95, 1.0), (0.04, 0.38, 0.45)),
+              "link": ((1.0, 0.35, 1.0), (0.48, 0.14, 0.48)),
+              "cap": ((0.95, 0.95, 0.95), (0.32, 0.33, 0.37))}
+_PI_POINT_PX = {"power": 14, "ground": 9}       # rail pins, ground pins
+_PI_LABEL_LIFT_MM = 1.0
 
 
 def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
@@ -141,6 +152,59 @@ def _model_actor(mesh: pv.PolyData) -> vtkActor:
     return actor
 
 
+def _vtk_points(pts: np.ndarray) -> vtkPolyData:
+    """Bare polydata of one vertex per point."""
+    points = vtkPoints()
+    points.SetData(numpy_to_vtk(np.ascontiguousarray(pts, dtype=float), deep=True))
+    verts = vtkCellArray()
+    for i in range(len(pts)):
+        verts.InsertNextCell(1)
+        verts.InsertCellPoint(i)
+    poly = vtkPolyData()
+    poly.SetPoints(points)
+    poly.SetVerts(verts)
+    return poly
+
+
+def _pi_dots_actor(pts: np.ndarray, color, size: float) -> vtkActor:
+    mapper = vtkPolyDataMapper()
+    mapper.SetInputData(_vtk_points(pts))
+    actor = vtkActor()
+    actor.SetMapper(mapper)
+    actor.PickableOff()
+    prop = actor.GetProperty()
+    prop.SetColor(*color)
+    prop.SetPointSize(size)
+    prop.SetRenderPointsAsSpheres(True)
+    return actor
+
+
+def _pi_labels_actor(pts: np.ndarray, names: List[str], color) -> vtkActor2D:
+    poly = _vtk_points(pts)
+    arr = vtkStringArray()
+    arr.SetName("names")
+    for n in names:
+        arr.InsertNextValue(n)
+    poly.GetPointData().AddArray(arr)
+    mapper = vtkLabeledDataMapper()
+    mapper.SetInputData(poly)
+    mapper.SetLabelModeToLabelFieldData()
+    mapper.SetFieldDataName("names")
+    text = mapper.GetLabelTextProperty()
+    text.SetFontSize(12)
+    text.BoldOn()
+    text.ItalicOff()
+    text.ShadowOff()
+    text.SetColor(1.0, 1.0, 1.0)
+    text.SetBackgroundColor(*color)
+    text.SetBackgroundOpacity(0.75)
+    text.SetJustificationToCentered()
+    actor = vtkActor2D()
+    actor.SetMapper(mapper)
+    actor.PickableOff()
+    return actor
+
+
 class Viewer3D(QWidget):
     """3D view of the board body plus individually added nets, with visibility controls.
 
@@ -174,9 +238,13 @@ class Viewer3D(QWidget):
         self._show_board = True
         self._show_models = True            # in the copper (geometry) view
         self._show_models_result = False    # over results: off until asked for
+        self._show_pi = False               # PI Models markers, copper view only
+        self._pi_markers: list = []
+        self._pi_actors: Dict[str, object] = {}      # name -> actor
         self._models: Dict[str, Tuple[pv.PolyData, str]] = {}   # ref -> (mesh, side)
         self._model_actors: Dict[str, vtkActor] = {}             # side -> actor
         self._board_top = 0.0
+        self._model_board = 0.0   # board thickness the part models were placed for
         self._color_mode = "layer"
         self._zscale = 1.0
         self._layer_opacity = 1.0
@@ -189,7 +257,6 @@ class Viewer3D(QWidget):
         self._scalar_bars: List[str] = []
         self._arrows_on = False
         self._arrow_actors: Dict[int, object] = {}          # layer id -> actor
-        self._clip = None                                   # (axis, fraction, flip) or None
         # Clicks are handled here rather than with pyvista's point picking, so a click can
         # also select a via by its on-screen distance (vias are only a few pixels wide).
         self._picker = vtkCellPicker()
@@ -200,8 +267,10 @@ class Viewer3D(QWidget):
         iren.add_observer("LeftButtonReleaseEvent", self._on_left_release)
 
     # ------------------------------------------------------------------ scene
-    def set_board(self, body: Optional[pv.PolyData], outline: Optional[pv.PolyData]):
-        """Start a new board: drop every actor, draw the board body and frame the camera."""
+    def set_board(self, body: Optional[pv.PolyData], outline: Optional[pv.PolyData],
+                  reset_view: bool = True):
+        """Start a new board: drop every actor, draw the board body and frame the camera
+        (unless ``reset_view`` is False, as when only the stackup changed)."""
         p = self.plotter
         renderer = p.renderer
         for a in self._chunk_actors.values():
@@ -215,6 +284,8 @@ class Viewer3D(QWidget):
         self._clear_result_actors()
         self._set_result(None)
         p.clear_actors()
+        self._remove_pi_actors()
+        self._pi_markers = []
         self._board_actors.clear()
         self._hidden_layers.clear()
         self._next_color = 0
@@ -229,7 +300,8 @@ class Viewer3D(QWidget):
         for a in self._board_actors:
             a.SetScale(1.0, 1.0, self._zscale)
         self._apply_visibility()
-        self.view_iso()
+        if reset_view:
+            self.view_iso()
 
     def nets(self) -> List[str]:
         return list(self._net_color)
@@ -269,18 +341,24 @@ class Viewer3D(QWidget):
     def models(self) -> List[str]:
         return list(self._models)
 
-    def set_models(self, models: Dict[str, Tuple[pv.PolyData, str]], board_top_mm: float):
+    def set_models(self, models: Dict[str, Tuple[pv.PolyData, str]], board_top_mm: float,
+                   model_board_mm: Optional[float] = None):
         """Draw these part models (ref -> (mesh, "top" or "bottom")) in place of any shown.
 
         Meshes are in the view's frame at true height (see
-        :func:`kipi.core.kicad_io.models3d.to_mesh`). The Z scale stretches the board but
-        not the parts: the top side's parts are lifted to sit on the stretched board.
+        :func:`kipi.core.kicad_io.models3d.to_mesh`), for a board ``model_board_mm`` thick
+        (KiCad's; default ``board_top_mm``). The Z scale stretches the board but not the
+        parts: the top side's parts are lifted to sit on the stretched board, and on a
+        board made thicker or thinner in the Stackup pane.
         """
+        model_board = float(board_top_mm if model_board_mm is None else model_board_mm)
         if (models.keys() == self._models.keys() and board_top_mm == self._board_top
+                and model_board == self._model_board
                 and all(models[r][0] is self._models[r][0] for r in models)):
             return
         self._models = dict(models)
         self._board_top = float(board_top_mm)
+        self._model_board = model_board
         self._remove_model_actors()
         renderer = self.plotter.renderer
         for side in ("top", "bottom"):
@@ -302,7 +380,53 @@ class Viewer3D(QWidget):
     def _place_models(self):
         top = self._model_actors.get("top")
         if top is not None:
-            top.SetPosition(0.0, 0.0, self._board_top * (self._zscale - 1.0))
+            top.SetPosition(0.0, 0.0, self._board_top * self._zscale - self._model_board)
+
+    # ------------------------------------------------------- PI Models markers
+    def set_pi_markers(self, markers):
+        """Mark the DC setup's VRMs, loads, series links and capacitors: a point on each of
+        their pads and the part's name (see :func:`kipi.dc.viz.markers.pi_markers`). Shown over
+        the copper only, not over results."""
+        self._pi_markers = list(markers)
+        self._draw_pi_markers()
+        self._apply_visibility()
+
+    def _remove_pi_actors(self):
+        renderer = self.plotter.renderer
+        for actor in self._pi_actors.values():
+            renderer.RemoveViewProp(actor)
+        self._pi_actors = {}
+
+    def _draw_pi_markers(self):
+        """Bare VTK actors, like the copper's: pyvista's ``add_points`` and
+        ``add_point_labels`` here, while nets were built in the background, hung the
+        window in its next render."""
+        self._remove_pi_actors()
+        renderer = self.plotter.renderer
+
+        def view(pts):
+            return np.column_stack([pts[:, 0], -pts[:, 1], pts[:, 2] * self._zscale])
+
+        for kind, colors in _PI_COLORS.items():
+            parts = [m for m in self._pi_markers if m.kind == kind]
+            for which, size in _PI_POINT_PX.items():
+                pts = [getattr(m, which) for m in parts if len(getattr(m, which))]
+                if not pts:
+                    continue
+                self._pi_actors[f"pi_{kind}_{which}"] = _pi_dots_actor(
+                    view(np.vstack(pts)), colors[0], size)
+            if parts:
+                name = f"pi_{kind}_labels"
+                anchors = view(np.array([m.anchor for m in parts]))
+                anchors[:, 2] += _PI_LABEL_LIFT_MM        # clear of the part's dots
+                self._pi_actors[name] = _pi_labels_actor(anchors, [m.name for m in parts],
+                                                         colors[1])
+        for actor in self._pi_actors.values():
+            renderer.AddViewProp(actor)
+
+    @property
+    def pi_marker_names(self) -> List[str]:
+        return [m.name for m in self._pi_markers]
 
     def _flush(self):
         """Rebuild changed chunks and sync their actors."""
@@ -325,8 +449,6 @@ class Viewer3D(QWidget):
 
     def render(self):
         self._flush()
-        if self._clip is not None:
-            self._apply_clip_all()
         self.plotter.render()
 
     def clear(self):
@@ -386,7 +508,6 @@ class Viewer3D(QWidget):
             actor.SetVisibility(lid not in self._hidden_layers)
         for lid, actor in self._arrow_actors.items():
             actor.SetVisibility(lid not in self._hidden_layers)
-        self._apply_clip_all()
         if self._result_via_actor is not None:
             # In the via-current view the vias are the result, so always show them.
             self._result_via_actor.SetVisibility(self._show_vias
@@ -396,6 +517,8 @@ class Viewer3D(QWidget):
         models = self._show_models_result if showing_result else self._show_models
         for a in self._model_actors.values():
             a.SetVisibility(models)
+        for a in self._pi_actors.values():
+            a.SetVisibility(self._show_pi and not showing_result)
         self.plotter.render()
 
     def set_zscale(self, s: float):
@@ -411,8 +534,9 @@ class Viewer3D(QWidget):
         for a in self._arrow_actors.values():
             a.SetScale(1.0, 1.0, self._zscale)
         self._place_models()
-        if self._clip is not None:
-            self._apply_clip_all()
+        if self._pi_markers:
+            self._draw_pi_markers()
+            self._apply_visibility()
         self.plotter.reset_camera_clipping_range()
         self.plotter.render()
 
@@ -541,7 +665,8 @@ class Viewer3D(QWidget):
         self._apply_visibility()
 
     def _draw_arrows(self, scene):
-        """White arrows along the current, length ~ sqrt(|J|) relative to the peak."""
+        """Flat white arrows along the current, drawn on the copper's top and bottom faces,
+        length ~ sqrt(|J|) relative to the peak."""
         p = self.plotter
         mags = [lr.arrow_mag for lr in scene.layers.values() if len(lr.arrow_mag)]
         if not mags:
@@ -551,62 +676,19 @@ class Viewer3D(QWidget):
         peak = float(np.percentile(np.concatenate(mags), 95))
         if peak <= 0:
             return
-        geom = pv.Arrow(tip_length=0.4, tip_radius=0.22, shaft_radius=0.08)
         for lid, lr in scene.layers.items():
             if not len(lr.arrow_pts):
                 continue
-            pts = pv.PolyData(lr.arrow_pts)
-            pts["dir"] = lr.arrow_dir
-            pts["len"] = lr.arrow_spacing * (0.3 + 0.65 * np.minimum(1.0, np.sqrt(lr.arrow_mag / peak)))
-            glyphs = pts.glyph(orient="dir", scale="len", factor=1.0, geom=geom)
-            actor = p.add_mesh(glyphs, color="white", name=f"arrows:{lid}", pickable=False,
-                               reset_camera=False, render=False)
+            lengths = lr.arrow_spacing * (0.3 + 0.65 * np.minimum(1.0, np.sqrt(lr.arrow_mag / peak)))
+            z_levels = [lr.arrow_pts[0, 2]]
+            if lr.arrow_z_below is not None:
+                z_levels.append(lr.arrow_z_below)
+            arrows = flat_arrows(lr.arrow_pts, lr.arrow_dir, lengths, z_levels)
+            # Unlit, so the arrows stay plain white at any viewing angle.
+            actor = p.add_mesh(arrows, color="white", lighting=False, name=f"arrows:{lid}",
+                               pickable=False, reset_camera=False, render=False)
             actor.SetScale(1.0, 1.0, self._zscale)
             self._arrow_actors[lid] = actor
-
-    # ------------------------------------------------------------------ cut plane
-    def set_clip(self, axis: Optional[str], fraction: float = 0.5, flip: bool = False):
-        """Cut the view with a plane normal to ``axis`` ("x", "y", "z" or None to clear)
-        at ``fraction`` (0..1) of the scene's extent; ``flip`` keeps the other side."""
-        self._clip = None if not axis else (axis, float(fraction), bool(flip))
-        self._apply_clip_all()
-        self.plotter.render()
-
-    def _all_actors(self):
-        out = list(self._chunk_actors.values()) + list(self._board_actors)
-        out += list(self._result_actors.values()) + list(self._arrow_actors.values())
-        out += list(self._model_actors.values())
-        if self._result_via_actor is not None:
-            out.append(self._result_via_actor)
-        return out
-
-    def _clip_plane(self):
-        axis, frac, flip = self._clip
-        b = self.plotter.renderer.ComputeVisiblePropBounds()
-        i = "xyz".index(axis)
-        lo, hi = b[2 * i], b[2 * i + 1]
-        origin = [0.0, 0.0, 0.0]
-        origin[i] = lo + frac * (hi - lo)
-        normal = [0.0, 0.0, 0.0]
-        normal[i] = -1.0 if flip else 1.0        # keep the side the normal points to
-        plane = vtkPlane()
-        plane.SetOrigin(*origin)
-        plane.SetNormal(*normal)
-        return plane
-
-    def _apply_clip_all(self):
-        actors = self._all_actors()
-        plane = None
-        if self._clip is not None:
-            # Bounds of everything, unclipped, so the slider maps to the whole board.
-            for a in actors:
-                a.GetMapper().RemoveAllClippingPlanes()
-            plane = self._clip_plane()
-        for a in actors:
-            m = a.GetMapper()
-            m.RemoveAllClippingPlanes()
-            if plane is not None:
-                m.AddClippingPlane(plane)
 
     def _draw_copper_result(self, scene, arr, assoc, title):
         """Copper colored by a field; vias drawn plain for context."""

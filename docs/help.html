@@ -125,6 +125,7 @@ ol.steps > li { margin-bottom: 6px; }
     <li><a href="#window">The main window</a></li>
     <li class="group">Interface reference</li>
     <li><a href="#toolbar">Toolbar</a></li>
+    <li><a href="#stackup">Stackup window</a></li>
     <li><a href="#board-panel">Board panel</a>
       <ol>
         <li><a href="#nets">Nets</a></li>
@@ -145,7 +146,6 @@ ol.steps > li { margin-bottom: 6px; }
         <li><a href="#dc-links">Series links</a></li>
         <li><a href="#dc-solve-tab">Solve</a></li>
         <li><a href="#dc-mesh">Mesh</a></li>
-        <li><a href="#dc-copper">Copper</a></li>
         <li><a href="#dc-thermal">Thermal</a></li>
       </ol></li>
     <li><a href="#dc-solving">Solving</a></li>
@@ -172,6 +172,7 @@ ol.steps > li { margin-bottom: 6px; }
     <li><a href="#ac-results">AC results</a>
       <ol>
         <li><a href="#ac-plot">Impedance plot and cursor</a></li>
+        <li><a href="#ac-map">Board map</a></li>
         <li><a href="#ac-table">Results table</a></li>
         <li><a href="#ac-report">AC HTML report</a></li>
         <li><a href="#ac-reading">Reading the curve</a></li>
@@ -304,6 +305,14 @@ float them in their own windows.</p>
     more than one KiCad project manager or PCB editor is open. The message names each one
     with its process ID. See <a href="#ts-multiple-kicad">Troubleshooting</a>.</li>
 </ul>
+<h4 id="typing-values">Typing values</h4>
+<p>A number on its own is in the field's unit. Fields in an SI unit (Ω, F, H, Hz, A, V, W, m)
+also take a prefix, with or without the unit, and convert it to the field's unit: in a µF
+field, <code>10n</code>, <code>10 nF</code> and <code>0.01</code> are all 10 nF. A resistance
+can be written <code>2 mOhm</code>, <code>2mΩ</code> or <code>4k7</code>. Prefixes are case
+sensitive (<code>m</code> is milli, <code>M</code> is mega), and <code>u</code> stands for µ.
+Fields in other units (%, °C, A/µs, µΩ·cm) take plain numbers. A field shows its usual number
+of decimals, plus more when a small typed value needs them.</p>
 
 <!-- ================================================================== TOOLBAR -->
 <h2 id="toolbar">Toolbar</h2>
@@ -326,12 +335,26 @@ float them in their own windows.</p>
     report.</td></tr>
   <tr><td><b>Top / Bottom / Iso</b></td><td class="wrap">Snap the 3D camera to look down on
     the board, up at its underside, or from an isometric angle. They also bring the 3D view
-    to the front from the Impedance tab.</td></tr>
+    to the front from the Impedance and Board map tabs.</td></tr>
   <tr><td><b>Screenshot…</b></td><td class="wrap">Saves whatever is in the middle as a PNG:
-    the 3D view, or the impedance plot when its tab is showing.</td></tr>
+    the 3D view, the impedance plot or the board map, whichever tab is showing.</td></tr>
   <tr><td><b>Open results…</b></td><td class="wrap">Reopens saved results without solving again. Load the same board
     first. In DC mode it opens a DC solve saved with <b>Export ▾ → Save results…</b>; in AC
     mode, the rails saved with the AC panel's <b>Save results…</b>.</td></tr>
+  <tr><td><b>Stackup</b></td><td class="wrap">Opens the <a href="#stackup">Stackup
+    window</a>: the board's layers with their thicknesses, εr and copper resistivity.</td></tr>
+  <tr><td><b>Power tree</b></td><td class="wrap">Opens a block diagram of the setup, drawn
+    left to right in the direction power flows: each source and regulator, the rails they
+    drive, series links between rails, and the loads and capacitor models on each rail
+    (capacitors are grouped per model and rail, with a dashed line). VRM types differ in
+    colour and tag: a <b>SOURCE</b> has a double border, and regulators (<b>LDO</b> and
+    <b>SMPS</b>) a dashed one. A rail with three or more loads, or capacitor groups, packs
+    them into a framed grid fed by one arrow, titled with their count (and the loads' total
+    current); the grids take the shape that lets the whole tree fit the window largest.
+    Each block sits just right of the one feeding it. Ground nets, and net ties between
+    them, are left out. Hover a block for its pins;
+    drag to pan, <kbd>Ctrl</kbd> + wheel to zoom, <b>Save image…</b> for a PNG. It redraws
+    as the setup changes.</td></tr>
   <tr><td><b>Help</b> <kbd>F1</kbd></td><td class="wrap">Opens this guide in your web
     browser.</td></tr>
   <tr><td><b>About</b></td><td class="wrap">Version, author and project links, and how often
@@ -343,6 +366,76 @@ float them in their own windows.</p>
     shows that mode's panel. The DC setup and results are kept while you are in AC and come
     back when you switch to DC. You cannot switch while a task is running.</td></tr>
 </table>
+</div>
+</details>
+
+<!-- ================================================================== STACKUP -->
+<h2 id="stackup">Stackup window</h2>
+<p>The <b>Stackup</b> toolbar button opens a window with the board's layers top to bottom:
+each copper layer and each dielectric with its thickness, each dielectric's material, εr and
+in-plane thermal conductivity, and each copper layer's conductor and resistivity. Every analysis, DC and AC, uses this stackup, and the 3D view
+draws it. The window can stay open beside the main window.</p>
+<details open>
+<summary>Controls</summary>
+<div class="body">
+<table>
+  <tr><th>Control</th><th>What it does</th></tr>
+  <tr><td><b>Lock to imported values</b></td><td class="wrap">Ticked (the default), the
+    thicknesses, materials and εr are the ones read from KiCad's board stackup. Untick it to
+    try others: type a new thickness for any copper or dielectric layer, or choose a
+    dielectric's material or type its εr.
+    The layers above and below move with a thickness change, and the total board thickness
+    shows under the table next to KiCad's. Ticking it again goes back to KiCad's
+    values.</td></tr>
+  <tr><td><b>Thickness unit</b></td><td class="wrap">Shows and takes the thicknesses in µm,
+    mm, mil or oz (1 oz = 35 µm). Ounces are a copper weight, so in oz the dielectrics show
+    in mil. In a µm or mm field a value can also carry its own unit, like <code>35um</code>
+    or <code>0.2mm</code>. KiPI remembers the unit.</td></tr>
+  <tr><td><b>Material</b> (dielectrics)</td><td class="wrap">Each dielectric's material, from the list
+    KiPI knows: FR4 core and prepreg, polyimide, Kapton, Rogers RO4350B, RO4003C, RO3003 and
+    RT/duroid, PTFE, polyolefin, alumina and aluminum nitride ceramics, and an aluminum metal
+    core. KiCad's own name for the material is listed too when it is not one of these.
+    Choosing a material sets its typical εr (a datasheet value near 1 GHz; type another if
+    your laminate's differs) and its in-plane thermal conductivity <b>k</b>, which the
+    electro-thermal solve uses unless the Thermal tab's <b>Laminate k</b> overrides it. A ⚠
+    beside k means KiPI did not recognize KiCad's name and took the layer as FR4.</td></tr>
+  <tr><td><b>Material</b> (copper layers)</td><td class="wrap">What each copper layer is
+    made of. <i>Copper (board Resistivity)</i> uses the <b>Resistivity</b> and <b>TCR</b> below.
+    Or choose annealed copper, electrodeposited or rolled-annealed copper foil (IPC-4562's
+    maximum resistivity), silver, gold, aluminum, nickel or tin: this sets the layer's
+    resistivity, its TCR for the electro-thermal solve, and its thermal conductivity
+    <b>k</b> for heat spreading. A resistivity typed in the table afterwards wins; setting it
+    back to <code>default</code> returns the layer to the board's copper. A layer given a
+    resistivity by hand in an earlier version shows as <i>Custom resistivity</i>. Copper
+    layer conductors are setup settings, so they can be changed while the stackup is
+    locked.</td></tr>
+  <tr><td><b>εr</b></td><td class="wrap">Each dielectric's constant, for the AC solve.
+    <code>default</code> means the stackup gives none (or the material is a metal), and the AC
+    setup's <b>Default εr</b> applies.</td></tr>
+  <tr><td><b>Resistivity at 20 °C</b> (table)</td><td class="wrap">A copper layer's own
+    resistivity, set by its conductor or typed in; <code>default</code> uses the
+    <b>Resistivity</b> below.</td></tr>
+  <tr><td><b>Resistivity</b>, <b>TCR</b></td><td class="wrap">Resistivity at 20 °C (annealed
+    copper, 1.724 µΩ·cm, by default) of every layer left at the board's copper and of via
+    plating, and its temperature coefficient (0.00393 /°C for copper), used by the
+    electro-thermal solve. These are setup settings, so they can be changed while the
+    stackup is locked.</td></tr>
+  <tr><td><b>Reset</b></td><td class="wrap">Back to KiCad's thicknesses, materials and εr,
+    still unlocked.</td></tr>
+</table>
+<ul>
+  <li>The stackup and resistivities are saved with the PI setup. An edited stackup is used
+    again the next time the board is opened (unlocked). If a layer has been added, removed
+    or renamed in KiCad since, the log says so and KiCad's stackup is used.</li>
+  <li>To compare stackups, solve, edit, and solve again. A stackup change clears the DC
+    results, which were for the old stackup; the AC results stay until a rail is solved
+    again. Reports note a stackup edited in KiPI.</li>
+  <li>KiCad's API cannot change a board's stackup yet, so edits stay in KiPI. To keep a
+    stackup you settle on, enter it in KiCad's <i>Board Setup → Board Stackup → Physical
+    Stackup</i>.</li>
+  <li>A board snapshot (<b>Save snapshot</b>) keeps KiCad's stackup; the edits live in the
+    setup.</li>
+</ul>
 </div>
 </details>
 
@@ -399,17 +492,18 @@ are shown, so one layer's outlier does not wash out the others.</p>
     layers beneath; vias stay solid.</td></tr>
   <tr><td><b>Vias / Pads / Board</b></td><td class="wrap">Show or hide via barrels, pads and
     the board body.</td></tr>
-  <tr><td id="models"><b>Models</b></td><td class="wrap">Shows the KiCad 3D models of the parts
+  <tr><td id="pi-models"><b>PI Models</b></td><td class="wrap">In DC mode, marks the setup's
+    parts on the copper: a dot on each pad of a <b>VRM</b> (green), <b>load</b> (cyan) or
+    <b>series link</b> (magenta) or <b>capacitor</b> with a model (white), larger on the
+    rail's pins and smaller on ground, with the part's name above. Only pads on a net shown are marked, and the marks follow setup
+    edits. They are drawn over the plain copper only, not over results, and not in AC
+    mode. Unticked to start with.</td></tr>
+  <tr><td id="models"><b>3D Models</b></td><td class="wrap">Shows the KiCad 3D models of the parts
     in the setup (VRMs, loads, series links and the parts of capacitor models) that have a pad
     on a net shown. In the geometry view they are on to start with; over results they start
-    hidden, and ticking <b>Models</b> there shows them too. Each view remembers its own
+    hidden, and ticking <b>3D Models</b> there shows them too. Each view remembers its own
     setting. See <a href="#part-models">Part 3D models</a> below.</td></tr>
-  <tr><td><b>Cut</b> axis, slider, <b>Flip</b></td><td class="wrap">Cuts the view with a plane
-    across X, Y or Z, so you can look inside the stackup. The slider moves the plane;
-    <b>Flip</b> keeps the other half.</td></tr>
 </table>
-<figure><img src="images/stackup_cut.png" alt="Stackup cut along Y at 15x Z scale">
-<figcaption>A cut along Y at 15× Z scale shows the inner planes and via barrels.</figcaption></figure>
 <h4 id="part-models">Part 3D models</h4>
 <ul>
   <li>KiPI asks KiCad's command-line tool, <code>kicad-cli</code>, to export just the parts it
@@ -420,7 +514,8 @@ are shown, so one layer's outlier does not wash out the others.</p>
     since the last save is drawn where it was saved; save the board and click <b>Load from
     KiCad</b> to update it.</li>
   <li>The <b>Z scale</b> stretches the board but not the parts: top-side parts sit on the
-    stretched board at their true height. The <b>Cut</b> plane cuts them too.</li>
+    stretched board at their true height, and on a board made thicker or thinner in the
+    <a href="#stackup">Stackup window</a>.</li>
   <li>Clicks go through the models to the copper beneath, so probing works as without
     them.</li>
   <li>A part whose model KiCad cannot find is named in the log with the missing path. If
@@ -456,8 +551,9 @@ in your layout. It needs a live KiCad connection (not a snapshot).</p>
     the <a href="#info">Info</a> box and the status bar. Clicks pass through
     <a href="#part-models">part models</a>.</td></tr>
 </table>
-<p>In AC mode a second tab, <b>Impedance</b>, appears beside <b>3D view</b> and holds the
-<a href="#ac-plot">impedance plot</a>.</p>
+<p>In AC mode two more tabs appear beside <b>3D view</b>: <b>Impedance</b>, with the
+<a href="#ac-plot">impedance plot</a>, and <b>Board map</b>, with the
+<a href="#ac-map">mesh and parts of the solve</a>.</p>
 </div>
 </details>
 
@@ -683,17 +779,6 @@ many groups will be solved, e.g. <b>Solve 3 of 5 net groups</b>.</p>
 </div>
 </details>
 
-<details id="dc-copper">
-<summary>Copper tab</summary>
-<div class="body">
-<p><b>Resistivity</b> at 20 °C (annealed copper, 1.724 µΩ·cm, by default) applies to every layer
-and to via plating. <b>TCR</b> (0.00393 /°C for copper) is used by the electro-thermal solve.
-The table lists each layer's thickness, from the KiCad stackup, and lets you override its
-resistivity, e.g. for electroplated or rolled foil; <code>default</code> uses the value above.
-<b>Thickness unit</b> shows the thicknesses in µm, mil or oz (1 oz = 35 µm).</p>
-</div>
-</details>
-
 <details id="dc-thermal">
 <summary>Thermal tab <span class="hint">electro-thermal co-simulation, off by default</span></summary>
 <div class="body">
@@ -710,12 +795,20 @@ copper becoming more resistive. KiPI alternates electrical and thermal solves.</
     the board.</td></tr>
   <tr><td>Laminate k</td><td class="wrap">In-plane dielectric conductivity. <i>From stackup</i>
     looks it up from each dielectric's material name (FR4, prepregs, polyimide, PTFE, Rogers,
-    ceramic, aluminum…), falling back to FR4 with a warning.</td></tr>
+    ceramic, aluminum…), falling back to FR4 with a warning. The
+    <a href="#stackup">Stackup window</a> shows each dielectric's k and lets you choose
+    another material.</td></tr>
+  <tr><td>Include load power dissipation</td><td class="wrap">Off by default. When ticked,
+    each load heats the board with the power it draws: the sum over its supply and ground
+    pins of pin current × pin voltage, spread over those pins. A load without ground pins is
+    taken as returning at 0 V.</td></tr>
   <tr><td>Max copper temperature</td><td class="wrap">Optional limit: copper hotter than this
     on any layer is FAIL.</td></tr>
   <tr><td>Max rise above ambient</td><td class="wrap">Optional limit on the temperature rise.</td></tr>
 </table>
-<p>Heat comes from every solved net and layer, vias, series parts and VRM conversion loss. The
+<p>Heat comes from every solved net and layer, vias, DC connections (I²R, at their pins), VRM
+conversion loss and, with <b>Include load power dissipation</b>, the loads. The report's
+<b>Component power dissipation</b> table lists the DC connections' and loads' heat. The
 limits grade the last solve straight away when you change them.</p>
 <figure><img src="images/setup_thermal.png" alt="Thermal settings"><figcaption>Thermal settings.</figcaption></figure>
 </div>
@@ -729,10 +822,21 @@ limits grade the last solve straight away when you change them.</p>
 <p><b>Solve all</b> saves the setup, meshes every ticked net group and solves the power tree.
 It is disabled while there are problems (listed in red). If you click it while the 3D view is
 still building nets, the solve is queued and starts as soon as that finishes.</p>
-<p>Tick <b>HTML report</b> before solving to also write <code>&lt;board&gt;_kipi_report.html</code>
-next to the board; <b>Report</b> opens it. The report is a single offline file with every
+<p>Tick <b>HTML report</b> before solving to also write
+<code>&lt;board&gt;_kipi_report_&lt;date&gt;_&lt;time&gt;.html</code> next to the board; the
+time stamp keeps each solve's report instead of overwriting the last one. It opens in your web browser when the solve finishes, and
+<b>Report</b> opens it again later. The report is a single offline file with every
 table, an interactive 3D view of each net group, per-layer statistics and maps, and the
 temperature map.</p>
+<p>The report's <b>Pins</b> section, and <code>_pins.csv</code> in <b>Export ▾ Tables as
+CSV…</b>, list every pin each group was solved with. That covers VRM output, phase, input
+and sense pins, load supply and ground pins, and DC connection pins. Each row gives the pin's
+position, voltage, drop or boost from the VRM set point (0 V for a ground), and current.
+The current is what the pin draws from the copper, so it is negative where current is
+delivered into the copper, as at a VRM output. VRM output pin currents are solved, so they
+show how the current shares between the pins. A load's current is split equally across its
+pins, as the solver applies it, and a DC connection's current across the pins on each
+side.</p>
 <p>A solve that fails on a setup problem (e.g. no copper path) shows <b>Cannot solve</b> in the
 Notes tab with the reason. Untick the group with the problem in the Solve tab to solve the
 rest.</p>
@@ -752,7 +856,8 @@ color the copper in 3D.</p>
   <tr><td>Voltage (V)</td><td class="wrap">Copper potential.</td><td class="wrap">The gradient
     from VRM to load; where the drop happens.</td></tr>
   <tr><td>Current density (A/mm²)</td><td class="wrap">How hard the copper is worked. Tick
-    <b>Arrows</b> to see where and which way current flows.</td><td class="wrap">Necks, thermal
+    <b>Arrows</b> to see where and which way current flows: flat white arrows drawn on each
+    layer's copper, top and bottom faces, longer where the current is denser.</td><td class="wrap">Necks, thermal
     reliefs, narrow traces, plane slots. Clipped at the 99.5th percentile (pad corners
     spike).</td></tr>
   <tr><td>Power density (mW/mm²)</td><td class="wrap">Copper loss per area.</td><td class="wrap">
@@ -834,11 +939,13 @@ clipped).</p>
 <div class="body">
 <table>
   <tr><th>Export ▾ item</th><th>Writes</th></tr>
-  <tr><td>Tables as CSV…</td><td class="wrap">One CSV per results table into a folder.</td></tr>
+  <tr><td>Tables as CSV…</td><td class="wrap">One CSV per results table into a folder, plus
+    <code>&lt;name&gt;_pins.csv</code>: every pin each group was solved with, and its voltage and
+    current.</td></tr>
   <tr><td>3D results for ParaView (.vtm)…</td><td class="wrap">The result meshes, for ParaView
     or other VTK tools.</td></tr>
   <tr><td>Save results…</td><td class="wrap">A <code>.kipi-results</code> file that <b>Open
-    results…</b> reloads without solving. It is a Python pickle: only open files you
+    results…</b> reloads without solving, named with the board and the time by default. It is a Python pickle: only open files you
     trust.</td></tr>
 </table>
 <div class="pair">
@@ -914,14 +1021,15 @@ are required.</p>
   <tr><td>ESL</td><td class="wrap">The part's own inductance (datasheet), not including
     mounting.</td></tr>
   <tr><td>ESR</td><td class="wrap">Per part.</td></tr>
-  <tr><td>Filter box</td><td class="wrap">Narrows the parts table by reference, value, net or
-    model.</td></tr>
+  <tr><td>Filter box</td><td class="wrap">Narrows the parts table by reference, value, footprint,
+    net or model.</td></tr>
   <tr><td>Parts table</td><td class="wrap">Every capacitor (reference <code>C…</code>) whose pads
-    are all on ticked nets, across two nets. Tick a part to give it this model; it moves from
-    any other model. Grayed rows already belong to another model, named in the last
-    column.</td></tr>
-  <tr><td><b>Tick same value</b></td><td class="wrap">Ticks every part with the value of the
-    selected row.</td></tr>
+    are all on ticked nets, across two nets, with its footprint (hover for the library).
+    Tick a part to give it this model; it moves from any other model. Grayed rows already
+    belong to another model, named in the last column. Click a column header to sort by it.</td></tr>
+  <tr><td><b>Tick same value / footprint / value + footprint</b></td><td class="wrap">Ticks
+    every part matching the selected row: the same value, the same library footprint, or
+    both (e.g. only the 0402 100 nF parts, whose ESL differs from the 0603 ones).</td></tr>
   <tr><td><b>Tick shown / Untick shown</b></td><td class="wrap">Applies to every row the filter
     shows.</td></tr>
 </table>
@@ -1026,7 +1134,10 @@ Distribution System Design Methodology and Capacitor Selection for Modern CMOS T
     decides the via and mounting inductance.</td></tr>
   <tr><td>Loss tangent</td><td class="wrap">Dielectric loss (FR4 about 0.02). Damps the plane
     resonances.</td></tr>
-  <tr><td>Default εr</td><td class="wrap">Dielectric constant where the stackup gives none.</td></tr>
+  <tr><td>Default εr</td><td class="wrap">Dielectric constant where the stackup gives none.
+    Every other dielectric uses the εr from KiCad's board stackup (Board Setup → Physical
+    Stackup); a dielectric made of several sublayers gets their series combination. The log
+    and the HTML report list the εr used for each dielectric.</td></tr>
 </table>
 <p>Copper resistivity and barrel plating come from the DC setup's Copper and Mesh tabs.</p>
 </div>
@@ -1042,8 +1153,10 @@ nets with grounds first, defaulting to the VRM's ground pins' net. <b>Solve rail
 setup and runs the sweep; problems that stop it are listed in red above. The log shows the
 field solves as they go.</p>
 <p>Tick <b>HTML report</b> next to <b>Solve rail</b> to also write
-<code>&lt;board&gt;_&lt;rail&gt;_ac_report.html</code> next to the board after each rail's solve;
-<b>Report</b> opens the shown rail's report. See <a href="#ac-report">AC HTML report</a>.</p>
+<code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code> next to the
+board after each rail's solve;
+the report opens in your web browser when the rail finishes solving, and <b>Report</b> opens
+the shown rail's report again later. See <a href="#ac-report">AC HTML report</a>.</p>
 <p>Each rail keeps its last result: switch <b>Rail</b> to look at another rail's curves
 without solving again. If you change the rail while a solve is running, the result is kept
 for its own rail and the notes say so.</p>
@@ -1077,6 +1190,32 @@ target), and every other probe's |Z| at the same frequency.</p>
 </div>
 </details>
 
+<details open id="ac-map">
+<summary>Board map</summary>
+<div class="body">
+<p>The <b>Board map</b> tab shows the solve from above, as in the
+<a href="#ac-report">HTML report</a>: the solver's mesh of the rail (copper colored) and its
+ground (blue-gray), the board outline, the probes as red stars, and the capacitors in the model
+as dots, one color per capacitor model. Capacitors between the rail and ground that have no
+model, and so are left out, are crossed. The view is fixed, always fitted to the
+board.</p>
+<p>The map fills in while the rail solves: the parts as soon as the solve starts, then the
+mesh once it is built. The tab comes to the front for the solve; the
+<b>Impedance</b> tab comes back to the front when the results arrive.</p>
+<table>
+  <tr><th>Control</th><th>Does</th></tr>
+  <tr><td><b>Layer</b></td><td class="wrap">The copper layer whose mesh is shown, or
+    <b>All layers</b> (the rail drawn over its ground).</td></tr>
+  <tr><td><b>Mesh edges</b></td><td class="wrap">Draws the triangles' edges. Untick it to see
+    the copper alone.</td></tr>
+  <tr><td>Hover a part</td><td class="wrap">Its reference, value, side and capacitor model
+    (C, ESL, ESR).</td></tr>
+</table>
+<p>The map belongs to each rail's result, so switching <b>Rail</b> shows that rail's map, and
+saved results keep it. Results saved by KiPI before 0.7.2 have no map.</p>
+</div>
+</details>
+
 <details open id="ac-table">
 <summary>Results table and notes</summary>
 <div class="body">
@@ -1094,7 +1233,8 @@ target), and every other probe's |Z| at the same frequency.</p>
 series links included, the total plane capacitance, the solve size and time, capacitors left
 out for having no model, and any warnings. <b>Export CSV…</b> writes |Z|, R and X of every probe
 at every frequency. <b>Save results…</b> writes every rail solved so far to a
-<code>.kipi-ac-results</code> file; <b>Open results…</b> in AC mode brings them back, each
+<code>.kipi-ac-results</code> file (named with the board and the time by default);
+<b>Open results…</b> in AC mode brings them back, each
 under its VRM in <b>Rail</b>. Rails whose VRM is no longer in the setup are left out.</p>
 </div>
 </details>
@@ -1103,12 +1243,12 @@ under its VRM in <b>Rail</b>. Rails whose VRM is no longer in the setup are left
 <summary>AC HTML report</summary>
 <div class="body">
 <p>With <b>HTML report</b> ticked, each rail's solve also writes
-<code>&lt;board&gt;_&lt;rail&gt;_ac_report.html</code> next to the board, replacing that rail's
-last one. Like the DC report, it is a single offline file you can email. It holds:</p>
+<code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code> next to the
+board; the time stamp keeps every solve's report. Like the DC report, it is a single offline file you can email. It holds:</p>
 <ul>
   <li>a summary and the probe table: pins, minimum and worst |Z|, the target, the margin in dB
     at the worst point (positive passes), PASS/FAIL, and an overall verdict;</li>
-  <li>an interactive impedance plot, with |Z| above and phase below, and the targets dashed.
+  <li>an interactive impedance plot of |Z| at every probe, with the targets dashed.
     Drag to zoom, double-click to reset, hover for f, |Z|, R and X. Click a legend entry to
     hide or show a curve. The grey dotted curves, hidden at first, are each capacitor model on
     its own (one part, without mounting), useful for matching dips to capacitor banks;</li>
@@ -1293,8 +1433,8 @@ them a model or confirm they really do not belong on this rail.</p>
   <tr><td><code>*.kipi-results</code></td><td class="wrap">A saved DC solve (Python pickle).</td></tr>
   <tr><td><code>*.kipi-ac-results</code></td><td class="wrap">Saved AC results, every rail
     solved (Python pickle).</td></tr>
-  <tr><td><code>&lt;board&gt;_kipi_report.html</code></td><td class="wrap">The DC HTML report.</td></tr>
-  <tr><td><code>&lt;board&gt;_&lt;rail&gt;_ac_report.html</code></td><td class="wrap">An AC rail's HTML report.</td></tr>
+  <tr><td><code>&lt;board&gt;_kipi_report_&lt;date&gt;_&lt;time&gt;.html</code></td><td class="wrap">The DC HTML report.</td></tr>
+  <tr><td><code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code></td><td class="wrap">An AC rail's HTML report.</td></tr>
   <tr><td><code>*.csv</code></td><td class="wrap">DC tables, or an AC rail's impedance.</td></tr>
   <tr><td><code>*.vtm</code></td><td class="wrap">DC 3D results for ParaView.</td></tr>
   <tr><td><code>kipi-&lt;user&gt;.lock</code></td><td class="wrap">In the temporary folder while
@@ -1337,7 +1477,7 @@ and delete <code>kipi-&lt;user&gt;.lock</code> from the temporary folder.</p></d
 <details id="ts-models">
 <summary>No part models are drawn</summary>
 <div class="body"><ul>
-  <li>Check <b>Models</b> is ticked in <a href="#display">Display</a>. Over results it starts
+  <li>Check <b>3D Models</b> is ticked in <a href="#display">Display</a>. Over results it starts
     unticked.</li>
   <li>Only parts named in the setup with a pad on a ticked net get a model.</li>
   <li>The log says why. KiPI needs KiCad's <code>kicad-cli</code>: it looks in the connected
