@@ -701,6 +701,8 @@ class LoadEditor(_Editor):
         self.mode.addItem("Per pin group", "groups")
         self.current = _spin(-1000, 1000, 0.1, 4, " A", 0.01)
         self.current_max = _optional_spin(0, 1000, 4, " A", 0.01)
+        self.chk_unknown = QCheckBox("Current not known")
+        self.chk_unknown.toggled.connect(lambda on: self.current.setEnabled(not on))
         self.groups = QTableWidget(0, 4)
         self.groups.setHorizontalHeaderLabels(["Group", "Pins", "Current", ""])
         hdr = self.groups.horizontalHeader()
@@ -730,6 +732,11 @@ class LoadEditor(_Editor):
         f.addRow("Current split", self.mode)
         f.addRow("Current", self.current)
         f.addRow("Max current", self.current_max)
+        f.addRow("", self.chk_unknown)
+        tip(f, self.chk_unknown, "The current is not known: it is solved as entered, and every "
+                                 "load on this rail, upstream, on the rails those feed and "
+                                 "sharing its ground return is marked INCOMPLETE, never PASS")
+        self.chk_unknown.toggled.connect(self._store)
         tip(f, self.current_max, "The load's maximum current, solved instead of Current when "
                                  "the solve is set to Worst case (max) beside Solve all")
         f.addRow(self.groups)
@@ -850,6 +857,10 @@ class LoadEditor(_Editor):
         self.supply.set_value(l.supply)
         self.current.setValue(l.current)
         _set_optional(self.current_max, l.current_max)
+        self.chk_unknown.blockSignals(True)
+        self.chk_unknown.setChecked(not l.current_known)
+        self.chk_unknown.blockSignals(False)
+        self.current.setEnabled(l.current_known)
         self.groups.setRowCount(0)
         reset_sort(self.groups)
         for g in l.groups:
@@ -878,6 +889,7 @@ class LoadEditor(_Editor):
         l.supply = new_supply
         l.current = self.current.value()
         l.current_max = _get_optional(self.current_max)
+        l.current_known = not self.chk_unknown.isChecked()
         if self.mode.currentData() == "groups":
             if self.groups.rowCount() == 0:
                 # Switching to groups: start with one group per pin, same total current.

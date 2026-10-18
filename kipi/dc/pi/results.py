@@ -11,6 +11,7 @@ from kipi.dc.solver import NetResult
 NOT_CONVERGED = "NOT CONVERGED"
 OUT_OF_REGULATION = "VRM OUT OF REGULATION"
 DISCONNECTED = "DISCONNECTED"       # no copper path to its VRM: not solved (#88)
+INCOMPLETE = "INCOMPLETE"           # a current on this rail or upstream is not known
 
 
 @dataclass

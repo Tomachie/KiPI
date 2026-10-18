@@ -320,3 +320,27 @@ def test_worst_case_solves_the_maximum_current():
     assert (typ.basis, worst.basis) == ("typ", "max")
     assert worst.current == pytest.approx(1.5)
     assert worst.drop > typ.drop
+
+
+def test_current_not_known_marks_its_rail_incomplete():
+    """A load the file gives no current is solved at 0 A and marked not known; every load
+    on its rail (and upstream) is INCOMPLETE rather than PASS, since the drop it would
+    cause is missing."""
+    from kipi.dc.pi.results import INCOMPLETE
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["loads"][0]["current"] = "unknown"
+    pdn["rails"][1]["loads"][0].pop("current_max", None)
+    setup, notes = run(pdn)
+    u2 = by_name(setup.loads, "U2")
+    assert (u2.current, u2.current_known) == (0.0, False)
+    res = by_name(solve_tree(board(), setup).loads, "U2")
+    assert (res.status, res.passed) == (INCOMPLETE, None)
+    assert any("marked not known" in n for n in notes)
+
+
+def test_off_board_load_puts_no_heat_into_the_board():
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["offboard_pins"] = ["U2_1"]
+    setup, _ = run(pdn)
+    off = by_name(setup.loads, "U2_1 (off-board)")
+    assert (off.dissipation_w, off.current_known) == (0.0, False)
