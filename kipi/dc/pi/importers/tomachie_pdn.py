@@ -8,7 +8,9 @@ current. What maps where:
 * a rail sourced by a connector, battery or module pin -> a ``source`` VRM;
 * a rail sourced by a regulator -> an ``ldo`` / ``smps`` VRM whose input pins are the
   regulator's pins on its input rail (the file also lists those as a load of the input
-  rail; that entry is not imported, because KiPI derives a VRM's input current itself);
+  rail; that entry is not imported, because KiPI derives a VRM's input current itself).
+  An isolated converter is a switcher: its input power is its output power over its
+  efficiency, plus its no-load current;
 * a part in series between rails, and a switcher's inductor -> a DC connection;
 * a load switch (a regulator entry of type ``load_switch``: it passes its input to its
   output and regulates nothing) -> a DC connection from its input pins to its output
@@ -45,7 +47,7 @@ from kipi.dc.pi.model import (
 SCHEMA = "tomachie-pdn"
 SCHEMA_VERSION = 1
 SOURCE_ROLES = ("board_input", "battery", "generator")
-VRM_KIND = {"linear": "ldo", "switching": "smps"}
+VRM_KIND = {"linear": "ldo", "switching": "smps", "isolated": "smps"}
 
 
 class PdnImportError(ValueError):
@@ -145,6 +147,26 @@ class TomachiePdnImporter:
                               f"({', '.join(out.pins)})")
         return out
 
+    def _off_its_net(self, name: str, src: dict, out) -> bool:
+        """True (and said) when the file is wrong about this rail's source: the source pins
+        it names are on another board net than the source's output net, or they already
+        drive a rail placed before. Placing it would drive another rail."""
+        if out is None:
+            return False
+        pins = ", ".join(src.get("pins", [])) or src.get("refdes", "?")
+        net = src.get("output_net")
+        board_net = self.idx.board_net(net) if net else None
+        if board_net is not None and out.net != board_net:
+            why = f"on the board that pin is on {out.net}, not {board_net}"
+        elif any(v.output and v.output.net == out.net for v in self.setup.vrms):
+            why = f"those pins already drive {out.net}"
+        else:
+            return False
+        self.notes.append(f"Rail {name}: the file names {pins} as its source, but {why}; "
+                          "the rail and its loads are not imported")
+        self.skipped_rails.add(name)
+        return True
+
     def _board_sources(self):
         for name, r in self.rails.items():
             src = r["source"]
@@ -154,7 +176,7 @@ class TomachiePdnImporter:
             elif src["role"] in SOURCE_ROLES:
                 v = self._voltage(r)
                 out = self._source_pins(src, f"Source of {name}")
-                if v is None:
+                if v is None or self._off_its_net(name, src, out):
                     continue
                 if out is None:
                     self.notes.append(f"Rail {name}: source {src.get('refdes') or '?'} not "
@@ -195,6 +217,8 @@ class TomachiePdnImporter:
                 continue
             v = self._voltage(r)
             out = self._source_pins(src, f"{src.get('refdes')} output")
+            if self._off_its_net(name, src, out):
+                continue
             if v is None or out is None or reg is None:
                 if v is not None:
                     why = ("not listed among the regulators" if reg is None else

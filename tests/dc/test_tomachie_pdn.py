@@ -269,3 +269,31 @@ def test_import_keeps_the_rest_of_the_setup(tmp_path):
     setup, _ = import_tomachie_pdn(path, board(), base)
     assert setup.html_report and setup.settings.max_edge_mm == 0.7
     assert [l.name for l in setup.loads] == ["U2"] and base.loads == []
+
+
+def test_isolated_converter_is_a_switcher():
+    """An isolated DC/DC converter (RFM-0505S) draws its output power over its
+    efficiency from its input rail, like a switcher."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="isolated", efficiency=0.8)
+    setup, notes = run(pdn)
+    u1 = by_name(setup.vrms, "U1 +3V3")
+    assert (u1.kind, u1.efficiency, u1.input.net) == ("smps", 0.8, "VIN")
+    assert not any("not known whether linear" in n for n in notes)
+
+
+def test_source_pin_on_another_net_leaves_the_rail_out():
+    """A file naming one regulator pin as the source of two rails (one board: U14_8 for
+    1V8 and 0V9_DDR) is wrong about one of them: that rail is left out and said, and the
+    rest still solves."""
+    pdn = copy.deepcopy(PDN)
+    rail = copy.deepcopy(pdn["rails"][1])
+    rail["name"] = "VREF"
+    rail["source"]["output_net"] = "VREF"
+    rail["loads"] = []
+    pdn["rails"].append(rail)
+    setup, notes = run(pdn)
+    assert [v.name for v in setup.vrms if v.name.startswith("U1")] == ["U1 +3V3"]
+    assert any(n.startswith("Rail VREF: the file names") and "already drive" in n
+               for n in notes)
+    assert validate(setup) == []
