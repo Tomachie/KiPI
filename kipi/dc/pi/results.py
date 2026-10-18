@@ -65,6 +65,7 @@ class LoadReport:
     status: str = ""                     # why the load was not judged, or was failed outright
     limit_low: Optional[float] = None    # the tolerance in volts, either end None if not set
     limit_high: Optional[float] = None
+    basis: str = ""                      # the current solved: typ, max, typ (no max)
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
@@ -170,3 +171,4 @@ class TreeResult:
     solve_s: float = 0.0
     thermal: Optional[object] = None          # kipi.dc.thermal.cosim.ThermalResult, if run
     report_path: Optional[object] = None      # HTML report written for this solve, if any
+    corner: str = "typ"                       # "typ" or "max": kipi.dc.pi.corner

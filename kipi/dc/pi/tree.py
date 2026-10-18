@@ -49,6 +49,7 @@ import numpy as np
 
 from kipi.core.mesh.mesher import mesh_nets
 from kipi.core.model.board import BoardSnapshot
+from kipi.dc.pi.corner import corner_errors, resolve
 from kipi.dc.pi.model import (
     Load, PISetup, PinRef, Vrm, active_setup, net_groups, validate, vin_range,
 )
@@ -169,7 +170,14 @@ class _TreeSolver:
     def __init__(self, snap: BoardSnapshot, setup: PISetup, progress: ProgressReporter,
                  temperature, mesh_cache: Optional[dict],
                  factor_cache: Optional[dict] = None):
+        # Validate what was entered (a maximum below its typical is an error), then solve
+        # the corner's numbers: an excluded rail's estimated input is taken at them too.
+        errors = corner_errors(setup)
+        if errors:
+            raise SolveError("Setup problems:\n- " + "\n- ".join(errors))
+        setup, self.corner = resolve(setup)
         setup, self.notes = active_setup(setup)
+        self.notes += self.corner.warnings()
         if not setup.vrms:
             raise SolveError("Nothing to solve: no VRM drives a selected net group")
         errors = validate(setup)
@@ -515,7 +523,7 @@ class _TreeSolver:
         t0 = time.perf_counter()
         with self.progress.timed("Checking load connections"):
             audit = self._audit()
-        out = TreeResult(warnings=list(self.notes) + audit)
+        out = TreeResult(warnings=list(self.notes) + audit, corner=self.corner.corner)
         for tree_pass in range(1, MAX_TREE_ITERATIONS + 1):
             warnings: List[str] = []
             self.not_converged = set()
@@ -615,6 +623,7 @@ class _TreeSolver:
                          l.tolerance_label(), None, worst, self._pin_group_rows(l, sol), low,
                          high)
         rep.limit_low, rep.limit_high = l.limits(nominal)
+        rep.basis = self.corner.basis.get(l.name, "")
         if not self.tree_converged or g in self.not_converged:
             rep.status = NOT_CONVERGED
         elif g in out_of_reg:

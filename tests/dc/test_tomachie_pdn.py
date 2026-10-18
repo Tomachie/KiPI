@@ -56,9 +56,9 @@ def test_sources_regulators_and_loads_map_onto_the_board():
     assert (j1.kind, j1.voltage, j1.output.pins) == ("source", 12.0, ["1"])
     assert (u1.kind, u1.voltage, u1.input.net, u1.input.pins) == ("ldo", 3.3, "VIN", ["1"])
     u2 = by_name(setup.loads, "U2")
-    # One current per load: the typical; the maximum is named in the notes.
-    assert u2.current == 1.0
-    assert any("one current per load" in n and "U2 (max 1.5 A)" in n for n in notes)
+    # The typical is solved; the maximum is kept for a worst-case solve.
+    assert (u2.current, u2.current_max) == (1.0, 1.5)
+    assert any("kept for a worst-case solve" in n and "1 loads" in n for n in notes)
     # The datasheet minimum (3.0 V) is above the rail's (3.135 V)? No: the rail's is
     # tighter, so the rail's stated range is the tolerance, in % from nominal.
     assert (u2.tol_pct, u2.tol_min, u2.tol_max) == (True, pytest.approx(-5.0),
@@ -181,7 +181,7 @@ def test_load_switch_is_a_dc_connection_with_its_on_resistance():
     assert (u1.side_a.net, u1.side_a.pins, u1.side_b.net, u1.side_b.pins) == \
         ("VIN", ["1"], "+3V3", ["2"])
     assert u1.resistance == pytest.approx(0.089)
-    assert any("one resistance per DC connection" in n and "U1 120 mΩ" in n for n in notes)
+    assert u1.resistance_max == pytest.approx(0.120)          # kept for a worst-case solve
     # Its quiescent current is drawn at its input pins.
     iq = by_name(setup.loads, "U1 quiescent")
     assert (iq.supply.net, iq.current) == ("VIN", 9e-5)
@@ -254,7 +254,8 @@ def test_minimum_current_and_only_a_maximum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["current_min"] = {"amps": 0.2, "basis": "min"}
     setup, notes = run(pdn)
-    assert any("U2 (min 200 mA, max 1.5 A)" in n for n in notes)
+    assert any("minimum currents are not used" in n and "U2 (min 200 mA)" in n for n in notes)
+    assert by_name(setup.loads, "U2").current_max == 1.5
     pdn["rails"][1]["loads"][0]["current"] = "unknown"
     setup, notes = run(pdn)
     assert by_name(setup.loads, "U2").current == 1.5
@@ -307,3 +308,15 @@ def test_a_new_setup_from_the_file_heats_the_board_with_its_loads():
     base.thermal.load_power = False                     # the user's own choice stays
     kept, _ = TomachiePdnImporter(copy.deepcopy(PDN), board(), base).run()
     assert not kept.thermal.load_power
+
+
+def test_worst_case_solves_the_maximum_current():
+    """The worst-case corner solves each load at its maximum current (U2: 1.5 A, against
+    1.0 A typical), so its drop grows by the same factor on this one-load rail."""
+    setup, _ = run(PDN)
+    typ = by_name(solve_tree(board(), setup).loads, "U2")
+    setup.corner = "max"
+    worst = by_name(solve_tree(board(), setup).loads, "U2")
+    assert (typ.basis, worst.basis) == ("typ", "max")
+    assert worst.current == pytest.approx(1.5)
+    assert worst.drop > typ.drop

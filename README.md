@@ -459,6 +459,8 @@ the `.yml` file, which is read from then on. AI Agents can make quick work of po
 
 ### 4. Solve
 
+Choose **Typical** or **Worst case (max)** beside Solve all. Worst case solves each load at its **Max current** and each DC connection at its **Max resistance**; where no maximum is given the typical value is solved and the Notes tab names those items. The Loads table's **Current** column says which value each load was solved at. A Tomachie pdn.json import fills in both.
+
 Click **Solve all** (If rails are unticked in the Solve
 tab, Solve x of n will be displayed). Every rail is meshed and solved, the downstream loads first and then
 back towards the source, so each VRM's input current includes everything it feeds. Progress

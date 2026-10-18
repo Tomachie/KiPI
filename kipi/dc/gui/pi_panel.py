@@ -700,6 +700,7 @@ class LoadEditor(_Editor):
         self.mode.addItem("Equal across the supply pins", "equal")
         self.mode.addItem("Per pin group", "groups")
         self.current = _spin(-1000, 1000, 0.1, 4, " A", 0.01)
+        self.current_max = _optional_spin(0, 1000, 4, " A", 0.01)
         self.groups = QTableWidget(0, 4)
         self.groups.setHorizontalHeaderLabels(["Group", "Pins", "Current", ""])
         hdr = self.groups.horizontalHeader()
@@ -728,6 +729,9 @@ class LoadEditor(_Editor):
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
         f.addRow("Current", self.current)
+        f.addRow("Max current", self.current_max)
+        tip(f, self.current_max, "The load's maximum current, solved instead of Current when "
+                                 "the solve is set to Worst case (max) beside Solve all")
         f.addRow(self.groups)
         f.addRow(gb)
         f.addRow("Total", self.lbl_total)
@@ -764,7 +768,7 @@ class LoadEditor(_Editor):
                                "and the current into those pins. Click a column header to "
                                "sort by it.")
         make_sortable(self.groups, self._sort_groups, columns=(0, 1, 2))
-        self._watch(self.name, self.current, self.mode, self.heat)
+        self._watch(self.name, self.current, self.current_max, self.mode, self.heat)
         self.tol.changed.connect(self._store)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
@@ -772,6 +776,7 @@ class LoadEditor(_Editor):
     def _mode_rows(self, *_):
         grouped = self.mode.currentData() == "groups"
         self.form.setRowVisible(self.current, not grouped)
+        self.form.setRowVisible(self.current_max, not grouped)
         self.form.setRowVisible(self.groups, grouped)
         self.form.setRowVisible(self.lbl_total, grouped)
         for w in self._gb_widgets:
@@ -844,6 +849,7 @@ class LoadEditor(_Editor):
         self.name.setText(l.name)
         self.supply.set_value(l.supply)
         self.current.setValue(l.current)
+        _set_optional(self.current_max, l.current_max)
         self.groups.setRowCount(0)
         reset_sort(self.groups)
         for g in l.groups:
@@ -871,6 +877,7 @@ class LoadEditor(_Editor):
         l.name = typed
         l.supply = new_supply
         l.current = self.current.value()
+        l.current_max = _get_optional(self.current_max)
         if self.mode.currentData() == "groups":
             if self.groups.rowCount() == 0:
                 # Switching to groups: start with one group per pin, same total current.
@@ -904,11 +911,15 @@ class LinkEditor(_Editor):
         self.r = _spin(0, 1e9, 0, 3, " mΩ", 1)
         self.r.setSpecialValueText("0 (short)")
         self.esl = _spin(0, 1e6, 0, 3, " nH", 0.1)
+        self.r_max = _optional_spin(0, 1e9, 3, " mΩ", 1)
         self.esl.setSpecialValueText("none")
         f.addRow("Name", self.name)
         f.addRow("Side A pins", self.a)
         f.addRow("Side B pins", self.b)
         f.addRow("Resistance (DCR)", self.r)
+        f.addRow("Max resistance", self.r_max)
+        tip(f, self.r_max, "The part's maximum DC resistance, solved instead of Resistance "
+                           "when the solve is set to Worst case (max) beside Solve all")
         f.addRow("ESL", self.esl)
         for w, text in (
                 (self.name, "A name for this part, used in the results tables"),
@@ -924,7 +935,7 @@ class LinkEditor(_Editor):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
         f.addRow(hint)
-        self._watch(self.name, self.r, self.esl)
+        self._watch(self.name, self.r, self.r_max, self.esl)
         _gray((self.esl,), mode == "ac", "Used by the AC analysis only")
 
     def _load(self, k: DcLink):
@@ -932,6 +943,7 @@ class LinkEditor(_Editor):
         self.a.set_value(k.side_a)
         self.b.set_value(k.side_b)
         self.r.setValue(k.resistance * 1e3)
+        _set_optional(self.r_max, None if k.resistance_max is None else k.resistance_max * 1e3)
         self.esl.setValue((k.esl_h or 0.0) * 1e9)
 
     def _save(self, k: DcLink):
@@ -953,6 +965,8 @@ class LinkEditor(_Editor):
                 k.side_b = other
                 self._show(self.b, other)
         k.resistance = self.r.value() / 1e3
+        r_max = _get_optional(self.r_max)
+        k.resistance_max = None if r_max is None else r_max / 1e3
         k.esl_h = self.esl.value() * 1e-9 or None
         # Both sides just became the same resistor: take its resistance from its value.
         if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
@@ -1242,6 +1256,15 @@ class PIPanel(QWidget, PartSelection):
         self.btn_solve.setToolTip("Save the setup, then mesh and solve every ticked net group. "
                                   "Problems that stop the solve are listed above in red.")
         self.btn_solve.clicked.connect(lambda: self.solve_requested.emit(self.setup))
+        from kipi.dc.pi.corner import CORNERS, LABELS
+        self.cmb_corner = QComboBox(self)
+        for c in CORNERS:
+            self.cmb_corner.addItem(LABELS[c], c)
+        self.cmb_corner.setToolTip("Typical: each load's current and each DC connection's "
+                                   "resistance as entered. Worst case: their maximum where one "
+                                   "is given; the Notes tab names those solved without one.")
+        self.cmb_corner.currentIndexChanged.connect(
+            lambda *_: setattr(self.setup, "corner", self.cmb_corner.currentData()))
         self.chk_report = QCheckBox("HTML report", self)
         self.chk_report.setToolTip("Also write an HTML report (interactive 3D, per-layer maps "
                                    "and tables) next to the board")
@@ -1252,6 +1275,7 @@ class PIPanel(QWidget, PartSelection):
         self.btn_report.clicked.connect(self._open_report)
         self.report_path = None
         row.addWidget(self.btn_solve, 1)
+        row.addWidget(self.cmb_corner)
         row.addWidget(self.chk_report)
         row.addWidget(self.btn_report)
         lay.addLayout(row)
@@ -1299,7 +1323,7 @@ class PIPanel(QWidget, PartSelection):
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance", ""], sortable=True)
+                                      "Tolerance", "", "Current"], sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
                                   "a remote-sensed VRM's output pins. The worst pin is the one "
                                   "furthest from the set point either way.")
@@ -1806,6 +1830,9 @@ class PIPanel(QWidget, PartSelection):
         self.spin_via_limit.blockSignals(True)
         self.spin_via_limit.setValue((setup.via_current_limit_a or 0.0) * 1e3)
         self.spin_via_limit.blockSignals(False)
+        self.cmb_corner.blockSignals(True)
+        self.cmb_corner.setCurrentIndex(max(0, self.cmb_corner.findData(setup.corner)))
+        self.cmb_corner.blockSignals(False)
         t = setup.thermal
         for wdg, val in ((self.spin_ambient, t.ambient_c), (self.spin_iters, t.iterations),
                          (self.spin_airflow, t.airflow_m_s), (self.spin_tgrid, t.grid_mm),
@@ -1951,7 +1978,7 @@ class PIPanel(QWidget, PartSelection):
                            (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
                            ("" if math.isnan(l.drop_worst_pct)
                             else f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
-                           l.tolerance, status])
+                           l.tolerance, status, getattr(l, "basis", "")])
             color = (("#ffb040" if l.status else None) if l.passed is None
                      else ("#60d060" if l.passed else "#ff6060"))
             if color:

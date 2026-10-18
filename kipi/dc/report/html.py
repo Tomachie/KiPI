@@ -308,8 +308,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     th = getattr(tree, "thermal", None)
 
     # ---------------- summary
+    from kipi.dc.pi.corner import LABELS
+    corner = LABELS.get(getattr(tree, "corner", "typ"), "Typical")
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{_e(snap.board_name)} "
-                 f"· {now} · KiPI {__version__} · solved in {tree.solve_s:.1f} s</div>")
+                 f"· {now} · KiPI {__version__} · solved in {tree.solve_s:.1f} s "
+                 f"· {_e(corner)} currents and resistances</div>")
     nav = ["<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
            "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",
            "<a href='#vias'>Vias</a>"]
