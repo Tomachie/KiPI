@@ -344,3 +344,15 @@ def test_off_board_load_puts_no_heat_into_the_board():
     setup, _ = run(pdn)
     off = by_name(setup.loads, "U2_1 (off-board)")
     assert (off.dissipation_w, off.current_known) == (0.0, False)
+
+
+def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load():
+    """A part on the rail only by a detect, enable or reference pin (basis not_a_supply,
+    0 A) is left out of the loads and named once in the notes."""
+    pdn = copy.deepcopy(PDN)
+    detect = copy.deepcopy(pdn["rails"][1]["loads"][0])
+    detect.update(refdes="U9", current={"amps": 0.0, "basis": "not_a_supply"})
+    pdn["rails"][1]["loads"].append(detect)
+    setup, notes = run(pdn)
+    assert "U9" not in [l.name for l in setup.loads]
+    assert any(n.startswith("On a rail by a detect") and "U9" in n for n in notes)
