@@ -4,6 +4,26 @@
 
 # KiPI — DC and AC Power Integrity Simulator (also installable as KiCad Plugin)
 
+> **This is a fork of [drewsum/KiPI](https://github.com/drewsum/KiPI)**, written by Drew
+> Maatman, the original author. It follows his `main` and adds:
+>
+> - **Typical / worst-case DC solve**: a maximum current per load and pin group and a
+>   maximum resistance per DC connection, solved when the corner beside Solve all is
+>   Worst case (max). A Tomachie pdn.json import fills in both.
+> - **Currents not known**: a load can be marked so; the results it touches are
+>   INCOMPLETE, never PASS. The Tomachie import marks each current the file does not give.
+> - **Tomachie import**: isolated converters solved as switchers; a rail whose source pins
+>   the file gets wrong left out and said; a new setup heats the board with its loads;
+>   off-board loads put no heat into the board.
+> - **ODB++**: the board step is read, not the panel (a panel's most-placed board, never
+>   a flattened panel); Unix-compressed (`.Z`) jobs; a job zipped inside a zip; per-layer
+>   via pads; large jobs read many times faster.
+> - **KiCad 9 files**: a via with no filling setting is unfilled, as KiCad reports it.
+>
+> The ODB++ and KiCad file fixes are offered upstream as pull requests. The via plating
+> rules and the pdn.json import, first written here, are now part of KiPI 0.8.0. The rest
+> of this README is Drew's.
+
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![KiCad 9.0+](https://img.shields.io/badge/KiCad-9.0%2B-314cb0.svg?logo=kicad&logoColor=white)](#requirements)
