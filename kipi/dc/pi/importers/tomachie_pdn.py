@@ -107,6 +107,7 @@ class TomachiePdnImporter:
         self.max_current: Dict[str, float] = {}
         self.max_resistance: List[str] = []
         self.unknown_current: List[str] = []
+        self.not_supplied: List[str] = []    # on a rail by no supply pin: not a load
         self.rails: Dict[str, dict] = {r["name"]: r for r in pdn.get("rails", [])}
         self.regulators: Dict[str, dict] = {g["refdes"]: g for g in pdn.get("regulators", [])}
         self.skipped_rails: Set[str] = set()
@@ -396,6 +397,11 @@ class TomachiePdnImporter:
         for l in rail.get("loads", []):
             if l["role"] == "regulator":
                 continue                   # the regulator's VRM input carries this current
+            current = l.get("current")
+            if isinstance(current, dict) and current.get("basis") == "not_a_supply":
+                # On the rail by a detect, enable or reference pin only: it draws nothing.
+                self.not_supplied.append(f"{l['refdes']} ({name})")
+                continue
             supply = self.idx.pin_ref(l["pins"], self.notes, f"Load {l['refdes']} on {name}")
             if supply is None:
                 continue
@@ -462,6 +468,9 @@ class TomachiePdnImporter:
     def _range_notes(self):
         """What a single value per item left out, one note each, for the loads kept."""
         kept = {x.name for x in self.setup.loads}
+        if self.not_supplied:
+            self.notes.append("On a rail by a detect, enable or reference pin, not a supply "
+                              "pin, so not a load: " + ", ".join(self.not_supplied))
         unknown = [n for n in self.unknown_current if n in kept]
         if unknown:
             self.notes.append("Current not known, imported as 0 A and marked not known (the "
