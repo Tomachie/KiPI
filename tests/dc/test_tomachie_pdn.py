@@ -284,8 +284,8 @@ def test_isolated_converter_is_a_switcher():
 
 
 def test_source_pin_on_another_net_leaves_the_rail_out():
-    """A file naming one regulator pin as the source of two rails (one board: U14_8 for
-    1V8 and 0V9_DDR) is wrong about one of them: that rail is left out and said, and the
+    """A file naming one regulator pin as the source of two rails (one LDO pin for
+    both its 1V8 output and a 0V9 rail) is wrong about one of them: that rail is left out and said, and the
     rest still solves."""
     pdn = copy.deepcopy(PDN)
     rail = copy.deepcopy(pdn["rails"][1])
