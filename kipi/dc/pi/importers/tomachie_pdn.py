@@ -103,7 +103,9 @@ class TomachiePdnImporter:
                               "from the loads' currents and stated heat")
         # One value per item is solved; the other ends of a range, summed up at the end.
         self.unused_current: List[Tuple[str, str]] = []     # (load, what is left out)
-        self.unused_resistance: List[str] = []
+        # The maxima, solved in a worst-case solve (kipi.dc.pi.corner).
+        self.max_current: Dict[str, float] = {}
+        self.max_resistance: List[str] = []
         self.unknown_current: List[str] = []
         self.rails: Dict[str, dict] = {r["name"]: r for r in pdn.get("rails", [])}
         self.regulators: Dict[str, dict] = {g["refdes"]: g for g in pdn.get("regulators", [])}
@@ -328,8 +330,10 @@ class TomachiePdnImporter:
             self.notes.append(f"{ref}: only a maximum {what} is printed; it is used")
             typ = mx
         elif mx is not None and mx != typ:
-            self.unused_resistance.append(f"{ref} {_ohms(mx)}")
-        self.setup.links.append(DcLink(self._unique(ref), a, b, typ))
+            self.max_resistance.append(f"{ref} {_ohms(mx)}")
+        self.setup.links.append(DcLink(self._unique(ref), a, b, typ,
+                                       resistance_max=mx if mx is not None and mx != typ
+                                       else None))
 
     def _series_parts(self):
         for r in self.rails.values():
@@ -381,10 +385,10 @@ class TomachiePdnImporter:
         if typ is None:
             self.unknown_current.append(label)
             return 0.0
-        left = [f"{w} {_amps(x)}" for w, x in (("min", mn), ("max", mx))
-                if x is not None and x != typ]
-        if left:
-            self.unused_current.append((label, ", ".join(left)))
+        if mn is not None and mn != typ:
+            self.unused_current.append((label, f"min {_amps(mn)}"))
+        if mx is not None and mx != typ:
+            self.max_current[label] = mx
         return typ
 
     def _rail_loads(self, rail: dict):
@@ -399,7 +403,8 @@ class TomachiePdnImporter:
             label = self._unique(l["refdes"] if l["refdes"] not in taken
                                  else f"{l['refdes']} ({name})")
             current = self._current(l, name, label)
-            self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l)))
+            self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
+                                         current_max=self.max_current.get(label)))
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
@@ -460,12 +465,13 @@ class TomachiePdnImporter:
                               + ", ".join(unknown))
         unused = [f"{n} ({r})" for n, r in self.unused_current if n in kept]
         if unused:
-            self.notes.append("KiPI solves one current per load, so the typical is used and "
-                              "these minimum / maximum currents are not: " + "; ".join(unused))
-        if self.unused_resistance:
-            self.notes.append("KiPI solves one resistance per DC connection, so the typical "
-                              "is used and these maximum resistances are not: "
-                              + "; ".join(self.unused_resistance))
+            self.notes.append("The typical current is solved; these minimum currents are "
+                              "not used: " + "; ".join(unused))
+        maxed = [f"{n} ({_amps(a)})" for n, a in self.max_current.items() if n in kept]
+        if maxed or self.max_resistance:
+            self.notes.append("Maximum currents and resistances are kept for a worst-case "
+                              f"solve (beside Solve): {len(maxed)} loads, "
+                              f"{len(self.max_resistance)} DC connections")
 
 
 def _amps(a: float) -> str:

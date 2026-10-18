@@ -123,6 +123,7 @@ class PinGroup:
     pins: List[str]
     current: float
     name: str = ""
+    current_max: Optional[float] = None   # worst-case solve; None = the typical
 
 
 @dataclass
@@ -144,6 +145,8 @@ class Load:
     # pins (V x I). Set it for a part that passes power on, such as a load switch or an
     # LED or motor driver, whose own loss is far less than what flows through it.
     dissipation_w: Optional[float] = None
+    # The maximum current, for a worst-case solve (kipi.dc.pi.corner); None = the typical.
+    current_max: Optional[float] = None
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
@@ -202,6 +205,7 @@ class DcLink:
     side_b: PinRef
     resistance: float                       # ohms; 0 = short (DC and AC)
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
+    resistance_max: Optional[float] = None  # worst-case solve; None = the typical
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -233,6 +237,7 @@ class PISetup:
     caps: List[CapModel] = field(default_factory=list)
     probes: List[Probe] = field(default_factory=list)
     ac: ACSettings = field(default_factory=ACSettings)
+    corner: str = "typ"                     # DC solve at "typ" or "max": kipi.dc.pi.corner
 
     def pin_nets(self) -> set:
         """Nets the VRMs, loads, series links and probes have pins on."""
@@ -285,13 +290,17 @@ class PISetup:
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
                         ground=pin(l.get("ground")), **_load_tolerance(l),
-                        groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""))
+                        groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""),
+                                         g.get("current_max"))
                                 for g in l.get("groups", [])],
-                        dissipation_w=l.get("dissipation_w"))
+                        dissipation_w=l.get("dissipation_w"),
+                        current_max=l.get("current_max"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
-                          resistance=k["resistance"], esl_h=k.get("esl_h"))
+                          resistance=k["resistance"], esl_h=k.get("esl_h"),
+                          resistance_max=k.get("resistance_max"))
                    for k in d.get("links", [])],
+            corner=d.get("corner", "typ"),
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
@@ -492,6 +501,8 @@ def _phase_errors(v: Vrm, groups) -> List[str]:
 def validate(setup: PISetup) -> List[str]:
     """Problems that make the setup unsolvable (empty list = OK)."""
     errors: List[str] = []
+    from kipi.dc.pi.corner import corner_errors
+    errors.extend(corner_errors(setup))
     names = [x.name for x in [*setup.vrms, *setup.loads, *setup.links]]
     from kipi.dc.solver.via_barrel import rule_errors
     errors.extend(rule_errors(setup.settings.via_rules))
