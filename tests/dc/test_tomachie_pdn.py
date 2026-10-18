@@ -297,3 +297,13 @@ def test_source_pin_on_another_net_leaves_the_rail_out():
     assert any(n.startswith("Rail VREF: the file names") and "already drive" in n
                for n in notes)
     assert validate(setup) == []
+
+
+def test_a_new_setup_from_the_file_heats_the_board_with_its_loads():
+    setup, notes = run(PDN)
+    assert setup.thermal.load_power
+    assert any(n.startswith("Thermal: load power is included") for n in notes)
+    base = PISetup()
+    base.thermal.load_power = False                     # the user's own choice stays
+    kept, _ = TomachiePdnImporter(copy.deepcopy(PDN), board(), base).run()
+    assert not kept.thermal.load_power

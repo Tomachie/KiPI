@@ -94,6 +94,13 @@ class TomachiePdnImporter:
         # stackup and the AC setup stay as the user set them.
         self.setup = (dataclasses.replace(base, vrms=[], loads=[], links=[]) if base
                       else PISetup())
+        if base is None:
+            # The file gives every load's current, and what a load that passes power on or
+            # sends it off the board dissipates itself: a new setup from it heats the
+            # board with its loads. A setup imported onto keeps its own choice.
+            self.setup.thermal.load_power = True
+            self.notes.append("Thermal: load power is included (Thermal settings tab), "
+                              "from the loads' currents and stated heat")
         # One value per item is solved; the other ends of a range, summed up at the end.
         self.unused_current: List[Tuple[str, str]] = []     # (load, what is left out)
         self.unused_resistance: List[str] = []
