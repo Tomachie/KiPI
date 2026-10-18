@@ -154,16 +154,86 @@ def pins_on(snap: Optional[BoardSnapshot], ref: str, net: str, pins: List[str]) 
     return list(pins) if pins and set(pins) <= have else []
 
 
-def next_phase_ref(snap: Optional[BoardSnapshot], prev: Optional[PinRef],
-                   taken: Iterable[str]) -> Optional[PinRef]:
-    """A new phase's pins: ``prev`` (the last phase's) moved to the next part in sequence,
-    with the same pin numbers where that part has them. ``prev`` if there is no next part."""
-    if prev is None:
-        return None
-    ref = next_part(snap, prev.ref, prev.net, taken)
-    if ref is None:
-        return PinRef(prev.ref, prev.net, list(prev.pins))
-    return PinRef(ref, prev.net, pins_on(snap, ref, prev.net, prev.pins))
+# KiCad can number each schematic sheet's parts from the sheet number x 100 (or x 1000),
+# so the same part on the next sheet is a multiple of this further on.
+SHEET_STEP = 100
+
+
+def _split_ref(ref: Optional[str]):
+    """``("L", 101)`` for ``"L101"``; None for a reference that does not end in a number."""
+    m = _REF_RE.match(ref or "")
+    return (m.group(1), int(m.group(2))) if m else None
+
+
+def next_phase_refs(snap: Optional[BoardSnapshot],
+                    phases: List[List[Optional[PinRef]]]) -> List[Optional[PinRef]]:
+    """A new phase's pins, role by role, from the phases so far (each a list of its pins in
+    the same roles: output, input, ground). The last phase's pins move to the parts the new
+    phase most likely uses, keeping their pin numbers where those parts have them:
+
+    1. the same step on as from the phase before (L1, L3 -> L5);
+    2. one schematic sheet on, when every role has a part there with the same number on
+       that sheet: L101, Q101, Q102 -> L201, Q201, Q202 (#91);
+    3. the next part in sequence on the role's net (L1 -> L2, Q1 -> Q2);
+    4. the last phase's own part, for the user to change.
+    """
+    last = phases[-1]
+    roles = range(len(last))
+    taken = [{ph[i].ref for ph in phases if ph[i] is not None} for i in roles]
+    out: List[Optional[PinRef]] = [None] * len(last)
+
+    def free(i: int, ref: str) -> bool:
+        return ref not in taken[i] and last[i].net in part_nets(snap, ref)
+
+    def moved(i: int, ref: str) -> PinRef:
+        prev = last[i]
+        return PinRef(ref, prev.net, pins_on(snap, ref, prev.net, prev.pins))
+
+    def step(i: int) -> int:
+        """How far the role's part moved since the latest earlier phase on another part (a
+        phase that repeats the last one's part is passed over); 0 if not forward."""
+        b = _split_ref(last[i].ref)
+        for ph in reversed(phases[:-1]):
+            if ph[i] is not None and ph[i].ref != last[i].ref:
+                a = _split_ref(ph[i].ref)
+                return b[1] - a[1] if a and b and a[0] == b[0] and b[1] > a[1] else 0
+        return 0
+
+    todo = [i for i in roles if last[i] is not None and last[i].ref]
+    if snap is None:
+        todo = []
+    # 1. The step from the phase before.
+    for i in list(todo):
+        d = step(i)
+        if d:
+            prefix, num = _split_ref(last[i].ref)
+            if free(i, f"{prefix}{num + d}"):
+                out[i] = moved(i, f"{prefix}{num + d}")
+                todo.remove(i)
+    # 2. One sheet on: the same shift, a multiple of SHEET_STEP, for every role left.
+    nums = {i: _split_ref(last[i].ref) for i in todo}
+    if todo and all(n is not None and n[1] >= SHEET_STEP for n in nums.values()):
+        prefix, num = nums[todo[0]]
+        shifts = sorted({n[1] - num for p in snap.items_on_net(last[todo[0]].net)[2]
+                         if (n := _split_ref(p.footprint)) and n[0] == prefix
+                         and n[1] > num and (n[1] - num) % SHEET_STEP == 0})
+        for d in shifts:
+            refs = {i: f"{nums[i][0]}{nums[i][1] + d}" for i in todo}
+            if all(free(i, r) for i, r in refs.items()):
+                for i, r in refs.items():
+                    out[i] = moved(i, r)
+                todo = []
+                break
+    # 3. The next part in sequence, unless the phases so far are a sheet apart (the next
+    # in sequence is then on the last phase's sheet), or 4. the same part.
+    for i in todo:
+        by_sheet = step(i) > 0 and step(i) % SHEET_STEP == 0
+        ref = None if by_sheet else next_part(snap, last[i].ref, last[i].net, taken[i])
+        out[i] = moved(i, ref) if ref else PinRef(last[i].ref, last[i].net, list(last[i].pins))
+    for i in roles:
+        if out[i] is None and last[i] is not None:
+            out[i] = PinRef(last[i].ref, last[i].net, list(last[i].pins))
+    return out
 
 
 # ---------------------------------------------------------------------------

@@ -4,8 +4,9 @@ import json
 
 import pytest
 
-from kipi.core.kicad_io import colors
+from kipi.sources.kicad_ipc import colors
 from kipi.core.model.board import CopperLayer
+from kipi.core.viz import layer_colors
 
 
 @pytest.fixture
@@ -30,16 +31,16 @@ def _theme(name, copper):
 
 
 def test_layers_map_to_theme_keys():
-    assert colors.layer_key(3, 0, 4) == "f"
-    assert colors.layer_key(34, 3, 4) == "b"
-    assert colors.layer_key(4, 1, 4) == "in1"
-    assert colors.layer_key(6, 2, 4) == "in3"        # In3.Cu even without In2.Cu
-    assert colors.layer_key(99, 2, 4) == "in2"       # unknown id: by place
-    assert colors.layer_key(0, 0, 1) == "f"
+    assert layer_colors.layer_key(3, 0, 4) == "f"
+    assert layer_colors.layer_key(34, 3, 4) == "b"
+    assert layer_colors.layer_key(4, 1, 4) == "in1"
+    assert layer_colors.layer_key(6, 2, 4) == "in3"        # In3.Cu even without In2.Cu
+    assert layer_colors.layer_key(99, 2, 4) == "in2"       # unknown id: by place
+    assert layer_colors.layer_key(0, 0, 1) == "f"
 
 
 def test_default_theme_is_kicads():
-    d = colors.DEFAULT_COPPER
+    d = layer_colors.DEFAULT_COPPER
     assert len(d) == 32
     assert d["f"] == (200, 52, 52) and d["b"] == (77, 127, 196)
     assert d["in1"] == (127, 200, 127) and d["in13"] == d["in5"] and d["in30"] == d["in8"]

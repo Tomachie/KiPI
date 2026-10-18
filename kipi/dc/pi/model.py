@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from kipi.ac.model import ACSettings, CapModel, Probe
+from kipi.ac.model import DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, Probe
 from kipi.dc.solver.setup import SolveSettings
 from kipi.dc.thermal.model import ThermalSettings
 
@@ -78,6 +78,18 @@ class Vrm:
     dropout_v: float = 0.0               # LDO: least input-output difference it regulates at
     vin_min: Optional[float] = None      # input range it regulates over (LDO / switcher)
     vin_max: Optional[float] = None
+    # The input range in % from the input rail's nominal voltage (that of the VRM feeding
+    # it, see rail_nominal), e.g. -10 / +10, instead of in volts.
+    vin_pct: bool = False
+    # DC accuracy of the set voltage (LDO / switcher), either end None: in % of it (e.g.
+    # -1 / +1), or with acc_pct False, the output's lowest and highest volts. The target
+    # calculator takes its larger side off the AC tolerance.
+    acc_min: Optional[float] = None
+    acc_max: Optional[float] = None
+    acc_pct: bool = True
+    # Load line (#94): the regulated voltage droops by this many milliohms times the
+    # output current actually drawn (0 = none).
+    load_line_mohm: float = 0.0
     # AC only: control loop bandwidth, kHz (None = not given).
     bandwidth_khz: Optional[float] = None
 
@@ -90,6 +102,19 @@ class Vrm:
         for ph in self.all_phases():
             refs.extend((ph.output, ph.input, ph.ground))
         return [r for r in refs if r]
+
+    def has_accuracy(self) -> bool:
+        return self.acc_min is not None or self.acc_max is not None
+
+    def accuracy_label(self) -> str:
+        return tolerance_label(self.acc_min, self.acc_max, self.acc_pct)
+
+    def accuracy_v(self) -> Optional[float]:
+        """The larger side of the DC accuracy, volts from the set voltage; None if not set."""
+        lo, hi = ((self.acc_min, self.acc_max) if not self.acc_pct else
+                  pct_to_volts(self.voltage, self.acc_min, self.acc_max))
+        sides = [abs(x - self.voltage) for x in (lo, hi) if x is not None]
+        return max(sides) if sides else None
 
 
 @dataclass
@@ -106,13 +131,68 @@ class Load:
     supply: PinRef
     current: float
     ground: Optional[PinRef] = None
-    tolerance_pct: Optional[float] = None   # pass if every pin is within +/- this % of nominal
+    # PASS if every pin is within this range, either end None for no limit: in % from
+    # nominal, the set point of the VRM driving the rail (e.g. -5 / +5), or, with tol_pct
+    # False, in volts.
+    tol_min: Optional[float] = None
+    tol_max: Optional[float] = None
+    tol_pct: bool = True
     # Empty: ``current`` is split equally across the supply pins. Otherwise each group
     # of supply pins draws its own current and the load's total is their sum.
     groups: List[PinGroup] = field(default_factory=list)
+    # Heat the part puts into the board. None: all the power it takes from its supply
+    # pins (V x I). Set it for a part that passes power on, such as a load switch or an
+    # LED or motor driver, whose own loss is far less than what flows through it.
+    dissipation_w: Optional[float] = None
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
+
+    def has_tolerance(self) -> bool:
+        return self.tol_min is not None or self.tol_max is not None
+
+    def limits(self, nominal: float) -> Tuple[Optional[float], Optional[float]]:
+        """The tolerance as (lowest, highest) volts on a rail at ``nominal``, either None."""
+        if not self.tol_pct:
+            return self.tol_min, self.tol_max
+        if not nominal:
+            return None, None
+        return pct_to_volts(nominal, self.tol_min, self.tol_max)
+
+    def tolerance_label(self) -> str:
+        return tolerance_label(self.tol_min, self.tol_max, self.tol_pct)
+
+    def __setstate__(self, state):
+        # Setups pickled in results files before asymmetric tolerances: +/- one %.
+        t = state.pop("tolerance_pct", None)
+        state = {"tol_min": None if t is None else -t, "tol_max": t, "tol_pct": True, **state}
+        self.__dict__.update(state)
+
+
+def pct_to_volts(nominal: float, lo: Optional[float], hi: Optional[float]):
+    """A (min, max) range in % from ``nominal`` as volts, either None. -10 % of a negative
+    rail is its higher end."""
+    lo, hi = (None if p is None else nominal * (1 + p / 100) for p in (lo, hi))
+    return (hi, lo) if nominal < 0 else (lo, hi)
+
+
+def volts_to_pct(nominal: float, lo: Optional[float], hi: Optional[float]):
+    """The inverse of :func:`pct_to_volts`."""
+    lo, hi = (None if x is None else (x / nominal - 1) * 100 for x in (lo, hi))
+    return (hi, lo) if nominal < 0 else (lo, hi)
+
+
+def tolerance_label(lo: Optional[float], hi: Optional[float], pct: bool) -> str:
+    """A range for tables: "±5 %", "-3 / +5 %", "3.135 to 3.465 V", "min 3.2 V"..."""
+    if lo is None and hi is None:
+        return ""
+    if pct:
+        if lo is not None and hi is not None:
+            return f"±{hi:g} %" if lo == -hi else f"{lo:+g} / {hi:+g} %"
+        return f"min {lo:+g} %" if hi is None else f"max {hi:+g} %"
+    if lo is not None and hi is not None:
+        return f"{lo:g} to {hi:g} V"
+    return f"min {lo:g} V" if hi is None else f"max {hi:g} V"
 
 
 @dataclass
@@ -124,13 +204,18 @@ class DcLink:
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
 
 
+DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
+
+
 @dataclass
 class PISetup:
     vrms: List[Vrm] = field(default_factory=list)
     loads: List[Load] = field(default_factory=list)
     links: List[DcLink] = field(default_factory=list)
     settings: SolveSettings = field(default_factory=SolveSettings)
-    via_current_limit_a: Optional[float] = None   # vias above this are flagged FAIL
+    # Vias above this are flagged FAIL; None = no limit. 1 A is a placeholder that suits a
+    # typical 0.3 mm via (#114).
+    via_current_limit_a: Optional[float] = DEFAULT_VIA_CURRENT_LIMIT_A
     thermal: ThermalSettings = field(default_factory=ThermalSettings)   # off by default
     html_report: bool = False                     # write an HTML report after solving
     # Nets ticked in the Board panel (the nets in scope). None = never chosen, so the
@@ -141,6 +226,9 @@ class PISetup:
     # Stackup thicknesses edited in the Stackup pane (kipi.core.model.stackup.to_setup);
     # None = use the board's own.
     stackup: Optional[Dict] = None
+    # The thermal settings' Laminate k from a setup made before 0.8.0, W/(m K), for the
+    # GUI to move into the stackup (#90); never saved.
+    legacy_laminate_k: float = field(default=0.0, repr=False, compare=False)
     # AC analysis
     caps: List[CapModel] = field(default_factory=list)
     probes: List[Probe] = field(default_factory=list)
@@ -163,9 +251,10 @@ class PISetup:
         out.discard("")
         return out
 
-    # ------------------------------------------------------------------ JSON
+    # ------------------------------------------------------------------ file
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
+        d.pop("legacy_laminate_k")
         d["format_version"] = FORMAT_VERSION
         return d
 
@@ -188,28 +277,36 @@ class PISetup:
                                        pin(ph.get("ground"))) for ph in v.get("phases", [])],
                       current_limit_a=v.get("current_limit_a"),
                       dropout_v=v.get("dropout_v", 0.0), vin_min=v.get("vin_min"),
-                      vin_max=v.get("vin_max"),
+                      vin_max=v.get("vin_max"), vin_pct=v.get("vin_pct", False),
+                      acc_min=v.get("acc_min"), acc_max=v.get("acc_max"),
+                      acc_pct=v.get("acc_pct", True),
+                      load_line_mohm=v.get("load_line_mohm", 0.0),
                       bandwidth_khz=v.get("bandwidth_khz"))
                   for v in d.get("vrms", [])],
             loads=[Load(name=l["name"], supply=pin(l["supply"]), current=l["current"],
-                        ground=pin(l.get("ground")), tolerance_pct=l.get("tolerance_pct"),
+                        ground=pin(l.get("ground")), **_load_tolerance(l),
                         groups=[PinGroup(list(g["pins"]), g["current"], g.get("name", ""))
-                                for g in l.get("groups", [])])
+                                for g in l.get("groups", [])],
+                        dissipation_w=l.get("dissipation_w"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"))
                    for k in d.get("links", [])],
-            via_current_limit_a=d.get("via_current_limit_a"),
+            via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),
             thermal=ThermalSettings(**{k: v for k, v in d.get("thermal", {}).items()
                                        if k in {f.name for f in dataclasses.fields(ThermalSettings)}}),
             html_report=bool(d.get("html_report", False)),
             nets=list(d["nets"]) if d.get("nets") is not None else None,
             excluded_nets=list(d.get("excluded_nets", [])),
             stackup=d.get("stackup") or None,
-            settings=SolveSettings(**{k: v for k, v in d.get("settings", {}).items()
-                                      if k in known}),
+            legacy_laminate_k=float(d.get("thermal", {}).get("laminate_k_w_mk") or 0.0),
+            settings=_settings(d.get("settings", {}), known),
             caps=[CapModel(c["name"], c.get("capacitance_f", 0.0), c.get("esl_h", 0.0),
-                           c.get("esr_ohm", 0.0), list(c.get("refs", [])))
+                           c.get("esr_ohm", 0.0), list(c.get("refs", [])),
+                           c.get("rated_v"),
+                           c.get("kept_at_rated_pct", DEFAULT_KEPT_AT_RATED_PCT),
+                           c.get("dielectric", ""), c.get("aging_pct_per_decade", 0.0),
+                           c.get("mfg_tolerance_pct"))
                   for c in d.get("caps", [])],
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),
@@ -220,24 +317,83 @@ class PISetup:
         )
 
     def save(self, path) -> Path:
+        """Write the setup as YAML, to ``path`` with a ``.yml`` suffix in place of ``.json``
+        (#76); the path written is returned. Only without PyYAML does it stay JSON."""
+        from kipi.core import yaml_io
         path = Path(path)
-        path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
+        if yaml_io.available():
+            if path.suffix.lower() == ".json":
+                path = path.with_suffix(".yml")
+            path.write_text(yaml_io.dumps(self.to_dict()), encoding="utf-8")
+        else:
+            path = path.with_suffix(".json") if is_yaml(path) else path
+            path.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
         return path
 
     @staticmethod
     def load(path) -> "PISetup":
-        return PISetup.from_dict(json.loads(Path(path).read_text(encoding="utf-8")))
+        """A setup from YAML or, for setups saved before 0.8.0, JSON (deprecated)."""
+        from kipi.core import yaml_io
+        path = Path(path)
+        text = path.read_text(encoding="utf-8")
+        if not is_yaml(path):
+            return PISetup.from_dict(json.loads(text))
+        if not yaml_io.available():
+            raise ValueError("reading a .yml setup needs PyYAML; reinstall KiPI's "
+                             "dependencies")
+        return PISetup.from_dict(yaml_io.loads(text) or {})
+
+
+SETUP_SUFFIX = ".kipi-setup.yml"
+LEGACY_SETUP_SUFFIX = ".kipi-setup.json"       # before 0.8.0; still read (#76)
+
+
+def is_yaml(path) -> bool:
+    return Path(path).suffix.lower() in (".yml", ".yaml")
+
+
+def _settings(d: dict, known) -> SolveSettings:
+    """Solve settings from a setup file. A file from before via rules carries one
+    "plating_mm" for every hole: it becomes the plating of every default rule."""
+    s = SolveSettings(**{k: v for k, v in d.items() if k in known})
+    if "plating_mm" in d and "via_rules" not in d:
+        for r in s.via_rules:
+            r.plating_mm = float(d["plating_mm"])
+    return s
 
 
 def setup_path(board_file_or_name: str, project_dir: str) -> Path:
-    """Where a board's setup lives: ``<project dir>/<board stem>.kipi-setup.json``."""
+    """Where a board's setup is saved: ``<project dir>/<board stem>.kipi-setup.yml``
+    (``.json`` if PyYAML is missing)."""
+    from kipi.core import yaml_io
     stem = Path(board_file_or_name).stem
-    return Path(project_dir or ".") / f"{stem}.kipi-setup.json"
+    suffix = SETUP_SUFFIX if yaml_io.available() else LEGACY_SETUP_SUFFIX
+    return Path(project_dir or ".") / f"{stem}{suffix}"
+
+
+def find_setup(board_file_or_name: str, project_dir: str) -> Optional[Path]:
+    """The board's saved setup: the YAML one, else one saved as JSON before 0.8.0, else
+    None."""
+    stem = Path(board_file_or_name).stem
+    folder = Path(project_dir or ".")
+    for suffix in (SETUP_SUFFIX, LEGACY_SETUP_SUFFIX):
+        if (folder / f"{stem}{suffix}").is_file():
+            return folder / f"{stem}{suffix}"
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Groups of nets joined by series links
 # ---------------------------------------------------------------------------
+
+def _load_tolerance(d: dict) -> dict:
+    """A load's tolerance fields from a setup file; older files have +/- one %."""
+    if "tol_min" in d or "tol_max" in d:
+        return {"tol_min": d.get("tol_min"), "tol_max": d.get("tol_max"),
+                "tol_pct": d.get("tol_pct", True)}
+    t = d.get("tolerance_pct")
+    return {} if t is None else {"tol_min": -t, "tol_max": t}
+
 
 def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
     """Map every net mentioned in the setup to its group (nets joined by series links)."""
@@ -267,6 +423,29 @@ def net_groups(setup: PISetup, extra_nets=()) -> Dict[str, frozenset]:
     for n in nets:
         groups.setdefault(find(n), set()).add(n)
     return {n: frozenset(groups[find(n)]) for n in nets}
+
+
+def rail_nominal(setup: PISetup, net: Optional[str], skip: str = "",
+                 groups=None) -> Optional[float]:
+    """The nominal voltage of the rail ``net`` is on: the set voltage of a VRM (other than
+    ``skip``) driving it. None if no VRM does."""
+    if not net:
+        return None
+    groups = groups or net_groups(setup, [net])
+    group = groups.get(net, frozenset([net]))
+    return next((u.voltage for u in setup.vrms if u.name != skip and u.voltage
+                 and any(ph.output.net in group for ph in u.all_phases())), None)
+
+
+def vin_range(setup: PISetup, v: Vrm, groups=None) -> Tuple[Optional[float], Optional[float]]:
+    """The VRM's input range in volts, (min, max), either None when not set. A range in %
+    is taken from its input rail's nominal voltage; (None, None) without one."""
+    if not v.vin_pct:
+        return v.vin_min, v.vin_max
+    nom = rail_nominal(setup, v.input.net if v.input else None, v.name, groups)
+    if nom is None:
+        return None, None
+    return pct_to_volts(nom, v.vin_min, v.vin_max)
 
 
 def group_name(group) -> str:
@@ -314,6 +493,8 @@ def validate(setup: PISetup) -> List[str]:
     """Problems that make the setup unsolvable (empty list = OK)."""
     errors: List[str] = []
     names = [x.name for x in [*setup.vrms, *setup.loads, *setup.links]]
+    from kipi.dc.solver.via_barrel import rule_errors
+    errors.extend(rule_errors(setup.settings.via_rules))
     dupes = sorted({n for n in names if names.count(n) > 1})
     if dupes:
         errors.append(f"Names must be unique: {', '.join(dupes)}")
@@ -334,8 +515,17 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: the output current limit must be positive")
         if v.quiescent_a < 0 or v.dropout_v < 0:
             errors.append(f"VRM {v.name}: quiescent current and dropout cannot be negative")
+        if v.load_line_mohm < 0:
+            errors.append(f"VRM {v.name}: the load line cannot be negative")
         if v.vin_min is not None and v.vin_max is not None and v.vin_min > v.vin_max:
             errors.append(f"VRM {v.name}: input range minimum is above its maximum")
+        if v.acc_min is not None and v.acc_max is not None and v.acc_min > v.acc_max:
+            errors.append(f"VRM {v.name}: DC accuracy minimum is above its maximum")
+        if (v.vin_pct and v.kind != "source" and (v.vin_min, v.vin_max) != (None, None)
+                and rail_nominal(setup, v.input.net if v.input else None, v.name,
+                                 groups) is None):
+            errors.append(f"VRM {v.name}: an input range in % needs a VRM driving its input "
+                          "rail, whose voltage it is a % of; give the range in volts instead")
         if v.sense and groups[v.sense.net] != groups[v.output.net]:
             errors.append(f"VRM {v.name}: sense pins must be on the output net (or nets "
                           "DC-connected to it)")
@@ -357,8 +547,10 @@ def validate(setup: PISetup) -> List[str]:
 
     rail_groups = set(by_group)
     for l in setup.loads:
-        if l.tolerance_pct is not None and l.tolerance_pct < 0:
-            errors.append(f"Load {l.name}: max drop cannot be negative")
+        if l.tol_min is not None and l.tol_max is not None and l.tol_min > l.tol_max:
+            errors.append(f"Load {l.name}: tolerance minimum is above its maximum")
+        if l.dissipation_w is not None and l.dissipation_w < 0:
+            errors.append(f"Load {l.name}: heat cannot be negative")
         if l.groups:
             seen_pins: Dict[str, int] = {}
             for gi, g in enumerate(l.groups):

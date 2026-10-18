@@ -35,7 +35,10 @@ class TerminalResult:
 
     @property
     def v_mean(self) -> float:
-        return float(np.mean(self.v_pads))
+        """Mean over the pads with a voltage (NaN when no pad is connected, #88)."""
+        v = np.asarray(self.v_pads, dtype=float)
+        v = v[~np.isnan(v)]
+        return float(v.mean()) if len(v) else float("nan")
 
 
 @dataclass
@@ -139,12 +142,17 @@ def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
                    else [-i / len(src.pad_ids)] * len(src.pad_ids))
         terminals.append(TerminalResult(src.name, "source", i, vs, min(vs), max(vs),
                                         list(src.pad_ids), per_pad, solved))
+    dead_pads = getattr(sol, "dead_pads", None) or {}
     for load in prob.loads:
         vs = [pad_v(p) for p in load.pad_ids]
         i = amps.get(load.name, load.current)
-        terminals.append(TerminalResult(load.name, "load", i, vs, min(vs), max(vs),
-                                        list(load.pad_ids),
-                                        [i / len(load.pad_ids)] * len(load.pad_ids)))
+        # Unconnected pads (#88) draw nothing; the others share the current.
+        dead = set(dead_pads.get(load.name, ()))
+        n_live = len(load.pad_ids) - len(dead)
+        per_pad = [0.0 if p in dead else i / n_live for p in load.pad_ids]
+        live_v = [v for v in vs if not np.isnan(v)] or [float("nan")]
+        terminals.append(TerminalResult(load.name, "load", i, vs, min(live_v), max(live_v),
+                                        list(load.pad_ids), per_pad))
 
     v_src = max(volts.get(s.name, s.voltage) for s in prob.sources)
     if v_ref is None:
@@ -152,7 +160,8 @@ def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
     copper_power = float(tri_power.sum())
     # Power delivered into the copper, measured relative to v_src so it is not the small
     # difference of two large products (sum(I_src) == sum(I_load) is checked separately).
-    delivered = sum(t.current * (v_src - t.v_mean) for t in terminals if t.kind == "load") - \
+    delivered = sum(t.current * (v_src - t.v_mean) for t in terminals
+                    if t.kind == "load" and t.current) - \
         sum(t.current * (v_src - t.v_mean) for t in terminals if t.kind == "source")
     i_src = sum(t.current for t in terminals if t.kind == "source")
     i_load = sum(t.current for t in terminals if t.kind == "load")

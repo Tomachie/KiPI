@@ -1,4 +1,4 @@
-"""Allow one KiPI at a time per user.
+"""Allow one KiPI at a time per user, as a plugin and standalone each.
 
 The first KiPI holds a lock file and listens on a local socket (a named pipe on Windows).
 A second one finds the lock taken, asks the first to bring its window to the front, and
@@ -7,6 +7,9 @@ exits; if the first does not answer, it says that KiPI is already open instead.
 The lock is a :class:`QLockFile`, which records the owner's PID, so a KiPI that crashed
 or was killed does not lock the next one out. Like the app identity, this is best effort:
 if the lock file cannot be written at all, KiPI starts anyway.
+
+The plugin and the standalone app have a lock each: a standalone KiPI that is open must
+not answer KiCad's plugin button for the board in the PCB editor, nor the other way round.
 """
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ os.environ.setdefault("QT_API", "pyside6")
 
 from qtpy.QtCore import QLockFile  # noqa: E402
 
+from kipi.host import Host, current as current_host  # noqa: E402
+
 log = logging.getLogger(__name__)
 
 ACTIVATE = b"activate\n"
@@ -40,12 +45,18 @@ def _user() -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", name) or "user"
 
 
+def _name() -> str:
+    """The plugin keeps the name it always had; the standalone app has its own."""
+    mode = "" if current_host() is Host.PLUGIN else "standalone-"
+    return f"kipi-{mode}{_user()}"
+
+
 def lock_path() -> Path:
-    return Path(tempfile.gettempdir()) / f"kipi-{_user()}.lock"
+    return Path(tempfile.gettempdir()) / f"{_name()}.lock"
 
 
 def server_name() -> str:
-    return f"kipi-{_user()}"
+    return _name()
 
 
 class InstanceGuard:
@@ -176,6 +187,43 @@ def bring_to_front(win) -> None:
     win.show()
     win.raise_()
     win.activateWindow()
+    if sys.platform == "win32":
+        try:
+            _win32_foreground(int(win.winId()))
+        except Exception:  # noqa: BLE001 - raise_() above is the fallback
+            log.debug("Could not force KiPI to the foreground", exc_info=True)
+
+
+def _win32_foreground(hwnd: int) -> None:
+    """Windows ignores activateWindow() from a process the user did not just click, which
+    is what KiPI is once it has started up behind KiCad (#112). Borrow the foreground
+    window's input queue for the hand-over; if Windows still refuses, at least put the
+    window on top of the others."""
+    import ctypes
+    from ctypes import wintypes
+    user32, kernel32 = ctypes.windll.user32, ctypes.windll.kernel32
+    user32.GetForegroundWindow.restype = wintypes.HWND
+    user32.GetWindowThreadProcessId.argtypes = (wintypes.HWND, ctypes.c_void_p)
+    user32.SetForegroundWindow.argtypes = (wintypes.HWND,)
+    user32.BringWindowToTop.argtypes = (wintypes.HWND,)
+    user32.SetWindowPos.argtypes = (wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                                    ctypes.c_int, ctypes.c_int, ctypes.c_uint)
+    fg = user32.GetForegroundWindow()
+    if fg == hwnd:
+        return
+    mine = kernel32.GetCurrentThreadId()
+    theirs = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+    attached = bool(theirs and theirs != mine and user32.AttachThreadInput(mine, theirs, True))
+    try:
+        user32.BringWindowToTop(hwnd)
+        ok = user32.SetForegroundWindow(hwnd)
+    finally:
+        if attached:
+            user32.AttachThreadInput(mine, theirs, False)
+    if not ok:
+        flags = 0x0001 | 0x0002 | 0x0040          # SWP_NOSIZE | SWP_NOMOVE | SWP_SHOWWINDOW
+        user32.SetWindowPos(hwnd, -1, 0, 0, 0, 0, flags)     # HWND_TOPMOST
+        user32.SetWindowPos(hwnd, -2, 0, 0, 0, 0, flags)     # HWND_NOTOPMOST
 
 
 def claim(path: Optional[Path] = None) -> Optional[InstanceGuard]:
@@ -190,9 +238,10 @@ def claim(path: Optional[Path] = None) -> Optional[InstanceGuard]:
     from qtpy.QtWidgets import QMessageBox
     from kipi.gui.identity import make_app
     _app = make_app()  # noqa: F841 - must outlive the box
+    mode = "the KiPI plugin" if current_host() is Host.PLUGIN else "standalone KiPI"
     QMessageBox.information(
         None, "KiPI",
         "KiPI is already open" + (f" (PID {pid})" if pid else "") + ".\n\n"
-        "Only one KiPI can run at a time. Switch to its window, or close it and start "
-        "KiPI again.")
+        f"Only one {mode} can run at a time. Switch to its window, or close it and "
+        "start KiPI again.")
     return None

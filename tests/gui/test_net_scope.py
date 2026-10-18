@@ -13,6 +13,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
+from kipi.core import yaml_io  # noqa: E402
 from kipi.dc.pi.model import PISetup, setup_path  # noqa: E402
 from phase_boards import board, two_phase  # noqa: E402
 
@@ -63,7 +64,7 @@ def test_chosen_nets_are_saved_and_restored(app, tmp_path):
     w = _window(app, _board(tmp_path))
     _tick(app, w, {"VIN"})
     w._save_setup()
-    saved = json.loads(setup_path("multiphase", str(tmp_path)).read_text(encoding="utf-8"))
+    saved = yaml_io.loads(setup_path("multiphase", str(tmp_path)).read_text(encoding="utf-8"))
     assert saved["nets"] == ["VIN"]
     w.close()
 
@@ -96,7 +97,27 @@ def test_reloading_from_kicad_keeps_unsaved_ticks(app, tmp_path):
 def test_a_setup_saved_before_nets_were_stored_ticks_the_nets_it_uses(app, tmp_path):
     d = two_phase(ground=True).to_dict()
     del d["nets"]
-    setup_path("multiphase", str(tmp_path)).write_text(json.dumps(d), encoding="utf-8")
+    (tmp_path / "multiphase.kipi-setup.json").write_text(json.dumps(d), encoding="utf-8")
     w = _window(app, _board(tmp_path))
     assert {"VIN", "VOUT", "GND"} <= set(w._checked_nets())
+    w.close()
+
+
+def test_a_json_setup_is_read_with_a_warning_and_saved_as_yaml(app, tmp_path):
+    # #76: JSON setups still open, are deprecated, and the next save writes YAML only.
+    legacy = tmp_path / "multiphase.kipi-setup.json"
+    legacy.write_text(json.dumps(PISetup(nets=["VIN"]).to_dict()), encoding="utf-8")
+    w = _window(app, _board(tmp_path))
+    assert w._checked_nets() == ["VIN"]
+    assert "deprecated" in w.log_view.toPlainText()
+    assert "saved as multiphase.kipi-setup.yml" in w.solve_panel.lbl_file.text()
+    _tick(app, w, {"VIN", "VOUT"})
+    w._save_setup()
+    w.close()
+    yml = tmp_path / "multiphase.kipi-setup.yml"
+    assert set(yaml_io.loads(yml.read_text(encoding="utf-8"))["nets"]) == {"VIN", "VOUT"}
+    assert json.loads(legacy.read_text(encoding="utf-8"))["nets"] == ["VIN"]   # untouched
+    w = _window(app, _board(tmp_path))         # the YAML wins from then on
+    assert set(w._checked_nets()) == {"VIN", "VOUT"}
+    assert "deprecated" not in w.log_view.toPlainText()
     w.close()

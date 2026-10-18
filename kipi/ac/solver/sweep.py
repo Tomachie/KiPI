@@ -13,10 +13,11 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from kipi.ac.bias import apply_derating, dc_volts, part_temperatures, temperature_source
 from kipi.ac.board_map import ACMap, MapMesh, build_map
 from kipi.ac.checks import rail_caps, rail_nets, validate_ac
 from kipi.ac.solver.fem import ACError, ACStats, ACSystem, PortDef
@@ -97,6 +98,10 @@ class ACResult:
     bandwidth_hz: Optional[float] = None  # the VRM's control loop bandwidth, if given
     report_path: Optional[Path] = None    # the HTML report, when one was written
     board_map: Optional[ACMap] = None     # what the Board map tab shows (#67)
+    # DC bias (#74) and aging (#109): {reference: (DC volts or None, derated farads)} for
+    # the parts derated, and what was done.
+    cap_bias: Dict[str, Tuple[Optional[float], float]] = field(default_factory=dict)
+    bias_note: str = ""
 
 
 class _Pads:
@@ -188,7 +193,10 @@ def terminate(zb: np.ndarray, freqs: np.ndarray, ports: List[PortDef]) -> np.nda
 
 
 def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
-             progress: ProgressReporter = NULL) -> ACResult:
+             progress: ProgressReporter = NULL, dc_result=None) -> ACResult:
+    """Sweep the rail driven by ``vrm_name`` against ``gnd``. ``dc_result``, the last DC
+    power-tree solve if any, gives the DC bias across the capacitors (#74) and, with a
+    thermal co-simulation, the board's temperatures (#77)."""
     t0 = time.perf_counter()
     errors = validate_ac(setup, vrm_name, gnd)
     if errors:
@@ -197,6 +205,21 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
     rail, ports, shorts, caps, missing, links, notes = build_ports(snap, setup, vrm_name, gnd)
     for n in notes:
         progress.warn(n)
+    vrm = next(v for v in setup.vrms if v.name == vrm_name)
+    volts = {}
+    if s.dc_bias and dc_result is not None:
+        volts = dc_volts(snap, dc_result, [(p.name, p.element, None, p.plus_pads, p.minus_pads)
+                                           for p in ports if p.kind == "cap"
+                                           and p.element.dc_bias])
+    temperature, temp_text, temp_warning = temperature_source(setup, dc_result)
+    if temp_warning:
+        notes.append(temp_warning)
+        progress.warn(temp_warning)
+    cap_bias, bias_notes = apply_derating(ports, setup, vrm, volts,
+                                          part_temperatures(snap, ports, temperature),
+                                          temp_text)
+    for n in bias_notes:
+        progress.info(n)
     progress.info(f"Rail {vrm_name}: {', '.join(sorted(rail))} against {gnd}; "
                   f"{len(caps)} capacitor(s) with models, {len(missing)} without, "
                   f"{len(links)} series link(s), "
@@ -209,7 +232,12 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
     board_map = build_map(snap, setup, vrm_name, rail, gnd, caps, missing,
                           [p.name for p in ports if p.kind == "probe"])
     progress.partial(board_map)
-    system = ACSystem(snap, sorted(rail), gnd, ports, shorts, setup.settings, s, progress)
+    system = ACSystem(snap, sorted(rail), gnd, ports, shorts, setup.settings, s, progress,
+                      temperature=temperature)
+    if system.stats.t_copper is not None:
+        lo, hi = system.stats.t_copper
+        progress.info(f"Copper at {temp_text}: {lo:.3g} °C" if hi - lo < 0.05 else
+                      f"Copper at {temp_text}: {lo:.3g} to {hi:.3g} °C")
     board_map.mesh = MapMesh.from_mesh(system.mesh, system.node_ground)
     progress.partial(board_map)
 
@@ -236,7 +264,6 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
     with progress.timed(f"Sweep: {len(freqs)} frequencies"):
         z = terminate(_interpolate(f_field, zb, freqs), freqs, ports)
     probe_ports = [p for p in ports if p.kind == "probe"]
-    vrm = next(v for v in setup.vrms if v.name == vrm_name)
     bandwidth = vrm.bandwidth_khz * 1e3 if vrm.bandwidth_khz else None
     curves = []
     for i, p in enumerate(probe_ports):
@@ -261,4 +288,5 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
                     links=links, plane_capacitance_f=system.total_plane_capacitance,
                     stats=system.stats, warnings=notes + system.warnings,
                     solve_s=time.perf_counter() - t0, bandwidth_hz=bandwidth,
-                    board_map=board_map)
+                    board_map=board_map, cap_bias=cap_bias,
+                    bias_note=bias_notes[0] if bias_notes else "")

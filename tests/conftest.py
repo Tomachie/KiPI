@@ -6,8 +6,25 @@ import pytest
 @pytest.fixture(autouse=True)
 def no_kicad_settings(monkeypatch):
     """Tests never read this machine's KiCad color theme."""
-    from kipi.core.kicad_io import colors
+    from kipi.sources.kicad_ipc import colors
     monkeypatch.setattr(colors, "_config_roots", lambda: [])
+
+
+@pytest.fixture(autouse=True)
+def standalone_host(monkeypatch):
+    """Tests run standalone unless they say otherwise (``kipi.host.set_current``), whatever
+    this machine's environment, and a host one test sets never leaks into the next."""
+    from kipi import host
+    monkeypatch.delenv(host.HOST_ENV, raising=False)
+    monkeypatch.delenv(host.KICAD_SOCKET_ENV, raising=False)
+    monkeypatch.setattr(host, "_current", None)
+
+
+@pytest.fixture
+def plugin_host(monkeypatch):
+    """Run the test as the KiCad plugin."""
+    from kipi import host
+    monkeypatch.setattr(host, "_current", host.Host.PLUGIN)
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +80,11 @@ def no_3d(monkeypatch):
 
         def render(self, *a, **k):            # QWidget has its own render()
             pass
+
+        pi_markers = ()
+
+        def set_pi_markers(self, markers):
+            self.pi_markers = list(markers)
 
         def __getattr__(self, name):          # every other view call is a no-op
             return lambda *a, **k: None

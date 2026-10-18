@@ -70,3 +70,38 @@ def parse_capacitance(value: str) -> Optional[float]:
 
 def is_capacitor_ref(ref: str) -> bool:
     return bool(_CAPACITOR_REF_RE.match(ref or ""))
+
+
+# "10uF 6.3V X5R", "100n/50V", "4.7u 16 V", "1u 6V3" (RKM). The rating is the first
+# voltage in the field.
+_VOLT_RE = re.compile(r"(?:^|[\s,;/_(])(\d*\.?\d+)\s*(?:V(\d*)|(?i:volts?))(?=$|[\s,;/_)])")
+_CLASS2_RE = re.compile(r"(?i)(?:^|[^A-Z0-9])([XYZ][4-8][PRSTUV])(?=$|[^A-Z0-9])")
+_CLASS1_RE = re.compile(r"(?i)(?:^|[^A-Z0-9])(C0G|COG|NP0|NPO)(?=$|[^A-Z0-9])")
+
+
+def parse_voltage_rating(value: str) -> Optional[float]:
+    """A capacitor's voltage rating from its value field ("10uF 6.3V X5R": 6.3), or None."""
+    m = _VOLT_RE.search(value or "")
+    if not m:
+        return None
+    num, frac = m.group(1), m.group(2)
+    if frac:                                  # "6V3": the V is the decimal point
+        if "." in num:
+            return None
+        return float(f"{num}.{frac}")
+    return float(num) or None
+
+
+def is_class2(value: str) -> bool:
+    """Whether a capacitor's value field names a class II ceramic dielectric (X5R, X7R,
+    X6S, Y5V...), which loses capacitance with DC bias."""
+    return bool(_CLASS2_RE.search(value or ""))
+
+
+def parse_dielectric(value: str) -> str:
+    """The ceramic dielectric a capacitor's value field names, as "X7R", "C0G" (also for
+    NP0)..., or "" when it names none."""
+    m = _CLASS2_RE.search(value or "")
+    if m:
+        return m.group(1).upper()
+    return "C0G" if _CLASS1_RE.search(value or "") else ""

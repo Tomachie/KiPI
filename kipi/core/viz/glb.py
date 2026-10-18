@@ -1,7 +1,7 @@
 """Read the triangles of a binary glTF (.glb) file, grouped by named node.
 
 KiPI reads the files KiCad's ``kicad-cli pcb export glb`` writes (see
-:mod:`kipi.core.kicad_io.models3d`): one node per part, named by its reference, holding
+:mod:`kipi.sources.kicad_ipc.models3d`): one node per part, named by its reference, holding
 the part's meshes. VTK has a glTF reader, but it names its blocks ``Node_<n>`` and drops
 those names, so this small reader keeps them. It covers what a static model needs: node
 transforms, triangle meshes (lists, strips and fans) and each material's base color.

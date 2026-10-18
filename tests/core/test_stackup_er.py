@@ -8,7 +8,8 @@ from kipy.errors import ApiError  # noqa: E402
 from kipy.proto.common.envelope_pb2 import ApiStatusCode  # noqa: E402
 
 from kicad_fake import NM, VERSIONS, FakeKiCad  # noqa: E402
-from kipi.core.kicad_io.extract import combined_epsilon_r, extract_board  # noqa: E402
+from kipi.core.model.stackup import combined_epsilon_r  # noqa: E402
+from kipi.sources.kicad_ipc.extract import extract_board  # noqa: E402
 
 
 @pytest.mark.parametrize("subs, er", [

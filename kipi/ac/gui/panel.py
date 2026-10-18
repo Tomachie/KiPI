@@ -1,13 +1,14 @@
 """The AC setup panel, shown in place of the DC power-tree panel in AC mode.
 
 It edits the same :class:`~kipi.dc.pi.model.PISetup` as the DC panel. The VRMs and series
-links are shared (with the fields only DC uses grayed out); capacitor models, probes and
+links are shared (every VRM field editable in both); capacitor models, probes and
 the sweep belong to the AC analysis. A solve covers one rail (picked by its VRM) against
 one ground net.
 """
 
 from __future__ import annotations
 
+import copy
 import html
 import re
 from pathlib import Path
@@ -18,25 +19,35 @@ from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
 from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget,
-    QTabWidget, QToolButton, QVBoxLayout, QWidget,
+    QHeaderView, QLabel, QLineEdit, QMenu, QMessageBox, QPushButton, QSlider, QSpinBox,
+    QTableWidget, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from kipi.ac.checks import capacitor_candidates, default_ground, validate_ac
-from kipi.ac.model import CapModel, Probe
+from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel, Probe
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
-from kipi.core.model.parts import parse_capacitance
-from kipi.dc.gui.pi_panel import (
-    ItemList, LinkEditor, PIPanel, VrmEditor, _Editor, _spin, _unique, make_searchable,
-    new_link, new_vrm, parts_on_net, tip,
+from kipi.core.model.parts import (
+    is_class2, parse_capacitance, parse_dielectric, parse_voltage_rating,
 )
-from kipi.dc.pi.model import PinRef, PISetup
+from kipi.dc.gui.pi_panel import (
+    ItemList, LinkEditor, PartSelection, PIPanel, VrmEditor, _Editor, _spin, _unique,
+    make_searchable, new_link, new_vrm, parts_on_net, tip,
+)
+from kipi.dc.pi.autofill import guess_ground_pins
+from kipi.ac.target import vrm_input_name, vrm_inputs
+from kipi.dc.pi.model import Load, PinRef, PISetup, Vrm
 from kipi.gui.sortable import (
     SortItem, make_sortable, reset_sort, resort, set_row, sorted_rows,
 )
 
 TITLE = "AC setup"
+
+# The hours slider (#109) runs on a log scale from 1000 hours, where aging starts, to
+# 1,000,000; the spin box beside it takes any value.
+HOURS_SLIDER_DECADES = (3.0, 6.0)
+HOURS_SLIDER_STEPS = 300
+HOURS_PER_YEAR = 8760.0
 
 
 # ---------------------------------------------------------------------------
@@ -67,16 +78,60 @@ class CapEditor(_Editor):
         f.addRow("Capacitance", self.cap)
         f.addRow("ESL", self.esl)
         f.addRow("ESR", self.esr)
+        self.rated = _spin(0, 1e4, 0, 3, " V", 1)
+        self.rated.setSpecialValueText("not set")
+        self.kept = _spin(1, 100, 40, 1, " %", 5)
+        f.addRow("Voltage rating", self.rated)
+        f.addRow("Kept at rating", self.kept)
+        self.dielectric = QComboBox()
+        self.dielectric.addItem("not set", "")
+        for d in AGING_PCT_PER_DECADE:
+            self.dielectric.addItem(d, d)
+        self.aging = _spin(0, 50, 0, 2, " %/decade", 0.5)
+        f.addRow("Dielectric", self.dielectric)
+        f.addRow("Aging", self.aging)
+        self.mfg_tol = _spin(0, 100, 0, 1, " %", 1)
+        self.mfg_tol.setSpecialValueText("not set")
+        f.addRow("Manufacturing tolerance", self.mfg_tol)
         for w, text in (
                 (self.name, "A name for this model, e.g. the part number or value"),
-                (self.cap, "Capacitance of one part. Use the effective value at the rail's DC "
-                           "bias if the datasheet gives it (ceramics lose capacitance with "
-                           "voltage)."),
+                (self.cap, "Capacitance of one part, at no DC bias. For a ceramic (X5R, "
+                           "X7R…), enter its voltage rating to estimate DC bias, or enter "
+                           "the effective value at the rail's voltage if the datasheet "
+                           "gives it."),
+                (self.rated, "The part's DC voltage rating. With one, the capacitance is "
+                             "derated by the DC voltage across each part, as class II "
+                             "ceramics (X5R, X7R…) lose capacitance with voltage: the last "
+                             "DC solve's voltage across the part, or else the rail's VRM set "
+                             "point. Leave it 'not set' for polymer and electrolytic parts; "
+                             "a C0G dielectric is never derated."),
+                (self.kept, "How much of its capacitance the part keeps at its rated "
+                            "voltage, from the datasheet's DC bias curve (typically 30 to "
+                            "50 %; smaller cases lose more). The curve is shaped like a "
+                            "typical X5R/X7R part's."),
+                (self.dielectric, "The ceramic dielectric, for aging and temperature. With "
+                                  "Capacitor aging ticked in the Sweep tab, the model loses "
+                                  "its aging rate for every decade of hours operated past "
+                                  "1000; with a Temperature there, its capacitance follows "
+                                  "the dielectric's typical temperature curve. Leave it unset "
+                                  "for polymer and electrolytic parts."),
+                (self.aging, "Capacitance lost per decade of hours (e.g. from 1000 to 10000 "
+                             "hours). Picking a dielectric fills in its typical rate; the "
+                             "datasheet's is better."),
+                (self.mfg_tol, "The part's capacitance tolerance, from its datasheet or "
+                                "value code (K is ±10 %, M ±20 %, J ±5 %). Optional. With "
+                                "Capacitor manufacturing tolerance ticked in the Sweep tab, "
+                                "the model is solved at the low end of it, the worst case for "
+                                "a PDN: a ±10 % part keeps 90 % of its capacitance."),
                 (self.esl, "Equivalent series inductance of the part itself (from its "
                            "datasheet); the board's mounting inductance is simulated"),
                 (self.esr, "Equivalent series resistance of one part, from its datasheet")):
             tip(f, w, text)
-        self._watch(self.name, self.cap, self.esl, self.esr)
+        self._watch(self.name, self.cap, self.esl, self.esr, self.rated, self.kept,
+                    self.mfg_tol)
+        self.rated.valueChanged.connect(lambda v: self.kept.setEnabled(v > 0))
+        self.dielectric.currentIndexChanged.connect(self._dielectric_changed)
+        self._watch(self.aging)
 
         self.filter = QLineEdit()
         self.filter.setPlaceholderText("Filter parts (reference, value, footprint or net)…")
@@ -125,12 +180,32 @@ class CapEditor(_Editor):
         f.addRow(self.lbl_count)
         self._filling = False
 
+    def _dielectric_changed(self, _i):
+        d = self.dielectric.currentData() or ""
+        self.aging.setEnabled(bool(d))
+        if not self._loading:
+            self.aging.blockSignals(True)
+            self.aging.setValue(AGING_PCT_PER_DECADE.get(d, 0.0))
+            self.aging.blockSignals(False)
+        self._store()
+
     # ------------------------------------------------------------ values
     def _load(self, m: CapModel):
         self.name.setText(m.name)
         self.cap.setValue(m.capacitance_f * 1e6)
         self.esl.setValue(m.esl_h * 1e9)
         self.esr.setValue(m.esr_ohm * 1e3)
+        self.rated.setValue(m.rated_v or 0.0)
+        self.kept.setValue(m.kept_at_rated_pct)
+        self.kept.setEnabled(bool(m.rated_v))
+        i = self.dielectric.findData(m.dielectric)
+        if i < 0:                                  # one KiPI does not list: keep it
+            self.dielectric.addItem(m.dielectric, m.dielectric)
+            i = self.dielectric.count() - 1
+        self.dielectric.setCurrentIndex(i)
+        self.aging.setValue(m.aging_pct_per_decade)
+        self.aging.setEnabled(bool(m.dielectric))
+        self.mfg_tol.setValue(m.mfg_tolerance_pct or 0.0)
         self.fill_table()
 
     def _save(self, m: CapModel):
@@ -138,6 +213,11 @@ class CapEditor(_Editor):
         m.capacitance_f = self.cap.value() * 1e-6
         m.esl_h = self.esl.value() * 1e-9
         m.esr_ohm = self.esr.value() * 1e-3
+        m.rated_v = self.rated.value() or None
+        m.kept_at_rated_pct = self.kept.value()
+        m.dielectric = self.dielectric.currentData() or ""
+        m.aging_pct_per_decade = self.aging.value()
+        m.mfg_tolerance_pct = self.mfg_tol.value() or None
 
     # ------------------------------------------------------------ parts
     def fill_table(self):
@@ -395,7 +475,13 @@ class ProbeEditor(_Editor):
 
     def _calculator(self):
         from kipi.ac.gui.target_calc import TargetCalculator
-        dlg = TargetCalculator(self, self.name.text().strip())
+        from kipi.ac.target import probe_loads, vrm_accuracies
+        rail = self.rail.value() or self.obj.rail
+        ground = self.ground.value() or self.obj.ground
+        dlg = TargetCalculator(self, self.name.text().strip(),
+                               probe_loads(self.panel.setup, rail, ground,
+                                           self.panel.dc_result),
+                               vrm_accuracies(self.panel.setup, rail))
         if dlg.exec() and dlg.target() is not None:
             self.apply_target(dlg.target())
 
@@ -448,12 +534,15 @@ class ProbeEditor(_Editor):
 # Panel
 # ---------------------------------------------------------------------------
 
-class ACPanel(QWidget):
+class ACPanel(QWidget, PartSelection):
     solve_requested = Signal(object, str, str)     # PISetup, VRM name, ground net
     save_requested = Signal()
     result_selected = Signal(object)               # ACResult shown in the plot; None clears it
     setup_changed = Signal()                       # any edit to the setup
     results_saved = Signal(str)                    # path of a saved results file
+    # The VRM, series link or probe selected in the setup: kind ("vrm", "link", "probe"),
+    # name, and whether the user picked it; ("", "", False) for none (#96).
+    part_selected = Signal(str, str, bool)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -462,6 +551,8 @@ class ACPanel(QWidget):
         self._nets: List[str] = []
         self.result = None
         self._results: Dict[str, object] = {}     # the last ACResult of each rail (VRM name)
+        # The last DC solve, for the target calculator's DC drop (None until one is run).
+        self.dc_result = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
 
@@ -490,6 +581,15 @@ class ACPanel(QWidget):
         self.cap_list.layout().insertWidget(0, b_values)
         self.probe_list = ItemList(lambda: self.setup.probes, ProbeEditor(self),
                                    self._new_probe, self._describe_probe, noun="probe")
+        # A probe on a DC load's pins, picked from a dropdown of the setup's loads and
+        # its LDOs' and switchers' inputs.
+        b_load = QPushButton("From DC load")
+        b_load.setToolTip("Add a probe on the same supply and ground pins as a DC load, or "
+                          "on an LDO's or switcher's input pins (one per phase)")
+        menu = QMenu(b_load)
+        menu.aboutToShow.connect(lambda: self._fill_load_menu(menu))
+        b_load.setMenu(menu)
+        self.probe_list.buttons.insertWidget(1, b_load)
         self.tabs.addTab(self.vrm_list, "VRMs")
         self.tabs.addTab(self.link_list, "Series links")
         self.tabs.addTab(self.cap_list, "Capacitors")
@@ -502,11 +602,13 @@ class ACPanel(QWidget):
                 "RLC models for the decoupling capacitors, and which parts use each",
                 "Where the impedance is looked into (usually a device's power pins), "
                 "with its target",
-                "Frequency range and resolution of the sweep",
+                "Frequency range and resolution of the sweep; capacitor DC bias, "
+                "temperature and aging",
                 "Mesh density and dielectric losses for the AC field solve")):
             self.tabs.setTabToolTip(i, text)
         for il in self._lists():
             il.changed.connect(self._on_changed)
+        self._watch_part_lists()
         lay.addWidget(self.tabs, 3)
 
         self.lbl_errors = QLabel(self)
@@ -589,6 +691,9 @@ class ACPanel(QWidget):
     def _lists(self):
         return (self.vrm_list, self.link_list, self.cap_list, self.probe_list)
 
+    def _part_lists(self):
+        return {"vrm": self.vrm_list, "link": self.link_list, "probe": self.probe_list}
+
     # ------------------------------------------------------------------ tabs
     def _sweep_tab(self) -> QWidget:
         w = QWidget()
@@ -616,7 +721,95 @@ class ACPanel(QWidget):
                               "sweep frequency (slowest, exact).")
         for wdg in (self.spin_fstart, self.spin_fstop, self.spin_ppd, self.spin_fpd):
             wdg.valueChanged.connect(self._ac_settings_changed)
+        self.chk_bias = QCheckBox("Capacitor DC bias")
+        self.chk_bias.setChecked(s.dc_bias)
+        f.addRow(self.chk_bias)
+        tip(f, self.chk_bias, "Derate the capacitor models that have a voltage rating "
+                              "by the DC voltage across each part (from the last DC solve, "
+                              "or else the rail's VRM set point). Untick to solve with every "
+                              "model's capacitance as entered.")
+        self.chk_bias.toggled.connect(self._ac_settings_changed)
+        self.chk_mfg = QCheckBox("Capacitor manufacturing tolerance")
+        self.chk_mfg.setChecked(s.mfg_tolerance)
+        f.addRow(self.chk_mfg)
+        tip(f, self.chk_mfg, "Solve the capacitor models that have a Manufacturing tolerance "
+                             "at the low end of it, the worst case for a PDN: a model with a "
+                             "±10 % tolerance keeps 90 % of its capacitance. Models without "
+                             "one are unchanged.")
+        self.chk_mfg.toggled.connect(self._ac_settings_changed)
+        self.cmb_temp = QComboBox()
+        for text, key in (("Not modeled", "none"), ("Fixed", "fixed"),
+                          ("From DC thermal co-simulation", "thermal")):
+            self.cmb_temp.addItem(text, key)
+        self.cmb_temp.setCurrentIndex(max(self.cmb_temp.findData(s.temperature), 0))
+        self.spin_temp = _spin(-55, 200, s.temperature_c, 1, " °C", 5)
+        f.addRow("Temperature", self.cmb_temp)
+        f.addRow("Board temperature", self.spin_temp)
+        tip(f, self.cmb_temp, "The temperature of the copper (its resistivity) and of the "
+                              "capacitors with a dielectric (their capacitance). Fixed: one "
+                              "temperature for the whole board. From DC thermal "
+                              "co-simulation: the copper temperatures of the last DC solve "
+                              "with thermal co-simulation, or of DC results opened from a "
+                              "file. Not modeled: copper at 20 °C and capacitors at their "
+                              "rated values.")
+        tip(f, self.spin_temp, "The board's temperature when Fixed, and where the thermal "
+                               "co-simulation has none")
+        self.cmb_temp.currentIndexChanged.connect(self._ac_settings_changed)
+        self.spin_temp.valueChanged.connect(self._ac_settings_changed)
+        self.chk_aging = QCheckBox("Capacitor aging")
+        self.chk_aging.setChecked(s.aging)
+        self.spin_hours = _spin(1, 1e7, s.aging_hours, 0, " h", 1000)
+        self.spin_hours.setEnabled(s.aging)
+        self.sld_hours = QSlider(Qt.Horizontal)
+        self.sld_hours.setRange(0, HOURS_SLIDER_STEPS)
+        self.lbl_years = QLabel()
+        self.lbl_years.setMinimumWidth(80)
+        self.w_hours = QWidget()
+        row = QHBoxLayout(self.w_hours)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addWidget(self.sld_hours, 1)
+        row.addWidget(self.lbl_years)
+        f.addRow(self.chk_aging)
+        f.addRow("Hours operated", self.spin_hours)
+        f.addRow(self.w_hours)
+        self.sld_hours.setToolTip("Drag to set the hours operated, from 1000 hours (no aging "
+                                  "yet) to 1,000,000 on a log scale")
+        tip(f, self.chk_aging, "Age the capacitor models that have a dielectric: each loses "
+                               "its aging rate per decade of hours operated past 1000 hours")
+        tip(f, self.spin_hours, "How long the capacitors have operated (8760 hours a year; "
+                                "87600 is ten years). Heating a ceramic past its Curie point, "
+                                "as in reflow, restarts its aging.")
+        self.chk_aging.toggled.connect(self._show_aging)
+        self.chk_aging.toggled.connect(self._ac_settings_changed)
+        self.spin_hours.valueChanged.connect(self._ac_settings_changed)
+        self.spin_hours.valueChanged.connect(self._sync_hours_slider)
+        self.sld_hours.valueChanged.connect(self._hours_slid)
+        self._sync_hours_slider()
+        self._show_aging(s.aging)
+        self.spin_temp.setEnabled(s.temperature != "none")
         return w
+
+    def _show_aging(self, on: bool):
+        """The hours operated count only while aging is ticked; the slider shows only then."""
+        self.spin_hours.setEnabled(on)
+        self.w_hours.setVisible(on)
+
+    def _sync_hours_slider(self, *_):
+        """Put the slider where the hours operated are, and give them in years."""
+        h = self.spin_hours.value()
+        lo, hi = HOURS_SLIDER_DECADES
+        x = (np.log10(max(h, 1.0)) - lo) / (hi - lo)
+        self.sld_hours.blockSignals(True)
+        self.sld_hours.setValue(int(round(min(max(x, 0.0), 1.0) * HOURS_SLIDER_STEPS)))
+        self.sld_hours.blockSignals(False)
+        years = h / HOURS_PER_YEAR
+        self.lbl_years.setText(f"{years:.3g} year{'' if years == 1 else 's'}")
+
+    def _hours_slid(self, pos: int):
+        lo, hi = HOURS_SLIDER_DECADES
+        h = 10 ** (lo + (hi - lo) * pos / HOURS_SLIDER_STEPS)
+        digits = int(np.floor(np.log10(h))) - 2              # three significant figures
+        self.spin_hours.setValue(round(h, -digits))         # syncs the slider back
 
     def _mesh_tab(self) -> QWidget:
         w = QWidget()
@@ -662,6 +855,13 @@ class ACPanel(QWidget):
         s.min_edge_mm = self.spin_min_edge.value()
         s.loss_tangent = self.spin_tand.value()
         s.default_er = self.spin_er.value()
+        s.dc_bias = self.chk_bias.isChecked()
+        s.mfg_tolerance = self.chk_mfg.isChecked()
+        s.aging = self.chk_aging.isChecked()
+        s.aging_hours = self.spin_hours.value()
+        s.temperature = self.cmb_temp.currentData() or "none"
+        s.temperature_c = self.spin_temp.value()
+        self.spin_temp.setEnabled(s.temperature != "none")
         self._on_changed()
 
     def _load_ac_settings(self):
@@ -671,21 +871,35 @@ class ACPanel(QWidget):
                        (self.spin_fpd, s.field_points_per_decade),
                        (self.spin_edge, s.max_edge_mm), (self.spin_grading, s.grading),
                        (self.spin_min_edge, s.min_edge_mm), (self.spin_tand, s.loss_tangent),
-                       (self.spin_er, s.default_er)):
+                       (self.spin_er, s.default_er), (self.spin_hours, s.aging_hours),
+                       (self.spin_temp, s.temperature_c)):
             wdg.blockSignals(True)
             wdg.setValue(v)
             wdg.blockSignals(False)
-        self.chk_report.blockSignals(True)
-        self.chk_report.setChecked(s.html_report)
-        self.chk_report.blockSignals(False)
+        for chk, on in ((self.chk_report, s.html_report), (self.chk_bias, s.dc_bias),
+                        (self.chk_mfg, s.mfg_tolerance), (self.chk_aging, s.aging)):
+            chk.blockSignals(True)
+            chk.setChecked(on)
+            chk.blockSignals(False)
+        self._sync_hours_slider()
+        self._show_aging(s.aging)
+        self.cmb_temp.blockSignals(True)
+        self.cmb_temp.setCurrentIndex(max(self.cmb_temp.findData(s.temperature), 0))
+        self.cmb_temp.blockSignals(False)
+        self.spin_temp.setEnabled(s.temperature != "none")
 
     # ------------------------------------------------------------------ data
     def nets(self) -> List[str]:
         return list(self._nets)
 
+    def set_dc_result(self, tree):
+        """The power-tree result the target calculator reads its DC drops from, or None."""
+        self.dc_result = tree
+
     def set_board(self, snap: BoardSnapshot, setup: PISetup, file_label: str):
         self.snapshot = snap
         self.setup = setup
+        self.dc_result = None
         self.lbl_file.setText(file_label)
         self._load_ac_settings()
         self.clear_results()
@@ -832,6 +1046,44 @@ class ACPanel(QWidget):
         return Probe(_unique(ref or "PROBE1", [p.name for p in self.setup.probes]),
                      PinRef(ref, net), PinRef(gref, gnd))
 
+    def _fill_load_menu(self, menu: QMenu):
+        menu.clear()
+        for load in self.setup.loads:
+            menu.addAction(load.name, lambda load=load: self.probe_list.add(
+                self.probe_from_load(load)))
+        # An LDO's or switcher's input loads the rail feeding it (#117): one per phase.
+        inputs = vrm_inputs(self.setup)
+        if self.setup.loads and inputs:
+            menu.addSeparator()
+        for name, vrm, k in inputs:
+            menu.addAction(name, lambda vrm=vrm, k=k: self.probe_list.add(
+                self.probe_from_vrm_input(vrm, k)))
+        if not self.setup.loads and not inputs:
+            menu.addAction("No DC loads or regulator inputs in the setup").setEnabled(False)
+
+    def probe_from_load(self, load: Load) -> Probe:
+        """A probe on ``load``'s supply and ground pins, named after it. A load without
+        ground pins gets its part's pins on its ground net, else the busiest part on the
+        panel's ground."""
+        return self._probe_on(load.name, load.supply, load.ground)
+
+    def probe_from_vrm_input(self, vrm: Vrm, phase: int) -> Probe:
+        """A probe on the input and ground pins of ``vrm``'s phase ``phase`` (from 0),
+        named after it, as :meth:`probe_from_load` makes one for a DC load."""
+        phases = vrm.all_phases()
+        ph = phases[phase]
+        return self._probe_on(vrm_input_name(vrm.name, phase, len(phases)), ph.input,
+                              ph.ground)
+
+    def _probe_on(self, name: str, supply: PinRef, ground: Optional[PinRef]) -> Probe:
+        gnd = ground or guess_ground_pins(self.snapshot, self.setup, self._nets,
+                                          supply, [self.ground()])
+        if gnd is None:
+            net = self.ground() or next((n for n in self._nets if n != supply.net), "")
+            gnd = PinRef(self._first_part(net) if self.snapshot and net else "", net)
+        return Probe(_unique(name, [p.name for p in self.setup.probes]),
+                     copy.deepcopy(supply), copy.deepcopy(gnd))
+
     def _models_from_values(self):
         if self.snapshot is None:
             return
@@ -849,7 +1101,14 @@ class ACPanel(QWidget):
             name = _unique(value, taken)
             taken.append(name)
             farads = parse_capacitance(value) or 0.0
-            self.setup.caps.append(CapModel(name, farads, 0.0, 0.0, refs))
+            rated = parse_voltage_rating(value)
+            diel = parse_dielectric(value)
+            # A rating turns on the DC bias estimate: only for class II ceramics.
+            self.setup.caps.append(CapModel(name, farads, 0.0, 0.0, refs,
+                                            rated_v=rated if is_class2(value) else None,
+                                            dielectric=diel,
+                                            aging_pct_per_decade=AGING_PCT_PER_DECADE.get(
+                                                diel, 0.0)))
         self.cap_list.reload()
         self._on_changed()
 
@@ -864,7 +1123,11 @@ class ACPanel(QWidget):
     def _describe_cap(m: CapModel) -> str:
         vals = (f"{_fmt_farads(m.capacitance_f)}, {m.esl_h * 1e9:g} nH, {m.esr_ohm * 1e3:g} mΩ"
                 if m.capacitance_f and m.esl_h and m.esr_ohm else "values needed")
-        return f"{m.name}: {vals} ({len(m.refs)} part{'s' if len(m.refs) != 1 else ''})"
+        bias = f", DC bias {m.rated_v:g} V rated" if m.dc_bias else ""
+        bias += f", {m.dielectric}" if m.dielectric else ""
+        bias += f", ±{m.mfg_tolerance_pct:g} %" if m.mfg_tolerance_pct else ""
+        return (f"{m.name}: {vals}{bias} "
+                f"({len(m.refs)} part{'s' if len(m.refs) != 1 else ''})")
 
     @staticmethod
     def _describe_probe(p: Probe) -> str:
@@ -951,6 +1214,8 @@ class ACPanel(QWidget):
                  f"{result.plane_capacitance_f * 1e9:.3g} nF",
                  f"{st.n_unknowns} unknowns, {len(result.field_freqs)} field solves "
                  f"({st.method}), {len(result.freqs)} sweep points in {result.solve_s:.1f} s"]
+        if getattr(result, "bias_note", ""):
+            notes.append(html.escape(result.bias_note))
         if result.missing_caps:
             notes.append(f"⚠ {len(result.missing_caps)} capacitor(s) on this rail have no "
                          f"model and were left out: "

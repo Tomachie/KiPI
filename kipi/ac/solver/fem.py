@@ -39,10 +39,9 @@ field solve independent of the part values.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import scipy.sparse as sp
@@ -59,9 +58,14 @@ from kipi.core.model.board import BoardSnapshot, Stackup
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.solver import direct
 from kipi.dc.solver.fem import _merge_groups, triangle_geometry
+from kipi.dc.solver.setup import REF_TEMP_C
+from kipi.dc.solver.via_barrel import barrel_copper_area, rule_for
 
 TIE_ADMITTANCE_S = 1e-9     # weak tie for copper reached only through parts
 SHIELDED_FACE_HEIGHT = 1000  # x board thickness: the inductance height of a shielded face
+# Copper at a temperature (#77): triangles whose resistivity is within this fraction share
+# one sheet impedance per frequency, so a board's temperature map costs a few evaluations.
+RHO_STEP = 1e-3
 
 
 class ACError(RuntimeError):
@@ -103,6 +107,7 @@ class ACStats:
     n_ports: int = 0
     method: str = ""
     times: Dict[str, float] = field(default_factory=dict)
+    t_copper: Optional[Tuple[float, float]] = None   # coolest, hottest copper °C (#77)
 
 
 def _boundary_nodes(tris: np.ndarray) -> np.ndarray:
@@ -119,13 +124,19 @@ class ACSystem:
     ``ports`` lists the parts and probes; ``short_links`` are pairs of pad lists merged
     into one node (series links with neither resistance nor inductance). The minus side
     of port ``reference_port`` is the 0 V reference.
+
+    ``temperature`` (#77), if given, maps KiCad xy (an (N, 2) array, mm) to the copper's
+    temperature in °C, which sets its resistivity; without it the copper is at the DC
+    settings' reference temperature.
     """
 
     def __init__(self, snap: BoardSnapshot, rail_nets: Sequence[str], gnd_net: str,
                  ports: List[PortDef], short_links: List[Tuple[List[str], List[str]]],
                  dc_settings, ac_settings, progress: ProgressReporter = NULL,
-                 reference_port: int = 0):
+                 reference_port: int = 0,
+                 temperature: Optional[Callable[[np.ndarray], np.ndarray]] = None):
         t0 = time.perf_counter()
+        self.temperature = temperature
         self.snap, self.ports = snap, ports
         self.rail_nets = list(rail_nets)
         self.gnd = gnd_net
@@ -242,12 +253,14 @@ class ACSystem:
 
         # Barrels: resistors between ring unknowns of consecutive layers (as in DC).
         order = {cu.id: i for i, cu in enumerate(st.copper)}
-        tp = self.dc.plating_mm
         bar_a, bar_b, bar_g = [], [], []
         for bar in mesh.barrels:
             layers = sorted(bar.ring_nodes, key=order.get)
-            d = bar.drill_mm
-            a_barrel = math.pi * (d * tp - tp * tp) if d > 2 * tp else math.pi * d * d / 4
+            rule = rule_for(self.dc.via_rules, bar.hole_type, bar.drill_mm)
+            if rule is None:
+                raise ACError(f"No via rule covers a {bar.hole_type} hole of {bar.drill_mm:g} "
+                              "mm drill; add one in the DC Mesh tab under Via plating")
+            a_barrel = barrel_copper_area(rule, bar.drill_mm, bar.filled, self.dc.rho_ohm_mm)
             for la, lb in zip(layers[:-1], layers[1:]):
                 dz = abs(st.layer(la).z_mid_mm - st.layer(lb).z_mid_mm)
                 ua = merged_of[2 * bar.ring_nodes[la][0]]
@@ -255,7 +268,9 @@ class ACSystem:
                 if ua != ub:
                     bar_a.append(ua)
                     bar_b.append(ub)
-                    bar_g.append(a_barrel / (self.dc.rho_ohm_mm * max(dz, 1e-6)))
+                    bar_g.append(a_barrel / (self._rho_at(self.dc.rho_ohm_mm,
+                                                          self.dc.tcr_per_c, bar.position)
+                                             * max(dz, 1e-6)))
         bar_a, bar_b = np.asarray(bar_a, dtype=np.int64), np.asarray(bar_b, dtype=np.int64)
         self._bar_g = np.asarray(bar_g, dtype=float)
         rows += [bar_a, bar_b, bar_a, bar_b]
@@ -478,6 +493,7 @@ class ACSystem:
         h_ext[one_sided & ~facing[:, 1], 1] = SHIELDED_FACE_HEIGHT * h_far
         self._h_ext = h_ext
         self._tri_li = tri_li
+        self._rho_bins(cen, tri_li)
 
         # Capacitance: each rail face triangle's share goes to its three nodes, tied to
         # the nearest node of the ground copper it faces (that copper's facing face).
@@ -531,19 +547,47 @@ class ACSystem:
         acc += max(gap - t_sum, 0.0) / dflt
         return gap, gap / acc
 
+    def _rho_at(self, rho: float, tcr: float, xy) -> float:
+        """Resistivity ``rho`` (at the reference temperature) at copper point ``xy``."""
+        if self.temperature is None:
+            return rho
+        t = float(np.asarray(self.temperature(np.atleast_2d(xy)), dtype=float).ravel()[0])
+        return rho * (1.0 + tcr * (t - REF_TEMP_C))
+
+    def _rho_bins(self, cen: np.ndarray, tri_li: np.ndarray):
+        """Each triangle's copper resistivity at its temperature, binned: ``_bin_rho`` the
+        resistivity and ``_bin_li`` the layer of each bin, ``_tri_bin`` each triangle's."""
+        layers = self.snap.stackup.copper
+        rho = np.array([self.dc.rho_for(cu.name) for cu in layers])
+        if self.temperature is None:
+            self._tri_bin, self._bin_li, self._bin_rho = tri_li, np.arange(len(layers)), rho
+            return
+        tcr = np.array([self.dc.tcr_for(cu.name) for cu in layers])
+        temps = np.asarray(self.temperature(cen), dtype=float).ravel()
+        temps = np.where(np.isfinite(temps), temps, REF_TEMP_C)
+        factor = np.maximum(1.0 + tcr[tri_li] * (temps - REF_TEMP_C), 0.05)
+        q = np.round(np.log(factor) / RHO_STEP).astype(np.int64)
+        keys, self._tri_bin = np.unique(np.stack([tri_li, q], axis=1), axis=0,
+                                        return_inverse=True)
+        self._tri_bin = self._tri_bin.ravel()
+        self._bin_li = keys[:, 0]
+        self._bin_rho = rho[keys[:, 0]] * np.exp(keys[:, 1] * RHO_STEP)
+        self.stats.t_copper = (float(np.min(temps)), float(np.max(temps))) if len(temps) \
+            else None
+
     # ============================================================== solve
     def matrix(self, omega: float):
         """The reduced system matrix (admittance form) at angular frequency ``omega``, and
         its cross-conductor part (capacitance and weak ties) on its own."""
         st = self.snap.stackup
         jw = 1j * omega
-        nl = len(st.copper)
-        z11, zd = np.zeros(nl, complex), np.zeros(nl, complex)
-        for i, cu in enumerate(st.copper):
-            rho = self.dc.rho_for(cu.name)
-            z11[i] = slab_impedance(rho, cu.thickness_mm, omega)[0]
-            zd[i] = slab_difference(rho, cu.thickness_mm, omega)
-        z11, zd = z11[self._tri_li], zd[self._tri_li]
+        nb = len(self._bin_rho)
+        z11, zd = np.zeros(nb, complex), np.zeros(nb, complex)
+        for i, (li, rho) in enumerate(zip(self._bin_li, self._bin_rho)):
+            t_mm = st.copper[li].thickness_mm
+            z11[i] = slab_impedance(float(rho), t_mm, omega)[0]
+            zd[i] = slab_difference(float(rho), t_mm, omega)
+        z11, zd = z11[self._tri_bin], zd[self._tri_bin]
         zs = 2 * z11 - zd                                  # Z11 + Z12
         a = jw * MU0_H_PER_MM * self._h_ext[:, 0] / 2      # top face, external
         b = jw * MU0_H_PER_MM * self._h_ext[:, 1] / 2      # bottom face

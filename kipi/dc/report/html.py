@@ -135,6 +135,28 @@ def _thermal_map(th, outline) -> str:
     return _png(fig)
 
 
+def _decimate(sheet, keep: float):
+    """Thin a flat copper sheet to about ``keep`` of its triangles for the 3D view.
+
+    Only interior vertices are removed (VTK's DecimatePro, topology and boundary kept), so
+    every vertex left is an original one: the copper keeps its outline, holes and solved
+    voltages. Quadric decimation, used before, is singular on a flat sheet and moved
+    vertices off the copper, drawing triangles across holes and off the board (#102).
+    Boundary vertices stay, so a sheet with much outline keeps more than ``keep``. On any
+    VTK failure the sheet is drawn whole."""
+    from vtkmodules.vtkCommonCore import vtkObject
+    was = vtkObject.GetGlobalWarningDisplay()
+    vtkObject.GlobalWarningDisplayOff()
+    try:
+        out = sheet.decimate_pro(1.0 - keep, preserve_topology=True,
+                                 boundary_vertex_deletion=False)
+    except Exception:
+        return sheet
+    finally:
+        vtkObject.SetGlobalWarningDisplay(was)
+    return out if out.n_cells and "V" in out.point_data else sheet
+
+
 def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
     """Interactive 3D view of one group: copper colored by voltage, plus vias."""
     import plotly.graph_objects as go
@@ -159,17 +181,7 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
         sheet = pv.PolyData(pts, faces)
         sheet.point_data["V"] = np.nan_to_num(lr.node_v, nan=vmin)
         if keep < 0.98 and sheet.n_cells > 200:
-            # Quadric decimation of a flat sheet warns "Unable to factor linear system" at
-            # nearly every vertex (coplanar quadrics are singular; the result is fine), so
-            # silence VTK warnings for this call only.
-            from vtkmodules.vtkCommonCore import vtkObject
-            was = vtkObject.GetGlobalWarningDisplay()
-            vtkObject.GlobalWarningDisplayOff()
-            try:
-                sheet = sheet.decimate(1.0 - keep, enable_all_attribute_error=True,
-                                       volume_preservation=False)
-            finally:
-                vtkObject.SetGlobalWarningDisplay(was)
+            sheet = _decimate(sheet, keep)
         tri = sheet.faces.reshape(-1, 4)[:, 1:]
         p = np.asarray(sheet.points)
         traces.append(go.Mesh3d(
@@ -307,32 +319,32 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append("<nav>" + " ".join(nav) + "</nav>")
     s = setup.settings
     parts.append(f"<p class='note'>Mesh: max edge {s.max_edge_mm:g} mm, via grading "
-                 f"{s.grading:g}, barrel plating {s.plating_mm * 1000:g} µm, copper "
-                 f"resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
+                 f"{s.grading:g}, copper resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
                  f"(TCR {s.tcr_per_c:g}/°C)"
                  + ("; layer overrides: " + ", ".join(
                      f"{_e(n)} {_e(s.conductor_by_layer.get(n, ''))} {r * 1e-3:.4g} Ω·m "
                      f"(TCR {s.tcr_for(n):g}/°C)".replace("  ", " ")
                      for n, r in sorted(s.rho_by_layer.items()))
                     if s.rho_by_layer else "")
-                 + ".</p>")
+                 + ". Via plating, first matching rule (drill = hole in the laminate, plated "
+                 f"inward): {_e('; '.join(r.label() for r in s.via_rules))}.</p>")
     parts.append(f"<p class='note'>Stackup, top to bottom: {_e(stackup_summary(snap.stackup))}.</p>")
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")
     parts.append(_table(
         ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop / boost (mV)", "%",
-         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance %", "Result"],
+         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance", "Result"],
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
           _num(l.v_effective, ".6f"), fmt_drop(l.drop, unit=""), _num(abs(l.drop_pct), ".3f"),
           _num(l.v_worst, ".6f"), fmt_drop(l.drop_worst, unit=""),
           _num(abs(l.drop_worst_pct), ".3f"),
-          "" if l.tolerance_pct is None else f"±{l.tolerance_pct:g}",
+          _e(l.tolerance),
           _verdict(l.passed, l.status)]
          for l in tree.loads]))
     parts.append("<p class='note'>Drop: below the VRM set point. Boost: above it, e.g. near a "
                  "remote-sensed VRM's output pins. The worst pin is the one furthest from the "
-                 "set point either way, and is judged against ± the tolerance.</p>")
+                 "set point either way. A load passes when every pin is within its tolerance.</p>")
     pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f"), _num(vmax, ".6f")]
           for l in tree.loads for n, a, vm, vmin, vmax in l.pin_groups]
     if pg:
@@ -341,9 +353,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                              "V highest pin"], pg))
     parts.append("<h2 id='vrms'>VRMs</h2>")
     parts.append(_table(
-        ["VRM", "Type", "Group", "V set", "V out", "V sense", "V gnd sense", "I out (A)",
+        ["VRM", "Type", "Group", "V set", "Load line (mΩ)", "V target", "V out", "V sense",
+         "V gnd sense", "I out (A)",
          "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)", "I limit (A)", "Result"],
-        [[_e(v.name), _e(v.kind), _e(v.group), _num(v.v_set, ".5g"), _num(v.v_out, ".5f"),
+        [[_e(v.name), _e(v.kind), _e(v.group), _num(v.v_set, ".5g"),
+          _num(v.load_line_mohm or None, "g"), _num(v.v_target, ".5f"), _num(v.v_out, ".5f"),
           _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
           _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss),
           _num(v.current_limit_a, "g"), _verdict(v.passed)]
@@ -420,6 +434,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      + f"; peak <b>{tmax:.1f} °C</b> at "
                      f"({x:.1f}, {y:.1f}) mm. Ambient {th.settings.ambient_c:g} °C, airflow "
                      f"{th.settings.airflow_m_s:g} m/s, {len(th.history)} iteration(s).</p>")
+        if getattr(th, "heat_by_kind", None):
+            parts.append(f"<p>Heat by source: {_e(th.heat_breakdown())}.</p>")
         heat_rows = ([[_e(k), "load", _num(v)] for k, v in loads_w.items()] if with_loads
                      else [])
         heat_rows += [[_e(s.name), "DC connection", _num(s.power)]
@@ -430,8 +446,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                 ["Part", "Kind", "Power (W)"], heat_rows))
             parts.append("<p class='note'>Heat put into the board at each part's pins. A DC "
                          "connection dissipates I²R. "
-                         + ("A load dissipates the sum over its supply and ground pins of pin "
-                            "current × pin voltage." if with_loads else
+                         + ("A load dissipates its stated Heat, else the sum over its supply "
+                            "and ground pins of pin current × pin voltage." if with_loads else
                             "Load power is not included (Thermal settings tab).") + "</p>")
         temps = layer_temps(tree, snap, setup.thermal)
         if temps:

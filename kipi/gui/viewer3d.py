@@ -12,11 +12,11 @@ from vtkmodules.vtkCommonCore import vtkPoints, vtkStringArray
 from vtkmodules.vtkCommonDataModel import vtkCellArray, vtkPolyData
 from vtkmodules.vtkRenderingCore import vtkActor, vtkActor2D, vtkCellPicker, vtkPolyDataMapper
 from vtkmodules.vtkRenderingLabel import vtkLabeledDataMapper
-from qtpy.QtCore import Signal
+from qtpy.QtCore import QTimer, Signal
 from qtpy.QtWidgets import QVBoxLayout, QWidget
 
 from kipi.core.viz.batch import Chunk, MeshBatcher
-from kipi.dc.viz.results import FIELDS, ResultScene, flat_arrows
+from kipi.dc.viz.results import FIELDS, ResultScene, flat_arrows, scale_decimals
 from kipi.core.viz.meshes import NetScene
 
 _NET_COLORS = [(0.90, 0.35, 0.25), (0.25, 0.60, 0.90), (0.95, 0.75, 0.20), (0.40, 0.80, 0.45),
@@ -37,9 +37,21 @@ _MODEL_SPECULAR = 0.3
 _PI_COLORS = {"vrm": ((0.25, 1.0, 0.35), (0.10, 0.45, 0.16)),
               "load": ((0.10, 0.95, 1.0), (0.04, 0.38, 0.45)),
               "link": ((1.0, 0.35, 1.0), (0.48, 0.14, 0.48)),
-              "cap": ((0.95, 0.95, 0.95), (0.32, 0.33, 0.37))}
+              "cap": ((0.95, 0.95, 0.95), (0.32, 0.33, 0.37)),
+              "probe": ((0.70, 0.55, 1.0), (0.33, 0.20, 0.62))}
 _PI_POINT_PX = {"power": 14, "ground": 9}       # rail pins, ground pins
 _PI_LABEL_LIFT_MM = 1.0
+# The part selected in the setup (#96): larger dots and its name, in amber.
+_PI_SELECTED_COLORS = ((1.0, 0.8, 0.1), (0.75, 0.42, 0.0))
+_PI_SELECTED_PX = 22
+# Newly selected, it blinks between amber and red for a moment, to be found at a glance.
+_PI_BLINK_COLORS = ((1.0, 0.12, 0.12), (0.70, 0.0, 0.0))
+_PI_BLINK_MS = 250
+_PI_BLINKS = 6
+# A click this near a marker's name (half its height; the width follows the name) or one
+# of its dots, in pixels, picks the marker.
+_PI_LABEL_HALF_H_PX = 9
+_PI_DOT_PICK_PX = 8
 
 
 def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
@@ -55,24 +67,60 @@ def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
     step_decimals = max(0, int(np.ceil(-np.log10(span / 5))) + 1)
     if max(abs(lo), abs(hi)) >= 1e4 or step_decimals > 9:
         return "%.4g"
-    return f"%.{step_decimals}f"
+    return f"%.{scale_decimals(lo, hi)}f"
+
+
+# The scale bar sits against the view's right edge (next to the setup panes), leaving a
+# small gap, so it covers as little of the board as it can.
+_BAR_RIGHT = 0.995
+_BAR_WIDTH = 0.03
+_BAR_Y, _BAR_HEIGHT = 0.25, 0.5
 
 
 def _bar_args(title: str, fmt: str) -> dict:
-    return dict(title=title, vertical=True, position_x=0.88, position_y=0.25, height=0.5,
-                width=0.05, fmt=fmt, title_font_size=14, color="white", label_font_size=12,
-                n_labels=6)
+    return dict(title=title, vertical=True, position_x=_BAR_RIGHT - _BAR_WIDTH,
+                position_y=_BAR_Y, height=_BAR_HEIGHT, width=_BAR_WIDTH, fmt=fmt,
+                title_font_size=14, color="white", label_font_size=12, n_labels=6)
 
 
-def _copper_clim(scene: ResultScene, field: str, hidden=()) -> Tuple[float, float, bool]:
-    """Color limits ``(lo, hi, log_scale)`` for a copper field over the layers not in
-    ``hidden``, so hiding a layer with an outlier spreads the scale over what is left.
-    With every layer hidden the scale covers all of them."""
+def _bar_title_actor(title: str):
+    """The bar's title, drawn apart from the bar and ending at its right edge: VTK centers
+    a bar's own title over the bar, which pushes a long one off the edge of the view."""
+    from vtkmodules.vtkRenderingCore import vtkTextActor
+    actor = vtkTextActor()
+    actor.SetInput(title)
+    prop = actor.GetTextProperty()
+    prop.SetFontSize(14)
+    prop.SetColor(1.0, 1.0, 1.0)
+    prop.SetJustificationToRight()
+    prop.SetVerticalJustificationToBottom()
+    actor.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+    # actor.SetPosition(_BAR_RIGHT, _BAR_Y + _BAR_HEIGHT - 0.012)   # just over the bar
+    actor.SetPosition(_BAR_RIGHT, _BAR_Y + _BAR_HEIGHT)   # just over the bar
+    actor.SetPickable(False)
+    return actor
+
+
+def apply_limits(lo: float, hi: float, log_scale: bool,
+                 limits: Optional[Tuple[float, float]]) -> Tuple[float, float]:
+    """The color range drawn: ``limits`` (min, max) typed by the user in place of the
+    automatic ``lo``..``hi``. A log scale cannot start at or below zero, so a minimum
+    there falls back to four decades below the maximum."""
+    if limits is not None:
+        lo, hi = (float(x) for x in limits)
+    if hi <= lo:
+        hi = lo + 1e-12
+    if log_scale and lo <= 0:
+        lo = max(hi * 1e-4, 1e-30)
+    return lo, hi
+
+
+def _copper_clim(scene: ResultScene, field: str) -> Tuple[float, float, bool]:
+    """Automatic color limits ``(lo, hi, log_scale)`` for a copper field over every
+    layer, whichever are shown (the user sets the limits to look closer)."""
     arr, assoc, _, _ = FIELDS[field]
-    shown = ([lr for lid, lr in scene.layers.items() if lid not in hidden]
-             or list(scene.layers.values()))
     data = [(lr.mesh.point_data if assoc == "point" else lr.mesh.cell_data)[arr]
-            for lr in shown]
+            for lr in scene.layers.values()]
     vals = np.concatenate([d[np.isfinite(d)] for d in data]) if data else np.zeros(0)
     if not len(vals):
         lo, hi = scene.ranges[field]
@@ -241,6 +289,11 @@ class Viewer3D(QWidget):
         self._show_pi = False               # PI Models markers, copper view only
         self._pi_markers: list = []
         self._pi_actors: Dict[str, object] = {}      # name -> actor
+        self._pi_selected: Optional[Tuple[str, str]] = None   # (kind, item) in the setup
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(_PI_BLINK_MS)
+        self._blink_timer.timeout.connect(self._blink_step)
+        self._blink_left = 0                # color changes still to show
         self._models: Dict[str, Tuple[pv.PolyData, str]] = {}   # ref -> (mesh, side)
         self._model_actors: Dict[str, vtkActor] = {}             # side -> actor
         self._board_top = 0.0
@@ -255,6 +308,9 @@ class Viewer3D(QWidget):
         self._result_actors: Dict[int, object] = {}      # layer id -> actor
         self._result_via_actor = None
         self._scalar_bars: List[str] = []
+        self._bar_titles: list = []
+        self._color_limits: Optional[Tuple[float, float]] = None   # user's, or automatic
+        self._clim: Optional[Tuple[float, float]] = None           # the range drawn
         self._arrows_on = False
         self._arrow_actors: Dict[int, object] = {}          # layer id -> actor
         # Clicks are handled here rather than with pyvista's point picking, so a click can
@@ -346,7 +402,7 @@ class Viewer3D(QWidget):
         """Draw these part models (ref -> (mesh, "top" or "bottom")) in place of any shown.
 
         Meshes are in the view's frame at true height (see
-        :func:`kipi.core.kicad_io.models3d.to_mesh`), for a board ``model_board_mm`` thick
+        :func:`kipi.sources.kicad_ipc.models3d.to_mesh`), for a board ``model_board_mm`` thick
         (KiCad's; default ``board_top_mm``). The Z scale stretches the board but not the
         parts: the top side's parts are lifted to sit on the stretched board, and on a
         board made thicker or thinner in the Stackup pane.
@@ -384,9 +440,11 @@ class Viewer3D(QWidget):
 
     # ------------------------------------------------------- PI Models markers
     def set_pi_markers(self, markers):
-        """Mark the DC setup's VRMs, loads, series links and capacitors: a point on each of
-        their pads and the part's name (see :func:`kipi.dc.viz.markers.pi_markers`). Shown over
-        the copper only, not over results."""
+        """Mark the setup's parts: a point on each of their pads and the part's name. DC
+        mode's are its VRMs, loads, series links and capacitors
+        (:func:`kipi.dc.viz.markers.pi_markers`), AC mode's its VRMs, series links, probes
+        and capacitors (:func:`kipi.ac.viz.markers.ac_markers`). Shown over the copper
+        only, not over results."""
         self._pi_markers = list(markers)
         self._draw_pi_markers()
         self._apply_visibility()
@@ -421,12 +479,107 @@ class Viewer3D(QWidget):
                 anchors[:, 2] += _PI_LABEL_LIFT_MM        # clear of the part's dots
                 self._pi_actors[name] = _pi_labels_actor(anchors, [m.name for m in parts],
                                                          colors[1])
+        sel = self._selected_marker()
+        if sel is not None:             # drawn last, so over the part's own dots and name
+            self._pi_actors["pi_selected_dots"] = _pi_dots_actor(
+                view(np.vstack([sel.power, sel.ground])), _PI_SELECTED_COLORS[0],
+                _PI_SELECTED_PX)
+            anchor = view(sel.anchor[None, :])
+            anchor[:, 2] += _PI_LABEL_LIFT_MM
+            self._pi_actors["pi_selected_label"] = _pi_labels_actor(
+                anchor, [sel.name], _PI_SELECTED_COLORS[1])
         for actor in self._pi_actors.values():
             renderer.AddViewProp(actor)
 
     @property
     def pi_marker_names(self) -> List[str]:
         return [m.name for m in self._pi_markers]
+
+    @property
+    def pi_markers(self) -> list:
+        return list(self._pi_markers)
+
+    def _selected_marker(self):
+        return next((m for m in self._pi_markers if (m.kind, m.item) == self._pi_selected),
+                    None)
+
+    def set_pi_selected(self, key: Optional[Tuple[str, str]]):
+        """Highlight the part selected in the setup, ``(kind, item name)``, or none (#96).
+        Shown with the PI Models markers."""
+        if key == self._pi_selected:
+            return
+        self._pi_selected = key
+        self._draw_pi_markers()
+        self._apply_visibility()
+        self._start_blink()
+
+    def _start_blink(self):
+        """Blink the selected part's dots and name between amber and red a few times."""
+        self._blink_timer.stop()
+        self._blink_left = 2 * _PI_BLINKS if self._selected_marker() is not None else 0
+        if self._blink_left:
+            self._blink_timer.start()
+
+    def _blink_step(self):
+        self._blink_left -= 1
+        if self._blink_left <= 0:
+            self._blink_timer.stop()
+        self._paint_selected(_PI_BLINK_COLORS if self._blink_left % 2 else _PI_SELECTED_COLORS)
+        if self._show_pi and self._result is None:
+            self.plotter.render()
+
+    def _paint_selected(self, colors):
+        """Color the selected part's dots and name: ``(dot color, label color)``."""
+        dots = self._pi_actors.get("pi_selected_dots")
+        if dots is not None:
+            dots.GetProperty().SetColor(*colors[0])
+        label = self._pi_actors.get("pi_selected_label")
+        if label is not None:
+            label.GetMapper().GetLabelTextProperty().SetBackgroundColor(*colors[1])
+
+    def pi_marker_at(self, screen_xy):
+        """The PI Models marker whose name, or else one of whose dots, is at ``screen_xy``
+        (display pixels), or None. Only while the markers are shown (#96)."""
+        if not self._show_pi or self._result is not None or not self._pi_markers:
+            return None
+        p = np.asarray(screen_xy, dtype=float)
+        lift = _PI_LABEL_LIFT_MM / self._zscale
+        anchors = np.array([[*m.anchor[:2], m.anchor[2] + lift] for m in self._pi_markers])
+        xy, behind = self._to_screen(anchors)
+        hits = [(abs(p[1] - a[1]), m) for m, a, hidden in zip(self._pi_markers, xy, behind)
+                if not hidden and abs(p[1] - a[1]) <= _PI_LABEL_HALF_H_PX
+                and abs(p[0] - a[0]) <= 6 + 4 * len(m.name)]
+        if hits:
+            return min(hits, key=lambda h: h[0])[1]
+        best, best_d = None, float(_PI_DOT_PICK_PX)
+        for m in self._pi_markers:
+            xy, behind = self._to_screen(np.vstack([m.power, m.ground]))
+            d = np.linalg.norm(xy - p, axis=1)[~behind]
+            if len(d) and d.min() <= best_d:
+                best, best_d = m, float(d.min())
+        return best
+
+    def focus_on(self, pts: np.ndarray, min_span_mm: float = 6.0):
+        """Center the view on ``pts`` (N, 3), KiCad coords, near enough to see them with
+        some board around them, looking from the same direction (#96)."""
+        pts = np.asarray(pts, dtype=float).reshape(-1, 3)
+        if not len(pts):
+            return
+        c = pts.mean(axis=0)
+        center = np.array([c[0], -c[1], c[2] * self._zscale])
+        span = 2.5 * max(float(np.ptp(pts[:, :2], axis=0).max()), min_span_mm)
+        cam = self.plotter.renderer.GetActiveCamera()
+        pos, focal = np.array(cam.GetPosition()), np.array(cam.GetFocalPoint())
+        dist = float(np.linalg.norm(pos - focal)) or 1.0
+        direction = (pos - focal) / dist
+        if cam.GetParallelProjection():
+            cam.SetParallelScale(span / 2)
+        else:
+            dist = span / 2 / np.tan(np.radians(cam.GetViewAngle()) / 2)
+        cam.SetFocalPoint(*center)
+        cam.SetPosition(*(center + direction * dist))
+        self.plotter.renderer.ResetCameraClippingRange()
+        self.plotter.render()
 
     def _flush(self):
         """Rebuild changed chunks and sync their actors."""
@@ -468,7 +621,6 @@ class Viewer3D(QWidget):
 
     def set_layer_visible(self, layer_id: int, visible: bool):
         (self._hidden_layers.discard if visible else self._hidden_layers.add)(layer_id)
-        self._rescale_result()
         self._apply_visibility()
 
     def set_feature_visible(self, feature: str, visible: bool):
@@ -592,19 +744,34 @@ class Viewer3D(QWidget):
     def result(self) -> Optional[ResultScene]:
         return self._result
 
-    def show_result(self, scene: ResultScene, field: Optional[str] = None):
-        """Replace the copper view with solver results colored by ``field``."""
+    def show_result(self, scene: ResultScene, field: Optional[str] = None,
+                    limits: Optional[Tuple[float, float]] = None):
+        """Replace the copper view with solver results colored by ``field``, over the color
+        range ``limits`` (min, max), or the field's whole range when None."""
         self._clear_result_actors()
         self._set_result(scene)
         if field is not None:
             self._result_field = field
+        self._color_limits = limits
         self._draw_result()
 
-    def set_result_field(self, field: str):
+    def set_result_field(self, field: str, limits: Optional[Tuple[float, float]] = None):
         self._result_field = field
+        self._color_limits = limits
         if self._result is not None:
             self._clear_result_actors()
             self._draw_result()
+
+    def set_color_limits(self, limits: Optional[Tuple[float, float]]):
+        """Color the result over ``limits`` (min, max), or its whole range when None."""
+        self._color_limits = limits
+        if self._result is not None:
+            self._clear_result_actors()
+            self._draw_result()
+
+    def color_range(self) -> Optional[Tuple[float, float]]:
+        """The color range the result is drawn over, or None with no result shown."""
+        return self._clim if self._result is not None else None
 
     def clear_result(self):
         self._clear_result_actors()
@@ -631,9 +798,12 @@ class Viewer3D(QWidget):
                 p.remove_scalar_bar(title, render=False)
             except (KeyError, ValueError, StopIteration):
                 pass
+        for actor in self._bar_titles:
+            p.renderer.RemoveViewProp(actor)
         self._result_actors.clear()
         self._result_via_actor = None
         self._scalar_bars.clear()
+        self._bar_titles.clear()
 
     def _draw_result(self):
         scene = self._result
@@ -693,7 +863,9 @@ class Viewer3D(QWidget):
     def _draw_copper_result(self, scene, arr, assoc, title):
         """Copper colored by a field; vias drawn plain for context."""
         p = self.plotter
-        lo, hi, log_scale = _copper_clim(scene, self._result_field, self._hidden_layers)
+        lo, hi, log_scale = _copper_clim(scene, self._result_field)
+        lo, hi = apply_limits(lo, hi, log_scale, self._color_limits)
+        self._clim = (lo, hi)
         cmap = "turbo" if assoc == "point" else "inferno"
         bar =_bar_args(title, _bar_format(lo, hi, log_scale))
         first = True
@@ -729,6 +901,8 @@ class Viewer3D(QWidget):
         lo, hi = scene.ranges["via_current"]
         if hi <= lo:
             hi = lo + 1e-9
+        lo, hi = apply_limits(lo, hi, False, self._color_limits)
+        self._clim = (lo, hi)
         self._result_via_actor = p.add_mesh(
             scene.vias, scalars=arr, cmap="viridis", clim=(lo, hi), specular=0.4,
             show_scalar_bar=True, name="result:vias", reset_camera=False, render=False,
@@ -736,30 +910,22 @@ class Viewer3D(QWidget):
         self._result_via_actor.SetScale(1.0, 1.0, self._zscale)
         self._style_bar(title)
 
-    def _rescale_result(self):
-        """Refit the copper color scale to the layers now shown."""
-        scene = self._result
-        if scene is None or FIELDS[self._result_field][1] == "via" or not self._result_actors:
-            return
-        lo, hi, log_scale = _copper_clim(scene, self._result_field, self._hidden_layers)
-        for actor in self._result_actors.values():
-            mapper = actor.GetMapper()
-            mapper.SetScalarRange(lo, hi)
-            mapper.GetLookupTable().SetRange(lo, hi)
-        bars = self.plotter.scalar_bars
-        for title in self._scalar_bars:
-            if title in bars:
-                bars[title].SetLabelFormat(_bar_format(lo, hi, log_scale))
-
     def _style_bar(self, title):
         """Tick values to the left of the bar, where they stay inside the view, and the
-        title lifted clear of the top value."""
+        title above the bar, ending at its right edge."""
         self._scalar_bars.append(title)
         bars = self.plotter.scalar_bars
         if title in bars:
             bar = bars[title]
             bar.SetTextPositionToPrecedeScalarBar()
             bar.SetVerticalTitleSeparation(12)
+            # Control the spacing between tick labels and the color bar
+            bar.SetTextPad(-2)
+            # pyvista keys the bar by its title, so the title is kept but not drawn.
+            bar.GetTitleTextProperty().SetOpacity(0.0)
+            actor = _bar_title_actor(title)
+            self.plotter.renderer.AddViewProp(actor)
+            self._bar_titles.append(actor)
 
     # ------------------------------------------------------------------ views
     def _fit(self, zoom: float = 1.0):
@@ -807,6 +973,9 @@ class Viewer3D(QWidget):
         if abs(x - start[0]) + abs(y - start[1]) > 4:     # a drag (rotate/pan), not a click
             return
         point = None
+        if self.pi_marker_at((x, y)) is not None:       # a part's name, over the copper
+            self._pick_cb(None, (x, y))
+            return
         if self._picker.Pick(x, y, 0, self.plotter.renderer) and self._picker.GetCellId() >= 0:
             wx, wy, wz = self._picker.GetPickPosition()
             point = (wx, -wy, wz / self._zscale)
@@ -819,15 +988,14 @@ class Viewer3D(QWidget):
                                 pickable=False, reset_camera=False, render=False)
         self.plotter.render()
 
-    def screen_distance_to_segments(self, segments: np.ndarray, screen_xy) -> np.ndarray:
-        """Pixel distance from ``screen_xy`` to each 3D segment (N, 2, 3), KiCad coords."""
-        if len(segments) == 0:
-            return np.zeros(0)
+    def _to_screen(self, pts: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        """Display pixels (N, 2) of points (N, 3) in KiCad coords, and which of them are
+        behind the camera."""
         ren = self.plotter.renderer
         m = ren.GetActiveCamera().GetCompositeProjectionTransformMatrix(
             ren.GetTiledAspectRatio(), -1, 1)
         M = np.array([[m.GetElement(i, j) for j in range(4)] for i in range(4)])
-        P = segments.reshape(-1, 3).astype(float).copy()
+        P = np.asarray(pts, dtype=float).reshape(-1, 3).copy()
         P[:, 1] *= -1.0                       # KiCad y down -> view y up
         P[:, 2] *= self._zscale
         H = np.column_stack([P, np.ones(len(P))]) @ M.T
@@ -835,8 +1003,15 @@ class Viewer3D(QWidget):
         ndc = H[:, :2] / np.where(behind, 1.0, H[:, 3])[:, None]
         w, h = ren.GetSize()
         ox, oy = ren.GetOrigin()
-        xy = np.column_stack([(ndc[:, 0] + 1) / 2 * w + ox,
-                              (ndc[:, 1] + 1) / 2 * h + oy]).reshape(-1, 2, 2)
+        return np.column_stack([(ndc[:, 0] + 1) / 2 * w + ox,
+                                (ndc[:, 1] + 1) / 2 * h + oy]), behind
+
+    def screen_distance_to_segments(self, segments: np.ndarray, screen_xy) -> np.ndarray:
+        """Pixel distance from ``screen_xy`` to each 3D segment (N, 2, 3), KiCad coords."""
+        if len(segments) == 0:
+            return np.zeros(0)
+        xy, behind = self._to_screen(segments.reshape(-1, 3))
+        xy = xy.reshape(-1, 2, 2)
         a, b = xy[:, 0], xy[:, 1]
         ab = b - a
         p = np.asarray(screen_xy, dtype=float)

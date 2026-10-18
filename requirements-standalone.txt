@@ -1,0 +1,14 @@
+# What KiPI needs standalone; the launcher installs these into its own environment.
+# Kept equal to pyproject.toml's dependencies by tests/test_requirements.py.
+PySide6-Essentials>=6.6
+qtpy>=2.4
+pyvista>=0.44
+pyvistaqt>=0.11
+numpy>=1.24
+shapely>=2.1
+scipy>=1.11
+triangle>=20230923
+pyamg>=5.0
+plotly>=5.20
+matplotlib>=3.8
+PyYAML>=6.0

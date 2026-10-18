@@ -15,7 +15,6 @@ from __future__ import annotations
 import csv
 import gzip
 import math
-import pickle
 import re
 import time
 from dataclasses import dataclass, field
@@ -24,11 +23,24 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from kipi import compat
+from kipi import __version__, compat
+from kipi.core import results_io
 from kipi.core.model.board import BoardSnapshot
+from kipi.core.progress import NULL, ProgressReporter
 from kipi.dc.pi.tree import drop_or_boost
 
-RESULTS_FORMAT = 1
+RESULTS_FORMAT = 2          # 2: JSON and arrays (#99); 1: a gzipped pickle
+# The name says what was solved; files before 0.8.0 were all .kipi-results.
+RESULTS_SUFFIX = ".kipi-dc-results"
+THERMAL_RESULTS_SUFFIX = ".kipi-dc-thermal-results"
+LEGACY_RESULTS_SUFFIX = ".kipi-results"
+OPEN_FILTER = (f"KiPI DC results (*{RESULTS_SUFFIX} *{THERMAL_RESULTS_SUFFIX} "
+               f"*{LEGACY_RESULTS_SUFFIX})")
+
+
+def results_suffix(tree) -> str:
+    """The file suffix for ``tree``: DC, or DC with an electro-thermal solve."""
+    return THERMAL_RESULTS_SUFFIX if tree.thermal is not None else RESULTS_SUFFIX
 
 
 # ---------------------------------------------------------------------------
@@ -255,22 +267,25 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                       ["load", "group", "current_A", "nominal_V", "v_supply_mean_V",
                        "v_supply_min_V", "v_ground_mean_V", "v_effective_V", "v_lowest_pin_V",
                        "v_highest_pin_V", "mean_mV", "mean_pct", "mean_is", "worst_pin_V",
-                       "worst_pin_mV", "worst_pin_pct", "worst_pin_is", "tolerance_pct",
-                       "result"],
+                       "worst_pin_mV", "worst_pin_pct", "worst_pin_is", "tolerance",
+                       "tolerance_min_V", "tolerance_max_V", "result"],
                       [[l.name, l.group, l.current, l.nominal, l.v_supply, l.v_supply_min,
                         l.v_ground, l.v_effective, l.v_low, l.v_high,
                         *dev(l.drop, l.drop_pct), l.v_worst,
-                        *dev(l.drop_worst, l.drop_worst_pct), l.tolerance_pct, l.verdict]
+                        *dev(l.drop_worst, l.drop_worst_pct), l.tolerance, l.limit_low,
+                        l.limit_high, l.verdict]
                        for l in tree.loads]))
     out.append(_write(folder / f"{stem}_load_pin_groups.csv",
                       ["load", "pin_group", "current_A", "v_mean_V", "v_min_V", "v_max_V"],
                       [[l.name, n, a, vm, vmin, vmax] for l in tree.loads
                        for n, a, vm, vmin, vmax in l.pin_groups]))
     out.append(_write(folder / f"{stem}_vrms.csv",
-                      ["vrm", "type", "group", "v_set_V", "v_out_V", "v_sense_V",
+                      ["vrm", "type", "group", "v_set_V", "load_line_mOhm", "v_target_V",
+                       "v_out_V", "v_sense_V",
                        "v_ground_sense_V", "i_out_A", "v_in_V", "i_in_A", "p_out_W", "p_in_W",
                        "p_loss_W", "i_limit_A", "result"],
-                      [[v.name, v.kind, v.group, v.v_set, v.v_out, v.v_sense, v.v_ground_sense,
+                      [[v.name, v.kind, v.group, v.v_set, v.load_line_mohm, v.v_target,
+                        v.v_out, v.v_sense, v.v_ground_sense,
                         v.i_out, v.v_in, v.i_in, v.p_out, v.p_in, v.p_loss, v.current_limit_a,
                         "" if v.passed is None else ("PASS" if v.passed else "FAIL")]
                        for v in tree.vrms]))
@@ -355,23 +370,43 @@ def export_vtk(tree, scenes: Dict[str, object], snap: BoardSnapshot, folder,
 # Saved results
 # ---------------------------------------------------------------------------
 
-def save_results(path, tree, scenes, snap: BoardSnapshot, setup) -> Path:
-    """Write a results file (gzipped pickle). Only open results files you created."""
-    path = Path(path)
-    payload = {"format": RESULTS_FORMAT, "kind": "dc",
-               "saved": time.strftime("%Y-%m-%d %H:%M:%S"),
-               "board": snap.board_name, "tree": tree, "scenes": scenes, "setup": setup}
-    with gzip.open(path, "wb", compresslevel=4) as fh:
-        pickle.dump(payload, fh, protocol=pickle.HIGHEST_PROTOCOL)
-    return path
+def save_results(path, tree, snap: BoardSnapshot, setup) -> Path:
+    """Write a results file: JSON and NumPy arrays in a zip (:mod:`kipi.core.results_io`),
+    which opens on any machine and runs no code. The 3D views are not saved: they are
+    rebuilt from the solution, with the board's stackup saved alongside, when it opens."""
+    header = {"format": RESULTS_FORMAT, "kind": "dc", "kipi": __version__,
+              "saved": time.strftime("%Y-%m-%d %H:%M:%S"), "board": snap.board_name,
+              "setup": setup.to_dict() if setup is not None else None}
+    return results_io.write(path, header, {"tree": tree, "stackup": snap.stackup})
 
 
-def load_results(path) -> dict:
-    with gzip.open(Path(path), "rb") as fh:
-        # Finds classes that moved since the file was saved (see kipi.compat).
-        payload = compat.Unpickler(fh).load()
-    if not isinstance(payload, dict) or payload.get("format", 0) > RESULTS_FORMAT:
-        raise ValueError("Not a KiPI results file, or from a newer KiPI")
+def load_results(path, progress: ProgressReporter = NULL, legacy: bool = False) -> dict:
+    """``{"tree", "scenes", "setup", "board", "saved", ...}`` from a results file.
+
+    Files saved before 0.8.0 are pickles, which can run code when they are opened; they are
+    read only with ``legacy=True`` (``"legacy"`` is then True in the result), else
+    :class:`~kipi.core.results_io.LegacyResults` is raised."""
+    if results_io.is_legacy(path):
+        if not legacy:
+            raise results_io.LegacyResults("Results saved by KiPI 0.7 or earlier")
+        with gzip.open(Path(path), "rb") as fh:
+            # Finds classes that moved since the file was saved (see kipi.compat).
+            payload = compat.Unpickler(fh).load()
+        if not isinstance(payload, dict) or payload.get("format", 0) > 1:
+            raise ValueError("Not a KiPI results file")
+        payload["legacy"] = True
+    else:
+        payload = results_io.read(path)
+        if payload.get("format", 0) > RESULTS_FORMAT:
+            raise ValueError("These results are from a newer KiPI")
     if payload.get("kind", "dc") != "dc":           # files before 0.7.1 have no kind
         raise ValueError("This holds AC results: open it in AC mode")
+    if not payload.get("legacy"):
+        from kipi.dc.pi.model import PISetup
+        data = payload.pop("data")
+        payload["tree"] = data["tree"]
+        payload["setup"] = PISetup.from_dict(payload["setup"]) if payload.get("setup") else None
+        with progress.timed("Building result views"):
+            from kipi.dc.viz.results import build_scenes
+            payload["scenes"] = build_scenes(payload["tree"], data["stackup"], progress)
     return payload

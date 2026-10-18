@@ -126,3 +126,26 @@ def test_a_new_report_opens_in_the_browser(app, no_3d, opened_in_browser, tmp_pa
     w._open_new_report(report)
     assert [Path(p) for p in opened_in_browser] == [report]
     w.close()
+
+
+def test_solver_guide_page_ships_and_its_links_resolve():
+    """#92: the page on what PI analysis is and how the solvers work."""
+    import re
+    path = kipi_help.help_path().parent / "solver-guide.html"
+    text = path.read_text(encoding="utf-8")
+    ids = set(re.findall(r'\sid="([^"]+)"', text))
+    targets = set(re.findall(r'href="#([^"]+)"', text))
+    assert targets and targets <= ids, sorted(targets - ids)
+    for topic in ("tolerance", "PDN impedance", "DC bias", "aging", "0.393%", "PARDISO",
+                  "Triangle"):
+        assert topic in text, topic
+    # The guide and the page point at each other.
+    assert 'href="help.html"' in text
+    assert 'href="solver-guide.html"' in kipi_help.help_path().read_text(encoding="utf-8")
+
+
+def test_solver_guide_opens_the_installed_copy_or_else_online(monkeypatch):
+    assert kipi_help.solver_guide_url().startswith("file:")
+    assert kipi_help.solver_guide_url().endswith("solver-guide.html")
+    monkeypatch.setattr(kipi_help, "_DOCS", Path("no/such/folder"))
+    assert kipi_help.solver_guide_url() == kipi_help.SOLVER_GUIDE_ONLINE

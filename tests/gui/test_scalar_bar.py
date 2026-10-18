@@ -1,5 +1,5 @@
-"""The results scale bar: tick values left of the bar, title clear above, and a color
-range fitted to the layers that are shown."""
+"""The results scale bar: by the view's right edge (#103), tick values left of the bar,
+title clear above, and a color range over the whole result or the user's limits (#101)."""
 
 from dataclasses import replace
 from types import SimpleNamespace as NS
@@ -9,7 +9,7 @@ import pytest
 pv = pytest.importorskip("pyvista")
 pytest.importorskip("pyvistaqt")
 
-from kipi.gui.viewer3d import Viewer3D, _copper_clim  # noqa: E402
+from kipi.gui.viewer3d import Viewer3D, _copper_clim, apply_limits  # noqa: E402
 from kipi.dc.pi.tree import solve_tree  # noqa: E402
 from kipi.dc.viz.results import FIELDS, build_result_scene  # noqa: E402
 from phase_boards import board, two_phase  # noqa: E402
@@ -26,11 +26,7 @@ def test_scale_bar_layout(field):
         scene.vias.cell_data["I_mA"] = range(scene.vias.n_cells)
         scene.ranges["via_current"] = (0.0, float(scene.vias.n_cells))
     # Just the drawing state Viewer3D needs, on an off-screen plotter (no Qt window).
-    v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field=field,
-           _result_actors={}, _result_via_actor=None, _scalar_bars=[], _zscale=1.0,
-           _hidden_layers=set(), _layer_opacity=1.0)
-    v._style_bar = lambda title: Viewer3D._style_bar(v, title)
-    v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
+    v = _view(scene, field)
     _, assoc, label, unit = FIELDS[field]
     title = f"{label} ({unit})"
     if assoc == "via":
@@ -56,30 +52,74 @@ def _scene_with_outlier_layer():
     return scene, lid
 
 
-def test_color_range_follows_visible_layers():
+def _view(scene, field="voltage", limits=None):
+    v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field=field,
+           _result_actors={}, _result_via_actor=None, _scalar_bars=[], _bar_titles=[],
+           _zscale=1.0, _hidden_layers=set(), _layer_opacity=1.0, _color_limits=limits,
+           _clim=None, _arrow_actors={})
+    v._style_bar = lambda title: Viewer3D._style_bar(v, title)
+    v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
+    return v
+
+
+def test_color_range_covers_every_layer_shown_or_not():
+    # #101: the scale no longer follows the layers shown; the user sets limits instead.
     scene, lid = _scene_with_outlier_layer()
     v_lo, v_hi = (float(f(scene.layers[lid].mesh.point_data["V"])) for f in (min, max))
     lo, hi, _ = _copper_clim(scene, "voltage")
     assert (lo, hi) == pytest.approx((v_lo, v_hi + 1.0))
-    lo, hi, _ = _copper_clim(scene, "voltage", {99})
-    assert (lo, hi) == pytest.approx((v_lo, v_hi))
-    # Nothing shown: keep the full range rather than collapse.
-    lo, hi, _ = _copper_clim(scene, "voltage", {lid, 99})
-    assert (lo, hi) == pytest.approx((v_lo, v_hi + 1.0))
-
-
-def test_hiding_a_layer_rescales_the_drawn_result():
-    scene, lid = _scene_with_outlier_layer()
-    v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field="voltage",
-           _result_actors={}, _result_via_actor=None, _scalar_bars=[], _zscale=1.0,
-           _hidden_layers=set(), _layer_opacity=1.0)
-    v._style_bar = lambda title: Viewer3D._style_bar(v, title)
-    v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
+    v = _view(scene)
     Viewer3D._draw_copper_result(v, scene, "V", "point", "Voltage (V)")
-    v._hidden_layers.add(99)
-    Viewer3D._rescale_result(v)
-    want = _copper_clim(scene, "voltage", {99})[:2]
+    v._apply_visibility = lambda: None
+    Viewer3D.set_layer_visible(v, 99, False)
     for actor in v._result_actors.values():
-        assert actor.GetMapper().GetScalarRange() == pytest.approx(want)
-        assert actor.GetMapper().GetLookupTable().GetRange() == pytest.approx(want)
+        assert actor.GetMapper().GetScalarRange() == pytest.approx((v_lo, v_hi + 1.0))
+    v.plotter.close()
+
+
+@pytest.mark.parametrize("field,arr,assoc", [("voltage", "V", "point"),
+                                             ("current_density", "J", "cell")])
+def test_typed_limits_color_the_result(field, arr, assoc):
+    scene, _ = _scene_with_outlier_layer()
+    v = _view(scene, field, limits=(0.5, 0.75))
+    Viewer3D._draw_copper_result(v, scene, arr, assoc, "t")
+    assert v._clim == (0.5, 0.75)
+    for actor in v._result_actors.values():
+        assert actor.GetMapper().GetScalarRange() == pytest.approx((0.5, 0.75))
+    v.plotter.close()
+
+
+def test_typed_limits_color_the_vias():
+    scene, _ = _scene_with_outlier_layer()
+    scene.vias = pv.Cylinder()
+    scene.vias.cell_data["I_mA"] = range(scene.vias.n_cells)
+    scene.ranges["via_current"] = (0.0, float(scene.vias.n_cells))
+    v = _view(scene, "via_current", limits=(2.0, 5.0))
+    Viewer3D._draw_via_result(v, scene, "I_mA", "Via current (mA)")
+    assert v._result_via_actor.GetMapper().GetScalarRange() == pytest.approx((2.0, 5.0))
+    v.plotter.close()
+
+
+def test_limits_are_kept_sane():
+    assert apply_limits(0.0, 1.0, False, None) == (0.0, 1.0)
+    assert apply_limits(0.0, 1.0, False, (0.2, 0.4)) == (0.2, 0.4)
+    lo, hi = apply_limits(0.0, 1.0, False, (0.4, 0.4))        # no span: still drawable
+    assert hi > lo
+    assert apply_limits(1e-3, 10.0, True, (0.0, 5.0)) == pytest.approx((5e-4, 5.0))
+
+
+def test_bar_sits_by_the_right_edge_with_its_title_inside_the_view():
+    scene, _ = _scene_with_outlier_layer()
+    v = _view(scene, "current_density")
+    Viewer3D._draw_copper_result(v, scene, "J", "cell", "Current density (A/mm²)")
+    bar = v.plotter.scalar_bars["Current density (A/mm²)"]
+    x, _ = bar.GetPosition()
+    w, _ = bar.GetPosition2()
+    assert 0.95 <= x + w < 1.0                      # against the edge, with a gap
+    (title,) = v._bar_titles
+    assert title.GetInput() == "Current density (A/mm²)"
+    assert title.GetTextProperty().GetJustification() == 2       # right: ends in view
+    assert title.GetPosition()[0] == pytest.approx(x + w)
+    Viewer3D._clear_result_actors(v)
+    assert not v._bar_titles and not v.plotter.renderer.HasViewProp(title)
     v.plotter.close()

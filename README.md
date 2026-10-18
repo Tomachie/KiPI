@@ -2,7 +2,7 @@
   <img src="resources/kipi.gif" alt="KiPI logo" width="128">
 </p>
 
-# KiPI — DC and AC power integrity for KiCad
+# KiPI — DC and AC Power Integrity Simulator (also installable as KiCad Plugin)
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
@@ -10,7 +10,11 @@
 [![Platform: Windows | Linux | macOS](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)](#requirements)
 [![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-3776ab.svg?logo=python&logoColor=white)](#requirements)
 
-KiPI is a power integrity analyzer that runs as a KiCad 9 and 10 IPC plugin. It has two
+**New to power integrity? Read the [Solver Guide](https://drewsum.github.io/KiPI/solver-guide.html)**
+([source](docs/solver-guide.html)): what PI analysis is, why it matters, and how KiPI's mesh
+and its DC, thermal and AC solvers work.
+
+KiPI is a power integrity analyzer that runs standalone or as a KiCad 9 and 10 IPC plugin. It has two
 analysis modes:
 
 * **DC: Voltage Drop.** Define voltage regulators (VRMs), loads (current into pins) and series
@@ -29,11 +33,24 @@ control in KiPI has a tooltip.
 
 ![KiPI main window: nets and layers on the left, the board in 3D, the PI setup on the right](docs/images/overview.png)
 
-**Status: 0.7.2 (alpha)** ([changelog](docs/CHANGELOG.md)). Mostly stable. Unit tests for KiCad 9/10 support on Windows, Mac and Linux. Solver accuracy tests on every merge into main. Pull a tagged release for stable code. Many improvements to come, including standalone mode for analyzing PCB layouts from any tool!
+**Status: 0.8.0 (alpha, in development)** ([changelog](docs/CHANGELOG.md)). Added a standalone mode. This tool can now run on its own, has an app launcher that handles dependencies, and can import data from arbitrary layouts. The author wants to add support for a variety of PCB file formats to be able to import. If you have an example with good complexity which uses a wide variety of your PCB design tool's features that you are willing to share, please open an [issue](https://github.com/drewsum/KiPI/issues) and attach your PCB file there. 
 
 ## Install
 
-### Requirements
+KiPI runs two ways, from the same folder:
+
+* **As a KiCad plugin**, the main way: click the **KiPI** button in the PCB editor and KiPI
+  reads the board open there. For this, the KiPI folder **must be in KiCad's plugins
+  folder**, and KiCad installs its dependencies.
+* **Standalone**: KiPI started on its own, with its launcher, opens board files and needs
+  no KiCad. The folder can be **anywhere**; the launcher installs the dependencies on the
+  first start. It opens KiCad 7 to 10 board files (`.kicad_pcb`), ODB++ jobs and KiPI
+  snapshots (`.kipi.json.gz`). Reading HYP an CCE files is on the way
+  ([#45](https://github.com/drewsum/KiPI/issues/45)).
+
+### As a KiCad plugin
+
+#### Requirements
 
 * **KiCad 9.0 or later.** Developed on KiCad 10.0.7 and confirmed on KiCad 9.0.7. The tests
   also check the API of every release from 9.0.0 to 10.0.6. On KiCad 9, KiPI works around
@@ -54,7 +71,7 @@ control in KiPI has a tooltip.
     example from python.org or Homebrew) and select it as the **Python interpreter** in
     *Preferences → Plugins*.
 
-### Steps
+#### Steps
 
 1. In KiCad, enable **Preferences → Plugins → Enable KiCad API**.
 2. Clone, link (or copy) this repo into your KiCad plugins folder, or uncompress the release source zip. The examples use KiCad 10's
@@ -83,6 +100,82 @@ control in KiPI has a tooltip.
    once the venv is ready. If it never appears, right-click the action in
    *Preferences → Plugins* and choose *Recreate Plugin Environment*.
 
+### Standalone
+
+1. Install **Python 3.10 to 3.13** if you do not have one (from
+   [python.org](https://www.python.org/downloads/), or your package manager). Python 3.14
+   will not do yet: two of KiPI's packages have no prebuilt version for it. On Linux, add
+   `python3-venv` (Debian, Ubuntu) and, for the setup window, `python3-tk`.
+2. Put the KiPI folder anywhere: clone this repo, or unzip `KiPI-<version>.zip` from the
+   [latest release](https://github.com/drewsum/KiPI/releases/latest).
+3. Start KiPI with its launcher: double-click **`kipi_launcher.pyw`** (Windows), or run
+
+   ```sh
+   python kipi_launcher.py                      # or: python kipi_launcher.py <board>.kipi.json.gz
+   ```
+
+The first start sets up KiPI. The setup window lists every package KiPI will install with
+its size, checked with PyPI for your computer (about 254 MB to download and 810 MB on disk
+on Windows), and nothing is installed until you click **Install**. On Windows and Linux
+x86-64 it also offers [PARDISO](#optional-faster-solves-on-large-boards-windows-and-linux-x86-64),
+and mentions the advantages/disadvantages of using this solver. Everything goes into an environment of KiPI's own, outside the KiPI
+folder:
+
+| | KiPI's environment |
+|---|---|
+| Windows | `%LOCALAPPDATA%\KiPI` |
+| macOS | `~/Library/Application Support/KiPI` |
+| Linux | `~/.local/share/kipi` |
+
+(`KIPI_HOME` puts it elsewhere.) Setting up takes a few minutes. The launcher installs
+with [uv](https://docs.astral.sh/uv/), which is much faster, when it can: uv on the PATH,
+or uvx or [pipx](https://pipx.pypa.io/) to fetch it. With none of them, or if uv fails, it
+uses Python's own venv and pip. Later starts open KiPI straight
+away, and the launcher sets up again by itself when a new KiPI needs different packages.
+With no window available (no tkinter, or `--console`), setup asks in the terminal instead.
+
+![The launcher's setup window on a first start: every package with its size, and the optional PARDISO solver](docs/images/launcher_setup.png)
+
+KiPI's window title then ends in *(standalone)*. Use **Open…** to open a board (its arrow
+lists the boards opened lately) and **Reload** to read it again; when the board file is
+saved, KiPI offers to read it again by itself. KiCad-only controls (*Load from KiCad*,
+*Refill zones*, *Select in KiCad*, part 3D models) are hidden.
+
+A `.kicad_pcb` reads the same as the plugin reads it from KiCad: same copper, item ids and
+setup file, so a board set up in the plugin opens standalone with its setup, and the other
+way round. Net classes come from the `.kicad_pro` beside the board. KiPI uses the zone fills
+saved in the file and does not fill zones itself, so **fill the zones in KiCad (B) and save**
+before opening the board; zones saved unfilled are listed under *Placeholders* in the board
+summary. Files from KiCad 6 or older need saving once in KiCad 7 or later.
+
+An **ODB++** job opens as a `.zip`, `.tgz` or `.tar.gz`, or unpacked (pick its
+`matrix/matrix` file). KiPI reads the copper as the job gives it, ties it to nets through
+the job's netlist, and takes the stackup from the layer matrix. The setup is found by the
+job's name, so export `Board.zip` next to `Board.kicad_pcb` to share the board's setup.
+Export at 6 decimals where you can: KiCad's default of 2 rounds every coordinate to
+10 µm (copper thickness comes from the copper weight, so it stays right). What the job
+does not carry is listed under *Placeholders*; KiCad's export in particular leaves out
+the nets of copper drawings, writes a dielectric's sublayers as one, and turns spaces in
+net names into underscores.
+
+To change the setup later, use **About → Manage dependencies…** in KiPI, or the launcher:
+
+```sh
+python kipi_launcher.py --setup              # the setup window again (add or remove PARDISO)
+python kipi_launcher.py --add-pardiso        # or --remove-pardiso, without questions
+python kipi_launcher.py --repair             # reinstall everything from scratch
+python kipi_launcher.py --reset              # delete KiPI's environment
+python kipi_launcher.py --create-shortcut    # add KiPI to the Start menu / applications menu
+```
+
+If setup fails, the launcher says why; everything the installer printed is in the `logs`
+folder next to the environment.
+
+On Windows, KiPI can be pinned to the taskbar: right-click its taskbar button while it is
+open (plugin or standalone), or its Start menu shortcut, and choose *Pin to taskbar*. The
+pinned button starts standalone KiPI through the launcher, as KiCad is needed to start the
+plugin.
+
 ### Optional: faster solves on large boards (Windows and Linux, x86-64)
 
 KiPI solves each rail with SciPy's single-threaded sparse solver, or with AMG when a rail
@@ -100,7 +193,9 @@ macOS or ARM:
 | Plugin environment on disk (Windows) | about 860 MB | about 1.5 GB |
 
 Almost all of that is MKL itself (565 MB installed) and Intel's OpenMP runtime (61 MB).
-To add it, install it into KiPI's plugin environment and restart the PCB editor:
+Standalone, tick it in the launcher's setup (or `python kipi_launcher.py --add-pardiso`).
+To add it to the plugin, install it into KiPI's plugin environment and restart the PCB
+editor:
 
 ```powershell
 # Windows (KiCad 10; use 9.0 for KiCad 9)
@@ -155,30 +250,41 @@ Below that:
 * **Display** colors copper by layer or by net, exaggerates the stackup (**Z scale**), and
   shows or hides vias, pads, the board, **PI Models** and part **3D Models**. By layer, each copper layer has
   its color from the PCB editor's color theme (KiCad's default theme if it cannot be read).
-* **PI Models** Marks the setup's VRMs, loads, series links and capacitors with a
-  model: a dot on each of their pads on the nets shown, with the part's name. It starts unticked; over results the
-  marks are hidden.
-* **3D Models** are the KiCad 3D models of the parts with PI models included in your setup (VRM components, loads, series links
-  and capacitor models) with a pad on a net included for analysis. When viewing results they start hidden; tick **3D Models** to show them on results. The
-  geometry and result views each remember their own setting.
+* **PI Models** Marks the parts of the current analysis: a dot on each of their pads on the nets shown, with the
+  part's name. In DC mode its VRMs, loads, series links and capacitors with a model; in AC mode its VRMs, series
+  links, probes and capacitors, the probes in place of the loads, which no impedance sweep uses. It starts unticked;
+  over results the marks are hidden. Clicking a VRM, load, series link or probe in the setup lists marks it in
+  amber; clicking a part's name (or dot) in 3D selects it in the current mode's setup. A newly selected part blinks
+  red and amber for a few seconds, to be found at a glance. Selecting a part never ticks PI Models for you.
+  **Snap to selected**, available while PI Models is ticked, brings the view to a part picked in the setup; untick
+  it to keep the view where it is. The choice is remembered.
+* **3D Models** shows the KiCad 3D models of every part on the board. When viewing results they start hidden; tick
+  **3D Models** to show them on results. The geometry and result views each remember their own setting.
 * **Info** shows whatever you last clicked in 3D. **Select in KiCad** selects that pad or
   via in the PCB editor. Thi can be used to pinpoint hot spots, find outliers in voltage drop, and find vias with heavy current.
+
+![PI Models marking the parts of the analysis, snapped to the selected +3.3V switcher](docs/images/pi_models.png)
 
 The **Power tree** toolbar button opens a block diagram of the modelled power network, left to right in
 the direction power flows: sources and regulators (each VRM type in its own color and
 tag), the rails they drive, series links, and the loads and capacitor models on each rail.
 It redraws as the setup changes and can be saved as a PNG.
 
+![The power tree of the multiphase buck example: a 12 V source, the 4-phase switcher, the 0.9 V core rail, its load and capacitor models](docs/images/power_tree.png)
+
 The **Stackup** toolbar button opens a window listing every copper and dielectric layer
 with its thickness (in µm, mm, mil or oz), each dielectric's material, εr and thermal
 conductivity, and each copper layer's conductor and resistivity, with the copper
 **Resistivity** and **TCR** for the whole board. The stackup is locked to KiCad's values by
 default; untick **Lock to imported values** to try other thicknesses, materials and εr
-(choosing a material from the list sets its typical εr and thermal conductivity). Every DC
+(choosing a material from the list sets its typical εr and thermal conductivity, and both
+can be typed over). Every DC
 and AC analysis uses the edited stackup, and the setup keeps it. A copper layer's conductor
 (copper foils, silver, gold, aluminum, nickel or tin) sets its resistivity, TCR and thermal
-conductivity, and can be changed while the stackup is locked. This can be used to explore how material and thickness properties impact power distribution performance. KiCad's API cannot change a
+conductivity, and like the thicknesses is changed with the lock unticked; locking again keeps it as set. This can be used to explore how material and thickness properties impact power distribution performance. KiCad's API cannot change a
 board's stackup yet, so enter a stackup you settle on in KiCad's Board Setup yourself.
+
+![The Stackup window: copper and dielectric layers with thickness, material, εr, thermal conductivity and resistivity](docs/images/stackup.png)
 
 Toolbar buttons set **Top / Bottom / Iso** views and save a **Screenshot…**. Drag to rotate,
 scroll to zoom and shift-drag (or middle-drag) to pan. **About** shows the KiPI version and
@@ -189,6 +295,18 @@ libraries for a bug report.
 
 The **PI setup** panel on the right enables setup of the power tree. Each list has **Add**,
 **Duplicate** and **Remove** buttons. Hover over any field for a tooltip saying what it does.
+
+**Import…** at the top of the panel fills the power tree from a Tomachie power-tree file
+(`<design>.pdn.json`, read from the schematic and the parts' datasheets): each rail's source,
+regulators as LDOs or switchers with their input pins, efficiency, quiescent current, dropout
+and input range, load switches and series parts as DC connections with their DC resistance,
+and each load's current and tolerance (the rail's stated range, raised to the datasheet's
+minimum supply voltage where that is higher). Schematic nets are matched to board nets through
+the pads. KiPI solves one value per item, so where the file gives a range the typical current
+or resistance is used; the log lists every minimum and maximum left out, every current the
+file does not know (imported as 0 A, to fill in by hand) and everything that could not be
+placed on the board. Settings, thermal and the AC setup are kept. Review the result, then
+solve.
 
 
 Pins are chosen with a picker: pick the net, then the part (type to search), then optionally
@@ -204,8 +322,10 @@ as missing pins, or two VRMs on one group, are shown in red as you edit.
 | Input pins | LDO and switcher only. The pins it draws from, which ties this VRM to its upstream net and defines the power tree. |
 | Efficiency / Quiescent | Switcher efficiency, LDO quiescent current |
 | Output current limit | Optional: the VRM PASSes if its total output current (all phases) is at most this. Leave at **no limit** to skip the check. |
+| Load line | Optional, in mΩ: the VRM regulates to its set voltage less this times its output current (what its connected loads and downstream VRMs actually draw). Drops are still measured from the set voltage, so the droop counts against load tolerances. |
 | Dropout | LDO only. The least input-to-output difference it regulates at |
-| Input min / max | Optional input range it regulates over. A VRM whose solved input voltage is outside its range, or an LDO below its dropout, cannot hold its set voltage: every load it feeds, directly or downstream, is marked **VRM OUT OF REGULATION** |
+| Input range | Optional input range it regulates over: min and max, in V or in % from the input rail's nominal voltage (the set voltage of the VRM driving it). A VRM whose solved input voltage is outside its range, or an LDO below its dropout, cannot hold its set voltage: every load it feeds, directly or downstream, is marked **VRM OUT OF REGULATION** |
+| DC accuracy | LDO and switcher only. Optional DC error of the output: min and max, in % of the set voltage or in V. The target calculator can subtract its larger side from the AC voltage tolerance. |
 | Sense pins | Optional remote sense: the VRM regulates the voltage at these pins instead of at its output |
 | Ground pins | Optional: also solve the ground return, so the drop is measured output-to-ground |
 | Ground sense pins | Optional negative remote sense on the ground net: the VRM holds its set voltage relative to these pins instead of 0 V (needs ground pins) |
@@ -215,7 +335,8 @@ KiPI automatically calculates the input current into the input pins on a VRM bas
 
 **Multi-phase VRMs**: set **Phases** above 1, then choose each phase in **Edit phase** and
 give it its own output pins (e.g. its inductor), input pins and ground pins. A new phase
-takes the next parts in sequence (`L1` → `L2`, `Q1` → `Q2`), or copies the previous one when
+takes the next parts in sequence (`L1` → `L2`, `Q1` → `Q2`), or on a board annotated by
+schematic sheet the same parts on the next sheet (`L101`, `Q101` → `L201`, `Q201`), or copies the previous one when
 there is no next part, so check its pins. All phases share the VRM's set
 voltage, type, efficiency and sense pins. Each phase carries an equal share of the output
 current and settles at whatever voltage its copper needs to deliver that share. The VRM
@@ -234,11 +355,20 @@ To try it without a design of your own, open the example board in
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
 * **Ground pins** (optional) include the ground return. KiPI superimposes all VRM and load return currents to form a comprehensive GND plane current model.
-* **Tolerance** (± %) is the PASS/FAIL limit. Each load is judged by its worst pin: the one
-  furthest from the VRM set point, below it (a **drop**) or above it (a **boost**). Boosts
+* **Heat** (optional, W) is what the part puts into the board in the electro-thermal solve,
+  when load power is included. Not set, it is the power the load draws (pin current × pin
+  voltage); set it for a part that passes most of its power on, such as a load switch.
+* **Tolerance** is the PASS/FAIL limit: a min and a max, each optional, in % from the VRM
+  set point (e.g. -3 % / +5 %) or in volts (e.g. 3.135 to 3.465 V). A load passes when every
+  pin is within it, none below it (a **drop**) or above it (a **boost**). Boosts
   happen with remote sense, where the VRM raises its output pins to hold a sense point
   further down the copper, so pins nearer the VRM sit above the set point. A load on a net
   group whose solve did not converge shows **NOT CONVERGED** instead of a result.
+* Before solving, KiPI checks that every load pin reaches its VRM through copper or series
+  links. Unconnected pins draw nothing: the load's current goes through its other pins, or,
+  with no supply (or ground) pin connected, is left out and the load shows
+  **DISCONNECTED**. The Notes tab lists every unconnected pin. A rail with no load connected
+  at all stops the solve.
 
 ![Load editor](docs/images/setup_loads.png)
 
@@ -263,11 +393,28 @@ ignored. The Notes tab lists these substitutions.
 ![The Solve tab: tick the net groups to solve](docs/images/dc_solve_tab.png)
 
 **Mesh tab**: **Max edge** is the largest FEA mesh triangle edge in mm; smaller is more accurate and
-slower. **Via grading** controls how fast the mesh refines towards plated holes, and
-**Barrel plating** sets the via wall thickness. The defaults suit most boards.
+slower. **Via grading** controls how fast the mesh refines towards plated holes.
+
+**Via plating** is a table of rules, first match wins: hole type (through, blind, buried,
+microvia, component hole, or any), a drill-size range, the plating thickness, and what a
+FILLED hole of that rule is filled with. The drill is the hole made in the laminate;
+plating grows inward from it, so a barrel is a copper tube of the drill's outside diameter.
+A via the KiCad board marks as filled carries its core too when the fill conducts: copper
+fill makes the whole hole copper, conductive epoxy adds its core at the resistivity you
+enter, and non-conductive epoxy adds nothing. A via whose fill is left to the design rules
+(or a board format that does not say) is solved unfilled, and the Notes tab counts them.
+The defaults are IPC-6012 Class 2 minimum average plating (through and blind 20 µm, buried
+13 µm, microvia 12 µm); set what your fabricator states. Each via's pad is read per layer
+from its padstack, so a pad removed from an unused inner layer is not counted as copper.
+
+![The Mesh tab with the via plating rules](docs/images/setup_mesh.png)
 
 **Thermal tab** (off by default): tick **Electro-thermal co-simulation** to make losses heat
-the board and the warmer copper become more resistive. Set:
+the board and the warmer copper become more resistive. The heat is the copper and via
+losses, the DC connections, each VRM's conversion loss, and each load: by default all the
+power it takes from its supply pins (V x I), spread over the pads of its footprint. A load's
+**Heat** field replaces that for a part that passes power on (a load switch, an LED or
+motor driver). The Notes tab and the report list the heat by source. Set:
 
 ![Thermal settings](docs/images/setup_thermal.png)
 
@@ -276,10 +423,9 @@ the board and the warmer copper become more resistive. Set:
   changed.
 * **Airflow** in m/s.
 * **Grid**, the thermal cell size: *auto* gives about 250 cells across the board.
-* **Laminate k**: *from stackup* looks up the in-plane conductivity from each dielectric's
-  material in your KiCad stackup (FR4, prepreg types, polyimide, Kapton, PTFE, Rogers,
-  ceramic, aluminum…). Unrecognized names fall back to FR4 with a warning. Enter a value
-  here to override.
+* The laminate's in-plane thermal conductivity is each dielectric's **k** in the Stackup
+  window, looked up from its material (FR4, prepreg types, polyimide, Kapton, PTFE, Rogers,
+  ceramic, aluminum…; unrecognized names fall back to FR4 with a warning) or typed in there.
 * **Include load power dissipation** (off by default): each load also heats the board with
   the power it draws, the sum over its supply and ground pins of pin current × pin voltage,
   spread over those pins. DC connection (series link) I²R losses always heat their pins.
@@ -287,9 +433,11 @@ the board and the warmer copper become more resistive. Set:
   either limit, on any layer, is marked FAIL in the Thermal results tab. Changing them grades
   the last solve straight away.
 
-The setup is saved as `<board>.kipi-setup.json` next to the board when you click **Save** at
-the top of the panel and every time you solve. It travels with the project and can go into
-version control. AI Agents can make quick work of power tree modelling by editing this file directly if they have knowledge of the file format from this codebase as well as the components in your design from your schematic.
+The setup is saved as `<board>.kipi-setup.yml` (YAML) next to the board when you click
+**Save** at the top of the panel and every time you solve. It travels with the project and
+can go into version control. Setups saved as `<board>.kipi-setup.json` by earlier KiPI
+versions still open, with a warning that JSON setups are deprecated; the next save writes
+the `.yml` file, which is read from then on. AI Agents can make quick work of power tree modelling by editing this file directly if they have knowledge of the file format from this codebase as well as the components in your design from your schematic.
 
 **Data Prepoulation**: As you pick pins when setting up the power tree, KiPI pre-fills the fields that usually follow from those selections. Every prepopulation can be changed, and a field the extracted board gives no answer for is left as it was:
 
@@ -303,7 +451,10 @@ version control. AI Agents can make quick work of power tree modelling by editin
 * **Series link side B**: side A on a part with pads on just two nets (a resistor, ferrite or
   fuse) puts side B on its other net, and a resistor's value becomes the resistance.
 * **New phases** of a multi-phase VRM take the next parts in sequence: `L1` → `L2`,
-  `Q1` → `Q2`.
+  `Q1` → `Q2`. On a board annotated by schematic sheet (from the sheet number × 100 or
+  × 1000) they take the same parts on the next sheet: `L101`, `Q101`, `Q102` → `L201`,
+  `Q201`, `Q202`, when all of them are there. A step set by earlier phases is kept
+  (`Q2`, `Q4` → `Q6`).
 * **Names** follow the picked part while they are still its reference.
 
 ### 4. Solve
@@ -342,23 +493,24 @@ solved, the ground under a load rises above 0 V, so a supply plane can read abov
 point even though a remotely sensed rail is exactly on target. The Loads tab's effective
 voltage (supply minus ground at the load) is the figure to compare with the load's voltage requirements.
 
-The color scale covers the copper layers that are shown: untick a layer under **Copper
-layers** and the colors stretch over the layers that remain, so one layer's outlier does not
-flatten the rest. (Current and power density clip at the 99.5th percentile, since pad corners
-spike; the probe still reports true values.)
+The color scale covers the whole result, on every layer. To look closer, type a minimum and
+maximum in the **Color scale** fields under the result field (for temperature, say ambient
+to your limit); values outside take the end colors. Limits are kept per net group and field
+(temperature: for every group) until **Auto**. (Automatic current and power density scales
+clip at the 99.5th percentile, since pad corners spike; the probe still reports true values.)
 
 Click any point on the copper or vias in the 3D results view to probe it: the Info box gives the voltage, its drop
 or boost from the VRM regulation voltage, current and power density, and the pad or via probed. **Show
 copper** returns to the plain geometry view; pick the rail in the results pane again, or another field, to get
 the results back without resimulation.
 
-![Voltage across the +3.3V plane, with the Loads results table](docs/images/voltage.png)
+![Voltage drop along the +12V input plane, from the input connector to the two loads, with the Loads results table](docs/images/voltage.png)
 
-![Current density with flow arrows on the 5 A +12Vin input path](docs/images/current_density.png)
+![Current density with flow arrows through the +12V input path and the U201 eFuse, with the Series links table](docs/images/current_density.png)
 
 | Via current | Temperature |
 |---|---|
-| ![Via current, with the Vias table ranked by current](docs/images/via_current.png) | ![Board temperature from the electro-thermal solve, with the Notes tab](docs/images/temperature.png) |
+| ![Via current, with the Vias table ranked by current](docs/images/via_current.png) | ![Board temperature from the electro-thermal solve, with the Thermal results tab](docs/images/temperature.png) |
 
 Result tabs (click a column header to sort by it; click again to reverse). The setup's
 tables (capacitor parts, custom target points, load pin groups) and the HTML reports'
@@ -369,7 +521,7 @@ tables sort the same way:
 | Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
 | VRMs | Output and input voltage, current and power, conversion loss, and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
 | Series links | Current and loss in each series part  (I squared R losses)|
-| Vias | Every via and PTH barrel ranked by current. Set a **Current limit** for PASS/FAIL, and double-click a row to fly to it. |
+| Vias | Every via and PTH barrel ranked by current. The **Current limit** for PASS/FAIL starts at 1 A, a placeholder: set your own, or 0 for none. Double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, series links and VRM conversion |
 | Thermal | After an electro-thermal solve: the hottest copper on each layer, its rise and location, PASS/FAIL against the temperature limits, the iteration history and the dielectric conductivities used. Double-click a row to show that group's temperature. |
 | Notes | Solver details, warnings and the thermal iteration history |
@@ -377,14 +529,17 @@ tables sort the same way:
 **Export ▾** writes the tables as CSV (including `_pins.csv`, with the voltage and current
 of every pin each rail was solved with, which the HTML report also lists), the 3D
 results as a ParaView `.vtm`, or **Save
-results…** as a `.kipi-results` file (named with the board and the time by default), which the toolbar's **Open results…** reloads without
-solving again (load the board first). Results files are Python pickles, so only open ones
-you created.
+results…** as a `.kipi-dc-results` file, or `.kipi-dc-thermal-results` after an
+electro-thermal solve (named with the board and the time by default), which the toolbar's **Open results…** reloads without
+solving again (load the board first). Results files hold JSON and NumPy arrays in a zip:
+they open on any computer and cannot run code, so they are safe to share. The 3D views are
+rebuilt when the file opens. Results saved by KiPI 0.7 and earlier are Python pickles, which
+can run code; KiPI asks before it opens one, and saving it again writes the new format.
 
 ### 6. AC: PDN impedance
 
 Switch **Mode** to **AC**. The setup panel becomes the **AC setup**, which shares the VRMs and
-series links with DC mode (fields only DC mode uses are grayed out) and adds:
+series links with DC mode (every VRM field can be edited in either mode) and adds:
 
 * **Capacitors tab**: RLC models (capacitance, ESL, ESR) for the decoupling capacitors, each
   shared by a group of identical parts. **Models from values** makes one model per capacitor
@@ -394,12 +549,27 @@ series links with DC mode (fields only DC mode uses are grayed out) and adds:
   **Tick same value + footprint**, **Tick shown** and **Untick shown** for many at once.
   The table shows each part's footprint, so 0402 and 0603 parts of one value can get
   different models. Enter only the part's own ESL: its mounting (pads,
-  vias, planes) is simulated. **Important**: Ensure that capacitors of the same value in different case sizes are modelled independently, as no two capacitors are created the same. Modelling of DC bias and dielectric effect to be added in a future release.
+  vias, planes) is simulated. **Important**: Ensure that capacitors of the same value in different case sizes are modelled independently, as no two capacitors are created the same.
+  A ceramic model (X5R, X7R…) with a **Voltage rating** is derated by the DC voltage across
+  each of its parts: enter the rating and how much capacitance it **Keeps at rating**
+  (from the datasheet's DC bias curve; 40 % by default). The voltage is what the last DC
+  solve found across each part, or else the rail's VRM set point. **Models from values**
+  reads the rating from values such as `10uF 6.3V X5R` for class II dielectrics.
+  A model's **Dielectric** (X7R, X5R, Y5V…) fills in its typical **Aging** rate, in % of
+  capacitance lost per decade of hours (enter the datasheet's rate if it gives one), and
+  gives its capacitance a typical temperature curve.
+  **Models from values** reads the dielectric from the value too.
+  **Manufacturing tolerance** is optional: the part's capacitance tolerance in %, from its
+  datasheet or value code (J ±5 %, K ±10 %, M ±20 %), applied by the sweep setting below.
 * **Probes tab**: Defines where to plot the PDN impedance, usually a device's supply and ground
-  pins. Each probe has a target impedance and frequency range: **flat** (an impedance up to a frequency) or **custom**, a
+  pins. **From DC load** adds a probe on the same pins as a DC load you pick from its dropdown, or on an LDO's or switcher's input pins (one entry per phase). Each probe has a target impedance and frequency range: **flat** (an impedance up to a frequency) or **custom**, a
   piecewise-linear mask through frequency/impedance points on the log-log plot.
   **Target Impedance/Frequency Calculator** works out a flat target from the device's AC
   voltage tolerance, load step and slew rate: Z = V / ΔI, up to f = 1 / (π · t_rise).
+  It can copy the tolerance and the load step from the DC load on the probe's pins, and
+  subtract from the tolerance both the DC accuracy of the VRM driving the rail and, from the
+  last DC solve, the **DC drop at the load** itself: how far that load's effective voltage
+  sits from its VRM's set point (solve the power tree first, or the button is disabled).
   Targets apply only above the rail's VRM **Control loop bandwidth**: the AC solve leaves
   the VRM out of circuit (the open-loop PDN impedance, capacitive only), and below its bandwidth the
   converter's control loop is assumed to hold the rail. If the bandwidth is at or above the target frequency,
@@ -407,7 +577,18 @@ series links with DC mode (fields only DC mode uses are grayed out) and adds:
   ["Power Distribution System Design Methodology and Capacitor Selection for Modern CMOS
   Technology"](https://doi.org/10.1109/6040.784476), IEEE Trans. Adv. Packaging, 1999.
 * **Sweep tab**: start and stop frequency, points per decade, and how many copper field
-  solves per decade (the copper's response is interpolated between them).
+  solves per decade (the copper's response is interpolated between them). **Capacitor DC
+  bias** turns the DC bias estimate on or off for every model at once. **Capacitor
+  manufacturing tolerance** solves every model that has a **Manufacturing tolerance** at the
+  low end of it (subtracting it: a ±10 % model keeps 90 %), the worst case for a PDN.
+  **Capacitor aging**
+  ages every model with a dielectric by the **Hours operated** (ten years by default; type
+  them, or drag the slider that shows while aging is ticked), on top
+  of its DC bias: each loses its aging rate per decade of hours past 1000 hours.
+  **Temperature** sets the copper's resistivity and the capacitance of models with a
+  dielectric: **Fixed** at one board temperature, or **From DC thermal co-simulation**, the
+  copper temperatures of the last DC solve with thermal co-simulation (or of DC results
+  opened from a file).
 * **Mesh tab**: mesh size, minimum edge at plated holes (which sets the via inductance),
   dielectric loss tangent and default εr.
 
@@ -435,8 +616,10 @@ probe's |Z| at that frequency. The results table gives each probe's minimum and 
 were left out for having no model. Each rail keeps its last result, so switching **Rail** shows
 another rail's curves without solving again. **Export CSV…** writes |Z|, R and X at every
 frequency. **Save results…** writes every solved rail to a `.kipi-ac-results` file, which
-**Open results…** reloads in AC mode (load the board first; like DC results files, these are
-pickles, so only open ones you created).
+**Open results…** reloads in AC mode (load the board first). Like DC results files, these are
+JSON and arrays in a zip, safe to share.
+
+![The Board map of the core rail's solve: the VCORE and GND mesh, the probe and the capacitors by model](docs/images/ac_board_map.png)
 
 Tick **HTML report** next to **Solve rail** to also write
 `<board>_<rail>_ac_report_<date>_<time>.html` next to the board after each solve. It opens in your web browser when the solve
@@ -450,7 +633,7 @@ details.
 
 ### Tips and troubleshooting
 
-* **"No copper path" between a VRM and a load** usually means unrouted copper, an unfilled
+* **A load shows DISCONNECTED, or "no load on this rail is connected"** usually means unrouted copper, an unfilled
   zone, or a missing series link for a part between them when both have PI models defined.
 * **Unexpected voltage drop in results:** compare the board view with KiCad. Thermal reliefs, necked traces and
   via counts dominate DC drop, and the Current density view with Arrows makes the bottleneck
@@ -475,20 +658,28 @@ details.
 
 ## Development
 
-KiPI also runs outside KiCad, against the running PCB editor or a saved snapshot:
+From a checkout, KiPI runs standalone, or as the plugin against the running PCB editor:
 
 ```powershell
 python -m venv --system-site-packages .venv   # use KiCad's bundled python.exe
 .venv\Scripts\pip install -r requirements.txt -r requirements-dev.txt
-.venv\Scripts\python -m kipi                         # connect to the running PCB editor
-.venv\Scripts\python -m kipi --dump board.kipi.json.gz   # extract only
-.venv\Scripts\python -m kipi --snapshot tests\data\synthetic.kipi.json
+.venv\Scripts\python -m kipi tests\data\synthetic.kipi.json   # standalone, opening a board
+$env:KIPI_HOST = "plugin"; .venv\Scripts\python -m kipi        # the plugin: connect to KiCad
+.venv\Scripts\python -m kipi --dump board.kipi.json.gz   # extract from KiCad only, no window
 .venv\Scripts\python -m pytest tests
 .venv\Scripts\ruff check .                    # lint, as CI does (ruff check . --fix fixes most)
 ```
 
-`requirements.txt` is what KiCad installs into the plugin's venv; test and lint tools live
-only in `requirements-dev.txt`.
+KiPI runs as the plugin when KiCad starts it (KiCad sets `KICAD_API_SOCKET`) and standalone
+otherwise; `KIPI_HOST=plugin` or `standalone` overrides that (`kipi/host.py`).
+
+`requirements.txt` is what KiCad installs into the plugin's venv: `pyproject.toml`'s
+dependencies, which are all standalone needs, plus its `kicad` extra (kicad-python).
+`requirements-standalone.txt` is what the launcher installs: the dependencies alone.
+`tests/core/test_requirements.py` keeps the three in step. Test and lint tools live only in
+`requirements-dev.txt`. After changing the requirements, run
+`python .github/scripts/dep_sizes.py` to refresh the package list the launcher shows when
+it cannot check with PyPI (a test fails until you do).
 
 The tests follow the package: `tests/core` (geometry, meshing, solvers, KiCad I/O),
 `tests/dc` (power tree, thermal, DC reports and panel), `tests/ac` (impedance solve, targets,
@@ -545,15 +736,25 @@ The tests also solve the example board and check that its committed setup still 
 
 | Path | Purpose |
 |---|---|
-| `kipi_entry.py`, `plugin.json` | KiCad IPC plugin action |
+| `kipi_entry.py`, `plugin.json` | KiCad IPC plugin action (runs KiPI as the plugin) |
+| `kipi/__main__.py` | `python -m kipi` / `kipi`: standalone, or the plugin with `KIPI_HOST=plugin` |
+| `kipi_launcher.py`, `.pyw` | Standalone launcher: sets up KiPI's environment on the first start, then starts KiPI in it |
+| `kipi/launcher/` | The launcher itself, standard library only: environment location, Python discovery, the package list and sizes (`deps.py`, `deps_manifest.json`), the installer (uv, run directly or through uvx or pipx, or venv and pip), the setup screens (`ui_tk.py`, `ui_console.py`) and shortcuts |
+| `kipi/host.py` | Plugin or standalone: how KiPI was started |
 | `kipi/core/` | Shared by every analysis; no Qt and no analysis-specific physics: |
-| `kipi/core/kicad_io/` | kipy → `BoardSnapshot` extraction, JSON snapshot save/load |
-| `kipi/core/model/` | Toolkit-independent board model, power-net heuristics |
-| `kipi/core/geometry/` | Per-net, per-layer copper union (shapely) |
+| `kipi/core/model/` | Toolkit-independent board model, copper layer ids, stackup building, JSON snapshot save/load, power-net heuristics |
+| `kipi/core/geometry/` | Per-net, per-layer copper union (shapely), arc discretization |
 | `kipi/core/mesh/` | Conforming per-layer triangle mesh (Triangle), graded around plated holes |
 | `kipi/core/solver/` | Sparse linear algebra: direct backends (PARDISO / SuperLU), direct or AMG-CG SPD solver |
-| `kipi/core/viz/` | PyVista copper meshes and batching (no Qt) |
+| `kipi/core/viz/` | PyVista copper meshes and batching, default layer colors (no Qt) |
 | `kipi/core/progress.py` | Progress/log reporting used by every pipeline stage |
+| `kipi/sources/` | Where boards come from, each producing a `BoardSnapshot`; nothing else in KiPI imports kipy: |
+| `kipi/sources/base.py` | What the window asks of a source (`BoardSource`: read, re-read, refill, select) and of a design tool on this computer (`InstalledTool`: layer colors, part models) |
+| `kipi/sources/registry.py` | The board files **Open…** reads, and which source reads each |
+| `kipi/sources/kicad_ipc/` | The running KiCad, through the IPC API (kipy): board extraction, zone refill, KiCad instance checks, color theme, 3D models through kicad-cli |
+| `kipi/sources/kicad_pcb/` | KiCad board files read without KiCad: S-expression parser, pads, the `.kicad_pro`'s net classes |
+| `kipi/sources/odbpp/` | ODB++ jobs (folder, `.zip`, `.tgz`): the archive, layer features and symbols, the `eda/data` netlist and components, the stackup from the matrix |
+| `kipi/sources/snapshot_file.py` | A saved snapshot as a source |
 | `kipi/dc/` | DC analysis: |
 | `kipi/dc/solver/` | 2.5D DC conduction FEM: sheet conductance, via/PTH barrels, series parts, sources, loads |
 | `kipi/dc/pi/` | User power-tree setup (VRMs, loads, series links), JSON, validation, the guesses that pre-fill it, tree solver, results tables |

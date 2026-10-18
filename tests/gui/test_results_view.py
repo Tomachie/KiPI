@@ -48,11 +48,17 @@ def window(app, monkeypatch, tmp_path):
         def add_net(self, ns, render=True):
             self._nets.append(ns.net)
 
-        def show_result(self, scene, field=None):
-            self.result, self.field = scene, field or self.field
+        def show_result(self, scene, field=None, limits=None):
+            self.result, self.field, self.limits = scene, field or self.field, limits
 
-        def set_result_field(self, field):
-            self.field = field
+        def set_result_field(self, field, limits=None):
+            self.field, self.limits = field, limits
+
+        def set_color_limits(self, limits):
+            self.limits = limits
+
+        def color_range(self):
+            return (self.limits or (0.0, 1.0)) if self.result is not None else None
 
         def clear_result(self):
             self.result = None
@@ -122,7 +128,7 @@ def test_opening_results_needs_a_board(app, window, monkeypatch):
     monkeypatch.setattr("qtpy.QtWidgets.QFileDialog.getOpenFileName",
                         lambda *a, **k: pytest.fail("asked for a file with no board"))
     window.open_results()
-    assert told and "Load the board" in told[0]
+    assert told and "Load or open the board" in told[0]
     assert window._tree is None
 
 
@@ -138,3 +144,116 @@ def test_pads_are_identified_in_a_group_of_several_nets(app, window):
         window._on_pick((x, 0.5, z))
         text = window.info.toPlainText()
         assert f"Pad {label}" in text and f"Net: {net}" in text
+
+
+def test_color_scale_limits_are_typed_kept_and_reset(app, window):
+    # #101: the Results pane's scale fields set the 3D color range, per group and field.
+    snap, s = _bridged_board()
+    tree, first = _solved(app, window, snap, s)
+    view, panel = window.viewer, window.solve_panel
+    assert view.limits is None and panel.spin_scale_min.isEnabled()
+    assert not panel.btn_scale_auto.isEnabled()
+    panel.spin_scale_max.setValue(5.0)
+    panel.spin_scale_min.setValue(2.0)
+    assert view.limits == (2.0, 5.0) and panel.btn_scale_auto.isEnabled()
+    assert panel.spin_scale_min.suffix() == " V"
+
+    panel.cmb_field.setCurrentIndex(panel.cmb_field.findData("current_density"))
+    assert view.limits is None                    # another field starts on its whole range
+    assert panel.spin_scale_min.suffix() == " A/mm²"
+    other = next(n for n in tree.groups if n != first)
+    panel.cmb_group.setCurrentText(other)
+    panel.cmb_field.setCurrentIndex(panel.cmb_field.findData("voltage"))
+    assert view.limits is None                    # and so does another group
+    panel.cmb_group.setCurrentText(first)
+    assert view.limits == (2.0, 5.0)              # kept for the group and field set
+    assert panel.spin_scale_min.value() == 2.0
+
+    panel.spin_scale_min.setValue(6.0)            # above the maximum: not a range
+    assert view.limits == (2.0, 5.0)
+    panel.btn_scale_auto.click()
+    assert view.limits is None and panel.color_limits(first, "voltage") is None
+    assert not panel.btn_scale_auto.isEnabled()
+
+
+def test_temperature_limits_are_shared_by_every_group(app, window):
+    panel = window.solve_panel
+    panel._scale_key = panel._limits_key("a", "temperature")
+    panel.spin_scale_max.setValue(80.0)
+    panel.spin_scale_min.setValue(25.0)
+    assert panel.color_limits("b", "temperature") == (25.0, 80.0)
+    assert panel.color_limits("b", "voltage") is None
+
+
+def _idle(app, w):
+    t0 = time.time()
+    while w._busy():
+        app.processEvents()
+        assert time.time() - t0 < 30, "window did not go idle"
+    app.processEvents()
+
+
+def test_results_save_and_open_in_the_background(app, window, monkeypatch, tmp_path):
+    from kipi.core import results_io
+    tree, first = _solved(app, window, *_bridged_board())
+    path = tmp_path / "r.kipi-dc-results"
+    offered = []
+
+    def save_as(parent, title, name, filt):
+        offered.append((name, filt))
+        return str(path), ""
+    monkeypatch.setattr("qtpy.QtWidgets.QFileDialog.getSaveFileName", save_as)
+    window._export("results")
+    _idle(app, window)
+    assert path.is_file() and not results_io.is_legacy(path)
+    # The suggested name says what was solved: DC alone here.
+    assert offered[0][0].endswith(".kipi-dc-results") and "DC results" in offered[0][1]
+
+    window._tree, window._scenes = None, {}
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: pytest.fail(str(a[2])))
+    filters = []
+
+    def open_file(parent, title, start, filt):
+        filters.append(filt)
+        return str(path), ""
+    monkeypatch.setattr("qtpy.QtWidgets.QFileDialog.getOpenFileName", open_file)
+    window.open_results()
+    # Both kinds open, and so do results named as before 0.8.0.
+    assert all(f"*{s}" in filters[0] for s in (".kipi-dc-results", ".kipi-dc-thermal-results",
+                                               ".kipi-results"))
+    _idle(app, window)
+    assert set(window._scenes) == set(tree.groups)        # the 3D views are rebuilt
+    assert window.viewer.result is window._scenes[first]
+    assert [l.drop for l in window._tree.loads] == [l.drop for l in tree.loads]
+
+
+def test_results_pickled_by_an_older_kipi_open_only_when_confirmed(app, window, monkeypatch,
+                                                                   tmp_path):
+    import gzip
+    import pickle
+    tree, first = _solved(app, window, *_bridged_board())
+    path = tmp_path / "old.kipi-results"
+    with gzip.open(path, "wb") as fh:
+        pickle.dump({"format": 1, "kind": "dc", "saved": "2026-01-01 00:00:00",
+                     "board": window.snapshot.board_name, "tree": tree,
+                     "scenes": window._scenes, "setup": None}, fh)
+    window._tree, window._scenes = None, {}
+    monkeypatch.setattr("qtpy.QtWidgets.QFileDialog.getOpenFileName",
+                        lambda *a, **k: (str(path), ""))
+    asked = []
+
+    def answer(button):
+        def warning(parent, title, text, *a):
+            asked.append(text)
+            return button
+        return warning
+    monkeypatch.setattr(QMessageBox, "warning", answer(QMessageBox.Cancel))
+    window.open_results()
+    _idle(app, window)
+    assert "pickle" in asked[0] and window._tree is None
+
+    monkeypatch.setattr(QMessageBox, "warning", answer(QMessageBox.Open))
+    window.open_results()
+    _idle(app, window)
+    assert len(asked) == 2 and set(window._scenes) == set(tree.groups)
+    assert "save them again" in window.log_view.toPlainText()

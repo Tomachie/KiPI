@@ -11,13 +11,14 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from qtpy.QtCore import Qt, QTimer
+from qtpy.QtCore import QFileSystemWatcher, QSettings, Qt, QTimer
 from qtpy.QtGui import QAction, QColor, QIcon, QPixmap, QTextCursor
 from qtpy.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDockWidget, QDoubleSpinBox, QFileDialog, QFormLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow,
+    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMenu,
     QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSizePolicy, QSlider,
-    QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolBar, QVBoxLayout, QWidget,
+    QSplitter, QStackedWidget, QTabWidget, QTextBrowser, QToolBar, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from kipi import __version__
@@ -29,24 +30,36 @@ from kipi.dc.pi.tree import fmt_drop
 from kipi.gui.stackup_window import StackupWindow
 from kipi.gui.viewer3d import Viewer3D
 from kipi.gui.worker import QtProgress, Task
+from kipi.host import Host, current as current_host
+from kipi.sources import registry
+from kipi.sources.base import BoardSource, InstalledTool
 
 log = logging.getLogger("kipi")
 
 _KIND_TAG = {"power": "PWR", "ground": "GND", "signal": ""}
 _KIND_COLOR = {"power": "#e07050", "ground": "#70a0e0", "signal": "#a0a0a0"}
 MAX_AUTO_NETS = 4
+# A save can touch the board file several times (KiCad writes a new file and renames
+# it); the window waits this long for the file to settle before offering to reload.
+FILE_SETTLE_MS = 800
 # Analysis modes, chosen in the toolbar: (key, label, setup dock title).
 MODES = (("dc", "DC", "PI setup"), ("ac", "AC", "AC setup"))
 VIA_PICK_PX = 10      # a click this close to a via barrel on screen selects it
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, kicad=None, board=None, snapshot: Optional[BoardSnapshot] = None):
+    def __init__(self, source: Optional[BoardSource] = None, tool: Optional[InstalledTool] = None,
+                 snapshot: Optional[BoardSnapshot] = None, host: Optional[Host] = None):
+        """``source`` is where Load reads the board from (None: no board yet, or only
+        snapshots); ``tool`` the design tool on this computer that gives layer colors and
+        part models (None: KiPI's own colors, no models); ``host`` how KiPI was started
+        (default :func:`kipi.host.current`), which picks the toolbar."""
         super().__init__()
-        self.setWindowTitle(f"KiPI {__version__} — Power Integrity")
+        self.host = host or current_host()
+        self._set_title("Power Integrity")
         self.resize(1500, 950)
-        self._kicad = kicad
-        self._board = board
+        self._source = source
+        self._tool = tool or InstalledTool()
         self.snapshot: Optional[BoardSnapshot] = None
         self.power_tree_window = None
         self._copper_cache: Dict[str, Dict[int, object]] = {}
@@ -71,9 +84,7 @@ class MainWindow(QMainWindow):
         self._model_task: Optional[Task] = None
         self._model_gen = 0                 # bumped per board; stale loads are dropped
         self._models_pending = False        # wanted parts changed while a load ran
-        self._model_source = None           # (kicad-cli, board file), False if unusable
-        self._kicad_cli = None              # found once per session
-        self._cli_looked = False
+        self._model_source = None           # the board's ModelProvider, False if none
         self._closed = False
         self._layer_colors_from = None      # where the layer colors were last read from
         self._model_timer = QTimer(self)    # coalesce setup edits into one update
@@ -86,6 +97,15 @@ class MainWindow(QMainWindow):
         self._imported_stackup = None     # as read from KiCad, before any edits
         self._pending_stackup = None      # edited while a task ran; applied after
         self.mode = "dc"
+        # The board's files, watched so a board saved in its editor can be read again.
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.fileChanged.connect(self._board_file_changed)
+        self._changed_timer = QTimer(self)
+        self._changed_timer.setSingleShot(True)
+        self._changed_timer.setInterval(FILE_SETTLE_MS)
+        self._changed_timer.timeout.connect(self._offer_reload)
+        self._asking_reload = False
+        self._own_write_until = 0.0         # changes before this are KiPI's own saves
 
         # The central area: the 3D view and, in AC mode, the impedance plot and the board
         # map of the solve (#67).
@@ -111,12 +131,13 @@ class MainWindow(QMainWindow):
         self.stackup_window = StackupWindow(self)
         self.stackup_window.stackup_changed.connect(self._stackup_changed)
         self.stackup_window.settings_changed.connect(self.solve_panel.setup_changed.emit)
+        self._source_changed()
         self.statusBar().showMessage("Ready")
 
         if snapshot is not None:
             QTimer.singleShot(0, lambda: self._set_snapshot(snapshot))
-        elif board is not None:
-            QTimer.singleShot(0, self.load_from_kicad)
+        elif source is not None:
+            QTimer.singleShot(0, self.reload_board)
 
     # ================================================================== UI
     def _build_toolbar(self):
@@ -131,14 +152,27 @@ class MainWindow(QMainWindow):
             tb.addAction(a)
             return a
 
-        self.act_reload = act("Load from KiCad", self.load_from_kicad,
-                              "Re-read the board from the running KiCad PCB editor")
+        # Reload and Refill zones follow the board's source (see _source_changed). As a
+        # plugin the board comes from KiCad, and snapshots open beside it; standalone,
+        # Open reads a board file and Reload reads it again.
+        if self.host is Host.STANDALONE:
+            self.act_open = act("Open…", self.open_board, "Open a board file: " +
+                                ", ".join(f.name for f in registry.FORMATS) +
+                                "; the arrow lists the boards opened lately")
+            self.recent_menu = QMenu(self)
+            self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+            self.act_open.setMenu(self.recent_menu)
+            button = tb.widgetForAction(self.act_open)
+            if isinstance(button, QToolButton):
+                button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.act_reload = act("Reload", self.reload_board, "Re-read the board")
         self.chk_refill = QCheckBox("Refill zones", self)
-        self.chk_refill.setToolTip("Refill all zones in KiCad before reading (recommended)")
-        tb.addWidget(self.chk_refill)
+        # A toolbar widget is shown and hidden through the action holding it.
+        self._act_refill = tb.addWidget(self.chk_refill)
         tb.addSeparator()
-        act("Open snapshot…", self.open_snapshot,
-            "Load a saved board snapshot (.json / .json.gz), without KiCad running")
+        if self.host is Host.PLUGIN:
+            act("Open snapshot…", self.open_snapshot,
+                "Load a saved board snapshot (.json / .json.gz), without KiCad running")
         self.act_save = act("Save snapshot…", self.save_snapshot,
                             "Save the extracted board for offline use")
         tb.addSeparator()
@@ -201,6 +235,7 @@ class MainWindow(QMainWindow):
         self._set_open_results_tip()
         self._set_plot_tab_shown(mode == "ac")
         self._sync_pi_markers()
+        self._mode_panel()._part_selection(False)     # the part selected in this mode's lists
         if mode == "dc":
             if self._tree:
                 self._show_group(self.solve_panel.cmb_group.currentText())
@@ -212,7 +247,8 @@ class MainWindow(QMainWindow):
 
     def _set_open_results_tip(self):
         self.act_open_results.setToolTip(
-            "Reopen a saved DC power-tree solve (.kipi-results); load the board first"
+            "Reopen a saved DC or DC + thermal solve (.kipi-dc-results, .kipi-dc-thermal-results); "
+            "load the board first"
             if self.mode == "dc" else
             "Reopen saved AC impedance results (.kipi-ac-results); load the board first")
 
@@ -355,14 +391,17 @@ class MainWindow(QMainWindow):
             feats.addLayout(r)
         feat_tips = {"vias": "Show via and plated-hole barrels",
                      "pads": "Show pads", "board": "Show the board outline and laminate",
-                     "pi": "Mark the DC setup's VRMs (green), loads (cyan), series "
-                           "links (magenta) and capacitors with a model (white) on the "
-                           "nets shown: a dot on each of their "
-                           "pads, larger on the rail and smaller on ground, and the "
-                           "part's name. In DC mode, over the copper only, not over "
-                           "results. Off to start with.",
-                     "models": "Show the 3D models of the parts in the setup (VRMs, loads, "
-                               "series links and capacitors) on the nets shown. KiCad's "
+                     "pi": "Mark the parts of the current analysis on the nets shown: a "
+                           "dot on each of their pads, larger on the rail and smaller on "
+                           "ground, and the part's name. In DC mode its VRMs (green), "
+                           "loads (cyan), series links (magenta) and capacitors with a "
+                           "model (white); in AC mode its VRMs, series links, probes "
+                           "(violet) and capacitors, the probes in place of the loads, "
+                           "which no impedance sweep uses. Over the copper only, not over "
+                           "results. Off to start with. The VRM, load, series link or "
+                           "probe selected in the setup is marked in amber, and clicking "
+                           "its name selects it there.",
+                     "models": "Show the 3D models of every part on the board. KiCad's "
                                "kicad-cli reads them from the saved board file. The copper "
                                "and result views each remember this; over results they "
                                "start off."}
@@ -377,6 +416,20 @@ class MainWindow(QMainWindow):
             if name == "pi":
                 self.chk_pi = cb
         self.chk_models = cb
+        self.chk_models.setVisible(self._tool.offers_part_models)
+        self.chk_snap = QCheckBox("Snap to selected", g_view)
+        self.chk_snap.setToolTip("Bring the 3D view to a VRM, load, series link or probe "
+                                 "when it is clicked in the setup's lists. Untick it to keep "
+                                 "the view where it is; the part is still marked in amber. "
+                                 "Available while PI Models is ticked.")
+        # QSettings may hand a bool back as "true" / "false" (an INI file, the registry).
+        snap = QSettings("KiPI", "KiPI").value("view/snap_to_selected", True)
+        self.chk_snap.setChecked(str(snap).lower() not in ("false", "0"))
+        self.chk_snap.toggled.connect(
+            lambda v: QSettings("KiPI", "KiPI").setValue("view/snap_to_selected", v))
+        feats.addWidget(self.chk_snap)          # a row of its own: the dock is narrow
+        self.chk_snap.setEnabled(self.chk_pi.isChecked())   # it snaps to the markers
+        self.chk_pi.toggled.connect(self.chk_snap.setEnabled)
         self.chk_models.toggled.connect(lambda _: self._model_timer.start())
         # The copper and result views each keep their own Models setting.
         self.viewer.result_shown.connect(
@@ -393,12 +446,11 @@ class MainWindow(QMainWindow):
         self.info.setOpenExternalLinks(False)
         self.info.setToolTip("What you last clicked in the 3D view, or the impedance "
                              "plot's cursor values")
-        self.btn_select_kicad = QPushButton("Select in KiCad", g_info)
-        self.btn_select_kicad.setEnabled(False)
-        self.btn_select_kicad.setToolTip("Select the picked pad or via in the KiCad PCB editor")
-        self.btn_select_kicad.clicked.connect(self._select_in_kicad)
+        self.btn_select = QPushButton("Select", g_info)
+        self.btn_select.setEnabled(False)
+        self.btn_select.clicked.connect(self._select_in_source)
         li.addWidget(self.info, 1)
-        li.addWidget(self.btn_select_kicad)
+        li.addWidget(self.btn_select)
 
         split = QSplitter(Qt.Vertical, panel)
         for w in (g_nets, g_layers, g_view, g_info):
@@ -417,23 +469,31 @@ class MainWindow(QMainWindow):
         self.solve_panel = PIPanel(self)
         self.solve_panel.solve_requested.connect(self.run_solve)
         self.solve_panel.field_changed.connect(self._field_changed)
+        self.solve_panel.scale_changed.connect(self._scale_changed)
         self.solve_panel.group_changed.connect(self._show_group)
         # Picking the group already selected sends no group_changed; after "Show copper"
         # that pick is how the results come back.
         self.solve_panel.cmb_group.activated.connect(self._group_activated)
         self.solve_panel.show_geometry.connect(self._show_geometry)
         self.solve_panel.save_requested.connect(self._save_setup)
+        self.solve_panel.import_requested.connect(self.import_pdn)
         self.solve_panel.arrows_toggled.connect(self.viewer.set_arrows_visible)
         self.solve_panel.via_selected.connect(self._show_via)
+        # Each panel marks its own selection, while its mode is showing.
+        self.solve_panel.part_selected.connect(
+            lambda *a: self._pi_part_selected(*a) if self.mode == "dc" else None)
         self.solve_panel.export_requested.connect(self._export)
         self._tree = None
         self._scenes = {}
+        self._shown_group = ""
         self._setup_path = None
         self.ac_panel = ACPanel(self)
         self.ac_panel.save_requested.connect(self._save_setup)
         self.ac_panel.solve_requested.connect(self.run_ac_solve)
         self.ac_panel.result_selected.connect(self._show_ac_result)
         self.ac_panel.results_saved.connect(lambda path: self.log(f"Saved AC results to {path}"))
+        self.ac_panel.part_selected.connect(
+            lambda *a: self._pi_part_selected(*a) if self.mode == "ac" else None)
         for panel in (self.solve_panel, self.ac_panel):
             panel.setup_changed.connect(self._model_timer.start)
             panel.setup_changed.connect(self._refresh_power_tree)
@@ -582,29 +642,120 @@ class MainWindow(QMainWindow):
             self._task.progress.cancel()
 
     # ===================================================== board loading
-    def load_from_kicad(self):
-        refill = self.chk_refill.isChecked()
+    def _set_title(self, text: str):
+        self.setWindowTitle(f"KiPI {__version__} — {text}"
+                            + (" (standalone)" if self.host is Host.STANDALONE else ""))
 
-        def work(progress):
-            from kipi.core.kicad_io.extract import connect, extract_board, require_single_kicad
-            require_single_kicad()     # a second KiCad may have been opened since the last load
-            if self._board is None:
-                self._kicad, self._board = connect(progress=progress)
-            snap = extract_board(self._board, refill_zones=refill, progress=progress)
-            try:
-                snap.kicad_version = str(self._kicad.get_version())
-            except Exception:  # noqa: BLE001
-                pass
-            return snap
+    def _source_changed(self):
+        """Show what the board's source can do (Reload, Refill zones, Select), named
+        after it: "Load from KiCad" as a plugin, "Reload" for a file."""
+        src = self._source
+        if src is not None and self.host is Host.PLUGIN:
+            self.act_reload.setText(f"Load from {src.name}")
+        else:
+            self.act_reload.setText("Reload")
+        self.act_reload.setToolTip(f"Re-read the board from {src.description}" if src
+                                   else "Re-read the board")
+        self.act_reload.setVisible(src is not None and src.caps.reload)
+        self.chk_refill.setToolTip(f"Refill all zones in {src.name if src else 'the editor'} "
+                                   "before reading (recommended)")
+        self._act_refill.setVisible(src is not None and src.caps.refill_zones)
+        self.btn_select.setText(f"Select in {src.name}" if src else "Select")
+        self.btn_select.setToolTip("Select the picked pad or via in "
+                                   f"{src.description if src else 'the editor'}")
+        self.btn_select.setVisible(src is not None and src.caps.select_items)
+        self._watch(src.files() if src is not None else [])
 
-        self._run(work, self._set_snapshot, "Loading board")
+    # --- the board's files -----------------------------------------------------------
+    def _watch(self, files):
+        old = self._watcher.files()
+        if old:
+            self._watcher.removePaths(old)
+        existing = [str(f) for f in files if Path(f).is_file()]
+        if existing:
+            self._watcher.addPaths(existing)
+
+    def _board_file_changed(self, path: str):
+        # Saving by writing a new file and renaming it drops the old one from the watch.
+        if path not in self._watcher.files() and Path(path).is_file():
+            self._watcher.addPath(path)
+        if time.monotonic() < self._own_write_until:
+            return
+        self._changed_timer.start()
+
+    def _offer_reload(self):
+        src = self._source
+        if src is None or self._closed or self._asking_reload:
+            return
+        files = src.files()
+        if self._busy() or not all(Path(f).is_file() for f in files):
+            self._changed_timer.start()      # mid-task or mid-save: ask a little later
+            return
+        self._watch(files)
+        self._asking_reload = True
+        try:
+            answer = QMessageBox.question(
+                self, "Board changed",
+                f"{src.name} has changed on disk. Read it again?\n\n"
+                "The setup and the nets you have ticked stay as they are.")
+        finally:
+            self._asking_reload = False
+        if answer == QMessageBox.Yes:
+            self.reload_board()
+
+    def _fill_recent_menu(self):
+        from kipi.gui import recent
+        self.recent_menu.clear()
+        paths = recent.boards()
+        for p in paths:
+            a = self.recent_menu.addAction(Path(p).name)
+            a.setToolTip(p)
+            a.setStatusTip(p)
+            a.triggered.connect(lambda _=False, p=p: self.open_path(p))
+        if not paths:
+            self.recent_menu.addAction("No recent boards").setEnabled(False)
+            return
+        self.recent_menu.addSeparator()
+        self.recent_menu.addAction("Clear the list", recent.clear)
+
+    def open_board(self):
+        """Standalone: open a board file, which Reload then reads again."""
+        path, _ = QFileDialog.getOpenFileName(self, "Open board", "", registry.file_filter())
+        if path:
+            self.open_path(path)
+
+    def open_path(self, path):
+        """Read the board file ``path``; it becomes the source once it has been read."""
+        try:
+            source = registry.open_board(path)
+        except ValueError as e:
+            QMessageBox.warning(self, "KiPI", str(e))
+            return
+
+        def done(snap):
+            from kipi.gui import recent
+            self._source = source
+            self._source_changed()
+            self._set_snapshot(snap)
+            recent.add(path)
+
+        self._run(lambda progress: source.load(progress), done, "Opening board")
+
+    def reload_board(self):
+        """Read the board from the source again (Load from KiCad)."""
+        source = self._source
+        if source is None:
+            return
+        refill = source.caps.refill_zones and self.chk_refill.isChecked()
+        self._run(lambda progress: source.load(progress, refill_zones=refill),
+                  self._set_snapshot, "Loading board")
 
     def open_snapshot(self):
         path, _ = QFileDialog.getOpenFileName(self, "Open board snapshot", "",
                                               "KiPI snapshot (*.json *.json.gz)")
         if not path:
             return
-        from kipi.core.kicad_io.snapshot import load
+        from kipi.core.model.snapshot_io import load
 
         self._run(lambda progress: load(path), self._set_snapshot, "Opening snapshot")
 
@@ -618,8 +769,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
         import dataclasses
-        from kipi.core.kicad_io.snapshot import save
-        # A snapshot is the board as KiCad has it; edited thicknesses live in the setup.
+        from kipi.core.model.snapshot_io import save
+        self._own_write_until = time.monotonic() + 2.0   # may be the file Reload reads
+        # A snapshot is the board as its source has it; edited thicknesses live in the setup.
         save(dataclasses.replace(self.snapshot, stackup=self._imported_stackup
                                  or self.snapshot.stackup), path)
         self.log(f"Snapshot saved to {path}")
@@ -645,12 +797,11 @@ class MainWindow(QMainWindow):
         self._model_gen += 1
         self._model_source = None
         self._picked = None
-        self.btn_select_kicad.setEnabled(False)
-        self.setWindowTitle(f"KiPI {__version__} — {snap.board_name}")
+        self.btn_select.setEnabled(False)
+        self._set_title(snap.board_name)
         self._load_layer_colors(snap)
         self._result = None
-        self._tree = None
-        self._scenes = {}
+        self._set_tree(None, {})
         self._pending_stackup = None
         setup = self._load_setup(snap)
         self._imported_stackup = snap.stackup
@@ -665,9 +816,8 @@ class MainWindow(QMainWindow):
     def _load_layer_colors(self, snap: BoardSnapshot):
         """Color the copper layers like the PCB editor's color theme, read again on every
         load so a theme changed in KiCad shows after Load from KiCad."""
-        from kipi.core.kicad_io.colors import copper_theme
         from kipi.core.viz.meshes import set_layer_colors
-        colors, source = copper_theme(snap.kicad_version)
+        colors, source = self._tool.layer_colors(snap)
         set_layer_colors(colors)
         if source != self._layer_colors_from:
             self._layer_colors_from = source
@@ -856,25 +1006,52 @@ class MainWindow(QMainWindow):
 
     # ============================================================ PI Models markers
     def _sync_pi_markers(self):
-        """Mark the DC setup's VRMs, loads, series links and capacitors on the ticked nets
-        (#84). The
-        markers belong to DC mode: AC mode's view has none."""
+        """Mark the parts the current mode solves, on the ticked nets (#84): DC mode's VRMs,
+        loads, series links and capacitors, or, in AC mode, the VRMs, series links, probes
+        and capacitors of an impedance sweep."""
         if self._closed:
             return
-        from kipi.dc.viz.markers import pi_markers
-        markers = (pi_markers(self.snapshot, self.solve_panel.setup, self._checked_set())
-                   if self.mode == "dc" and self.snapshot is not None else [])
+        if self.snapshot is None:
+            self.viewer.set_pi_markers([])
+            return
+        # Both panels edit the one setup, which holds each mode's parts.
+        setup, nets = self.solve_panel.setup, self._checked_set()
+        if self.mode == "dc":
+            from kipi.dc.viz.markers import pi_markers
+            markers = pi_markers(self.snapshot, setup, nets)
+        else:
+            from kipi.ac.viz.markers import ac_markers
+            markers = ac_markers(self.snapshot, setup, nets)
         self.viewer.set_pi_markers(markers)
+
+    def _mode_panel(self):
+        """The setup panel of the current mode."""
+        return self.solve_panel if self.mode == "dc" else self.ac_panel
+
+    def _pi_part_selected(self, kind: str, name: str, by_user: bool):
+        """Mark the part selected in the current mode's setup lists in the 3D view: a VRM,
+        load or series link in DC mode, a VRM, series link or probe in AC mode. With PI Models
+        shown and Snap to selected ticked, one the user picked brings the view to it (#96)."""
+        self.viewer.set_pi_selected((kind, name) if kind else None)
+        if not (by_user and kind and self.chk_pi.isChecked() and self.chk_snap.isChecked()):
+            return
+        m = next((m for m in self.viewer.pi_markers if (m.kind, m.item) == (kind, name)),
+                 None)
+        if m is None:
+            self.statusBar().showMessage(f"{name} has no pads on the nets shown", 5000)
+            return
+        self.viewer.focus_on(np.vstack([m.power, m.ground]))
 
     # ============================================================ part models
     def _wanted_models(self) -> List[str]:
-        """Parts in the setup with a pad on a ticked net, like the copper drawn."""
+        """Every part on the board, when either view shows models (#96)."""
         snap = self.snapshot
         if snap is None or not self.viewer.models_wanted:
             return []
-        on_nets = {p.footprint for net in self._checked_set()
-                   for p in snap.items_on_net(net)[2]}
-        return sorted(self.solve_panel.setup.part_refs() & on_nets)
+        # Pads name their parts too: snapshots from before footprints were saved list none.
+        refs = {f.reference for f in snap.footprints} | {p.footprint for p in snap.pads}
+        refs.discard("")
+        return sorted(refs)
 
     def _sync_models(self):
         """Show the models of the wanted parts, loading those not seen yet."""
@@ -895,40 +1072,27 @@ class MainWindow(QMainWindow):
                                kicad.board_thickness_mm)
 
     def _models_source(self):
-        """``(kicad-cli, board file)``, or False (said once per board) if either is
-        missing."""
+        """The board's :class:`~kipi.sources.base.ModelProvider`, or False (and why, said
+        once per board) if it has none."""
         if self._model_source is None:
-            from kipi.core.kicad_io import models3d
-            if not self._cli_looked:
-                self._cli_looked = True
-                self._kicad_cli = models3d.find_kicad_cli(self._kicad)
-            board = models3d.board_file(self.snapshot)
-            if self._kicad_cli is None:
-                self.log("3D models are read with KiCad's kicad-cli, which KiPI could not "
-                         f"find; set {models3d.CLI_ENV} to its path to show them",
-                         logging.WARNING)
-            elif board is None:
-                self.log(f"3D models: the board file {self.snapshot.board_name} was not "
-                         "found next to the project, so no models are shown",
-                         logging.WARNING)
-            self._model_source = ((self._kicad_cli, board)
-                                  if self._kicad_cli and board else False)
+            provider, why = self._tool.part_models(self.snapshot)
+            if provider is None and why:
+                self.log(why, logging.WARNING)
+            self._model_source = provider or False
         return self._model_source
 
     def _load_models(self, refs: List[str]):
-        source = self._models_source()
-        if not source:
+        provider = self._models_source()
+        if not provider:
             self._model_cache.update({r: None for r in refs})
             return
-        cli, board = source
         gen = self._model_gen
 
         def work(progress):
-            from kipi.core.kicad_io.models3d import load_models
             from kipi.core.progress import Canceled
-            progress.info(f"Loading 3D models of {len(refs)} part(s) with kicad-cli")
+            progress.info(f"Loading 3D models of {len(refs)} part(s) with {provider.label}")
             try:
-                found = load_models(cli, board, refs, progress)
+                found = provider.load(refs, progress)
             except Canceled:
                 raise
             except Exception as e:  # noqa: BLE001 - models are a nicety; never fail on them
@@ -961,21 +1125,28 @@ class MainWindow(QMainWindow):
     # ============================================================ solve
     # ------------------------------------------------------------ setup file
     def _load_setup(self, snap):
-        from kipi.dc.pi.model import PISetup, setup_path
+        from kipi.dc.pi.model import PISetup, find_setup, is_yaml, setup_path
         project_dir = snap.project_dir
-        if not project_dir and snap.source and snap.source != "kicad":
-            project_dir = str(Path(snap.source).parent)
+        if not project_dir and snap.file:
+            project_dir = str(Path(snap.file).parent)
         path = setup_path(snap.board_name, project_dir)
+        found = find_setup(snap.board_name, project_dir)
         setup = PISetup()
         label = f"New setup (will be saved as {path.name})"
-        if path.exists():
+        if found is not None:
             try:
-                setup = PISetup.load(path)
-                label = f"Setup: {path}"
-                self.log(f"Loaded PI setup {path}")
+                setup = PISetup.load(found)
+                label = f"Setup: {found}"
+                self.log(f"Loaded PI setup {found}")
+                if not is_yaml(found) and is_yaml(path):
+                    label += f" (saved as {path.name} from now on)"
+                    self.log(f"{found.name} is a JSON setup. JSON setups are deprecated and "
+                             "a future KiPI will stop reading them; saving the setup writes "
+                             f"{path.name}, which is read from then on. The JSON file is "
+                             "left as it is.", logging.WARNING)
             except Exception as e:  # noqa: BLE001 - a bad file must not block the board
-                self.log(f"Could not read {path}: {e}", logging.WARNING)
-                label = f"Could not read {path.name}; starting empty"
+                self.log(f"Could not read {found}: {e}", logging.WARNING)
+                label = f"Could not read {found.name}; starting empty"
         self._setup_path = path
         self.solve_panel.set_board(snap, setup, label)
         self.ac_panel.set_board(snap, setup, label)
@@ -984,13 +1155,51 @@ class MainWindow(QMainWindow):
         self.board_map.clear()
         return setup
 
+    def import_pdn(self):
+        """Replace the power tree with the one in a Tomachie .pdn.json (#120)."""
+        if self.snapshot is None:
+            QMessageBox.information(self, "KiPI", "Load or open the board first.")
+            return
+        current = self.solve_panel.setup
+        if (current.vrms or current.loads or current.links) and QMessageBox.question(
+                self, "KiPI", "Replace the VRMs, loads and DC connections with the ones in "
+                              "the file? Settings, thermal and the AC setup are kept."
+        ) != QMessageBox.Yes:
+            return
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Tomachie power tree", start,
+            "Tomachie power tree (*.pdn.json);;JSON (*.json)")
+        if not path:
+            return
+        from kipi.dc.pi.importers.tomachie_pdn import PdnImportError, import_tomachie_pdn
+        name = Path(path).name
+        try:
+            setup, notes = import_tomachie_pdn(path, self.snapshot, current)
+        except (PdnImportError, ValueError, KeyError, TypeError, OSError) as e:
+            QMessageBox.critical(self, "KiPI", f"Could not import {name}:\n\n{e}")
+            return
+        self.log(f"Imported {name}: {len(setup.vrms)} VRM(s), {len(setup.loads)} load(s), "
+                 f"{len(setup.links)} DC connection(s)"
+                 + (f"; {len(notes)} note(s) on what did not map cleanly:" if notes else ""))
+        for note in notes:
+            self.log(f"  {note}", logging.WARNING)
+        used = setup.pin_nets()
+        self._set_checked(lambda it: it.checkState() == Qt.Checked
+                          or it.data(Qt.UserRole) in used)
+        label = f"Imported from {name}"
+        self.solve_panel.set_board(self.snapshot, setup, label)
+        self.ac_panel.set_board(self.snapshot, setup, label)
+        self._refresh_power_tree()
+        self._save_setup()
+
     def _save_setup(self):
         if self._setup_path is None:
             return
         if self.snapshot is not None:   # a checkbox change may not have synced yet
             self.solve_panel.setup.nets = self._checked_nets()
         try:
-            self.solve_panel.setup.save(self._setup_path)
+            self._setup_path = self.solve_panel.setup.save(self._setup_path)
             self.solve_panel.lbl_file.setText(f"Setup: {self._setup_path}")
             self.ac_panel.set_label(f"Setup: {self._setup_path}")
             self.log(f"Saved PI setup to {self._setup_path}")
@@ -998,6 +1207,12 @@ class MainWindow(QMainWindow):
             self.log(f"Could not save the setup: {e}", logging.WARNING)
 
     # ------------------------------------------------------------ solve
+    def _set_tree(self, tree, scenes):
+        """The DC result every other part of the window reads: the capacitors' DC bias in
+        an AC solve (#74) and the DC drop in the AC target calculator."""
+        self._tree, self._scenes = tree, scenes
+        self.ac_panel.set_dc_result(tree)
+
     def run_solve(self, setup):
         snap = self.snapshot
         if snap is None:
@@ -1021,7 +1236,7 @@ class MainWindow(QMainWindow):
             from kipi.core.mesh.mesher import MeshError
             from kipi.dc.pi.tree import solve_tree
             from kipi.dc.solver import SolveError
-            from kipi.dc.viz.results import build_result_scene
+            from kipi.dc.viz.results import build_scenes
             try:
                 if frozen.thermal.enabled:
                     from kipi.dc.thermal.cosim import solve_electrothermal
@@ -1031,13 +1246,8 @@ class MainWindow(QMainWindow):
             except (SolveError, MeshError) as e:
                 progress.warn(str(e))
                 return None, str(e)       # a setup problem, reported in the panel
-            scenes = {}
             with progress.timed("Building result views"):
-                temp = tree.thermal.sampler() if tree.thermal is not None else None
-                for name, g in tree.groups.items():
-                    progress.check_cancel()
-                    progress.info(f"  {name}: {g.result.mesh.n_tris} triangles")
-                    scenes[name] = build_result_scene(snap, g.result, temperature=temp)
+                scenes = build_scenes(tree, snap, progress)
             if report_path is not None:
                 from kipi.dc.report.html import write_report
                 with progress.timed("Writing HTML report"):
@@ -1053,7 +1263,7 @@ class MainWindow(QMainWindow):
             if tree is None:
                 self.solve_panel.show_error(scenes)
                 return
-            self._tree, self._scenes = tree, scenes
+            self._set_tree(tree, scenes)
             self.solve_panel.set_report(getattr(tree, "report_path", None))
             self._open_new_report(getattr(tree, "report_path", None))
             first = tree.loads[0].group if tree.loads else next(iter(tree.groups))
@@ -1089,6 +1299,7 @@ class MainWindow(QMainWindow):
         self._save_setup()
         import copy
         frozen = copy.deepcopy(setup)
+        dc_result = self._tree       # the last DC solve gives the capacitors' DC bias (#74)
         report_path = None
         if frozen.ac.html_report and self._setup_path is not None:
             from kipi.ac.html_report import report_name
@@ -1099,7 +1310,7 @@ class MainWindow(QMainWindow):
             from kipi.core.mesh.mesher import MeshError
             from kipi.dc.solver import SolveError
             try:
-                result = solve_ac(snap, frozen, vrm_name, gnd, progress)
+                result = solve_ac(snap, frozen, vrm_name, gnd, progress, dc_result)
             except (ACError, MeshError, SolveError) as e:
                 progress.warn(str(e))
                 return None, str(e)
@@ -1148,7 +1359,7 @@ class MainWindow(QMainWindow):
         if not text:
             return
         self._picked = None
-        self.btn_select_kicad.setEnabled(False)
+        self.btn_select.setEnabled(False)
         self.info.setHtml(text)
 
     # ------------------------------------------------------------ stackup
@@ -1171,6 +1382,16 @@ class MainWindow(QMainWindow):
             setup.stackup = None
             self.log(f"Stackup: the setup's edited stackup no longer fits the board "
                      f"({why}); using KiCad's", logging.WARNING)
+        if setup.legacy_laminate_k > 0:
+            # Laminate k left the thermal settings for the Stackup window in 0.8.0 (#90).
+            from kipi.core.model.stackup import to_setup, with_dielectric_k
+            k = setup.legacy_laminate_k
+            setup.legacy_laminate_k = 0.0
+            edited = with_dielectric_k(edited or self._imported_stackup, k)
+            snap.stackup = edited
+            setup.stackup = to_setup(edited)
+            self.log(f"Stackup: the thermal settings' Laminate k ({k:g} W/m·K) is now each "
+                     "dielectric's k in the Stackup window")
         self.stackup_window.set_board(self._imported_stackup, snap.stackup, setup,
                                       self._layer_colors())
 
@@ -1192,7 +1413,7 @@ class MainWindow(QMainWindow):
                  f"{st.board_thickness_mm:.3f} mm board"
                  + ("; solve again for results with it" if self._tree is not None else ""))
         if self._tree is not None:
-            self._tree, self._scenes = None, {}
+            self._set_tree(None, {})
             self.solve_panel.clear_results()
         self._populate_layers()
         self._show_board_summary()
@@ -1229,14 +1450,14 @@ class MainWindow(QMainWindow):
         start = str(self._setup_path.parent) if self._setup_path else ""
         try:
             if kind == "results":
+                suffix = report.results_suffix(self._tree)
+                what = "DC + thermal" if suffix == report.THERMAL_RESULTS_SUFFIX else "DC"
                 path, _ = QFileDialog.getSaveFileName(
                     self, "Save results",
-                    str(Path(start) / f"{stamped(self._results_stem())}.kipi-results"),
-                    "KiPI results (*.kipi-results)")
+                    str(Path(start) / f"{stamped(self._results_stem())}{suffix}"),
+                    f"KiPI {what} results (*{suffix})")
                 if path:
-                    report.save_results(path, self._tree, self._scenes, self.snapshot,
-                                        self.solve_panel.setup)
-                    self.log(f"Saved results to {path}")
+                    self._save_results(path)
                 return
             folder = QFileDialog.getExistingDirectory(self, "Export to folder", start)
             if not folder:
@@ -1256,7 +1477,7 @@ class MainWindow(QMainWindow):
         if self.snapshot is None:
             # The tables and probing need the board (pads, layers); results files hold
             # only the solution.
-            QMessageBox.information(self, "KiPI", "Load the board (from KiCad or a snapshot) "
+            QMessageBox.information(self, "KiPI", "Load or open the board "
                                                   "before opening its results.")
             return
         if self.mode == "ac":
@@ -1264,23 +1485,83 @@ class MainWindow(QMainWindow):
             return
         from kipi.dc.pi import report
         start = str(self._setup_path.parent) if self._setup_path else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Open results", start,
-                                              "KiPI results (*.kipi-results)")
+        path, _ = QFileDialog.getOpenFileName(self, "Open results", start, report.OPEN_FILTER)
         if not path:
             return
-        try:
-            data = report.load_results(path)
-        except Exception as e:  # noqa: BLE001 - any unreadable file
-            QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{e}")
+        legacy = self._allow_legacy_results(path)
+        if legacy is None:
             return
-        if self.snapshot is not None and data["board"] != self.snapshot.board_name:
-            self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
+
+        def work(progress):
+            try:
+                return report.load_results(path, progress, legacy=legacy), None
+            except Canceled:
+                raise
+            except Exception as e:  # noqa: BLE001 - any unreadable file
+                return None, str(e)
+
+        def done(out):
+            data, error = out
+            if data is None:
+                QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{error}")
+                return
+            if self.snapshot is not None and data["board"] != self.snapshot.board_name:
+                self.log(f"Results are for {data['board']}, not {self.snapshot.board_name}",
+                         logging.WARNING)
+            self._set_tree(data["tree"], data["scenes"])
+            first = (self._tree.loads[0].group if self._tree.loads
+                     else next(iter(self._tree.groups)))
+            self.solve_panel.show_results(self._tree, first)
+            self._show_group(first)
+            self.log(f"Opened results saved {data['saved']} from {path}")
+            self._warn_legacy(data)
+
+        from kipi.core.progress import Canceled
+        self._run(work, done, "Opening results")
+
+    def _save_results(self, path: str):
+        from kipi.dc.pi import report
+        tree, snap, setup = self._tree, self.snapshot, self.solve_panel.setup
+
+        def work(progress):
+            with progress.timed("Saving results"):
+                try:
+                    report.save_results(path, tree, snap, setup)
+                except (OSError, TypeError, ValueError) as e:
+                    return str(e)
+            return None
+
+        def done(error):
+            if error:
+                QMessageBox.warning(self, "KiPI", f"Saving the results failed: {error}")
+            else:
+                self.log(f"Saved results to {path}")
+
+        self._run(work, done, "Saving results")
+
+    def _allow_legacy_results(self, path: str) -> Optional[bool]:
+        """Whether ``path`` holds results pickled by KiPI 0.7 or earlier, which can run code
+        when opened (#99); None if it does and the user chose not to open it."""
+        from kipi.core import results_io
+        try:
+            if not results_io.is_legacy(path):
+                return False
+        except OSError:
+            return False             # opening it fails again, and says why
+        answer = QMessageBox.warning(
+            self, "KiPI",
+            f"{Path(path).name} was saved by KiPI 0.7 or earlier, as a Python pickle, which "
+            "can run code on this computer when it is opened.\n\nOpen it only if you saved "
+            "it yourself or trust whoever did. Saving the results again writes KiPI's new "
+            "format, which cannot run code.",
+            QMessageBox.Open | QMessageBox.Cancel, QMessageBox.Cancel)
+        return True if answer == QMessageBox.Open else None
+
+    def _warn_legacy(self, data: dict):
+        if data.get("legacy"):
+            self.log("These results are in the pickle format of KiPI 0.7 and earlier, which a "
+                     "later KiPI will no longer open; save them again to keep them",
                      logging.WARNING)
-        self._tree, self._scenes = data["tree"], data["scenes"]
-        first = self._tree.loads[0].group if self._tree.loads else next(iter(self._tree.groups))
-        self.solve_panel.show_results(self._tree, first)
-        self._show_group(first)
-        self.log(f"Opened results saved {data['saved']} from {path}")
 
     def _open_ac_results(self):
         from kipi.ac import report
@@ -1289,8 +1570,11 @@ class MainWindow(QMainWindow):
                                               f"KiPI AC results (*{report.RESULTS_SUFFIX})")
         if not path:
             return
+        legacy = self._allow_legacy_results(path)
+        if legacy is None:
+            return
         try:
-            data = report.load_results(path)
+            data = report.load_results(path, legacy=legacy)
         except Exception as e:  # noqa: BLE001 - any unreadable file
             QMessageBox.warning(self, "KiPI", f"Could not open {path}:\n{e}")
             return
@@ -1306,12 +1590,17 @@ class MainWindow(QMainWindow):
                                                   "in the setup, so there is nothing to show.")
             return
         self.log(f"Opened AC results saved {data['saved']} from {path}")
+        self._warn_legacy(data)
 
     def _show_group(self, name: str):
         if not self._tree or name not in self._scenes:
             return
         self._result = self._tree.groups[name].result
-        self.viewer.show_result(self._scenes[name], self.solve_panel.current_field())
+        field = self.solve_panel.current_field()
+        self.viewer.show_result(self._scenes[name], field,
+                                limits=self.solve_panel.color_limits(name, field))
+        self._shown_group = name
+        self._sync_scale()
 
     def _group_activated(self, index: int):
         if self.viewer.result is None:
@@ -1322,7 +1611,22 @@ class MainWindow(QMainWindow):
         if self.viewer.result is None:
             self._show_group(self.solve_panel.cmb_group.currentText())
         else:
-            self.viewer.set_result_field(field)
+            self.viewer.set_result_field(
+                field, limits=self.solve_panel.color_limits(self._shown_group, field))
+            self._sync_scale()
+
+    def _scale_changed(self, limits):
+        """Color limits typed in the Results pane (None: the result's whole range)."""
+        if self.viewer.result is not None:
+            self.viewer.set_color_limits(limits)
+            self._sync_scale()
+
+    def _sync_scale(self):
+        """Show the color range drawn in the Results pane's scale fields."""
+        rng = self.viewer.color_range()
+        if rng:
+            self.solve_panel.show_scale(self._shown_group, self.solve_panel.current_field(),
+                                        *rng)
 
     def _show_geometry(self):
         self.viewer.clear_result()
@@ -1337,9 +1641,17 @@ class MainWindow(QMainWindow):
         kinds = classify_nets(s)
         n_pwr = sum(1 for k in kinds.values() if k == "power")
         n_gnd = sum(1 for k in kinds.values() if k == "ground")
+        origin = " ".join(filter(None, [s.format_name, s.kicad_version]))
+        if s.file:
+            origin += f", saved as {s.file}"
+        # Values the source did not give, so the results rest on KiPI's placeholders.
+        assumed = ("<p><b>Placeholders</b> (not from the board):</p><ul>" +
+                   "".join(f"<li>{html.escape(a)}</li>" for a in s.assumed) + "</ul>"
+                   if s.assumed else "")
         self.info.setHtml(
             f"<b>{html.escape(s.board_name)}</b><br>"
-            f"<small>{html.escape(s.source)} {html.escape(s.kicad_version)}</small><br><br>"
+            f"<small>From {html.escape(origin)}</small><br><br>"
+            f"{assumed}"
             f"Board thickness: {st.board_thickness_mm:.3f} mm"
             f"{'' if st.from_board else ' <i>(default stackup)</i>'}"
             f"{' <i>(edited in KiPI)</i>' if st.edited else ''}<br>"
@@ -1382,6 +1694,11 @@ class MainWindow(QMainWindow):
 
     def _on_click(self, pt, screen_xy):
         if self.snapshot is None:
+            return
+        # A PI Models name (or dot) selects its part in the current mode's setup (#96).
+        marker = self.viewer.pi_marker_at(screen_xy)
+        if marker is not None and self._mode_panel().select_part(marker.kind, marker.item):
+            self.statusBar().showMessage(f"Selected {marker.name} in the setup", 5000)
             return
         segs, ids = self._via_candidates()
         via_id = None
@@ -1476,7 +1793,8 @@ class MainWindow(QMainWindow):
                     lines.append(f"Copper of net <b>{html.escape(net)}</b>")
                     break
         self.info.setHtml("<br>".join(lines))
-        self.btn_select_kicad.setEnabled(self._picked is not None and self._board is not None)
+        self.btn_select.setEnabled(self._picked is not None and self._source is not None
+                                   and self._source.can_select())
         if self._barrel_status:
             self.statusBar().showMessage(self._barrel_status)
         elif not probe_html:
@@ -1493,25 +1811,20 @@ class MainWindow(QMainWindow):
         return [f"<b>{'Via' if vr.kind == 'via' else 'Barrel'} current: "
                 f"{vr.current * 1e3:.2f} mA</b> &nbsp; ({vr.power * 1e3:.3f} mW in the barrel)"]
 
-    def _select_in_kicad(self):
-        if self._picked is None or self._board is None:
+    def _select_in_source(self):
+        source = self._source
+        if self._picked is None or source is None or not source.can_select():
             return
-        from kipy.proto.common.types import KIID
-
-        class _Ref:  # add_to_selection only needs an object with an ``id``
-            def __init__(self, value):
-                self.id = KIID(value=value)
-
         try:
-            self._board.clear_selection()
-            self._board.add_to_selection([_Ref(self._picked[1])])
-            self.log(f"Selected {self._picked[0]} in KiCad")
+            source.select(*self._picked)
+            self.log(f"Selected {self._picked[0]} in {source.name}")
         except Exception as e:  # noqa: BLE001
-            self.log(f"Could not select in KiCad: {e}", logging.WARNING)
+            self.log(f"Could not select in {source.name}: {e}", logging.WARNING)
 
     # ============================================================ close
     def closeEvent(self, event):
         self._model_timer.stop()            # start no kicad-cli for a closed window
+        self._changed_timer.stop()
         self._models_pending = False
         self._closed = True
         for task in (self._task, self._model_task):

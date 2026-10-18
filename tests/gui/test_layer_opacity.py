@@ -24,7 +24,7 @@ def _view(field):
     v = NS(plotter=pv.Plotter(off_screen=True), _result=scene, _result_field=field,
            _result_actors={}, _result_via_actor=None, _scalar_bars=[], _zscale=1.0,
            _hidden_layers=set(), _layer_opacity=1.0, _depth_peeling=False,
-           _chunk_actors={})
+           _chunk_actors={}, _color_limits=None, _clim=None, _bar_titles=[])
     v._style_bar = lambda title: Viewer3D._style_bar(v, title)
     v._apply_result_opacity = lambda actor: Viewer3D._apply_result_opacity(v, actor)
     v._set_depth_peeling = lambda on: Viewer3D._set_depth_peeling(v, on)

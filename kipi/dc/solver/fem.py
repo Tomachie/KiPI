@@ -5,7 +5,8 @@ On a copper sheet of thickness t and resistivity rho the potential obeys
 div(G_s grad V) = 0 with sheet conductance G_s = t / rho (siemens per square). A
 linear triangle contributes G_s / (4A) * (b b^T + c c^T), where b, c are the usual
 shape-function coefficients. A barrel segment between two layers is a resistor of
-rho * dz / (pi * (d * tp - tp^2)).
+rho * dz / A, A the copper the hole carries (kipi.dc.solver.via_barrel: the plated wall
+of a drill d with plating tp, pi * (d * tp - tp^2), plus a filled core that conducts).
 
 Equipotential regions (a drill ring on one layer, a terminal pad) are merged into a
 single unknown, which is exact for "perfect conductor" boundaries and keeps the
@@ -15,7 +16,6 @@ Dirichlet unknowns, so the reduced system stays symmetric positive definite.
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -28,7 +28,8 @@ from kipi.core.mesh.mesher import NetMesh
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.solver.spd import SpdSolver
-from kipi.dc.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem
+from kipi.dc.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem, SolveSettings
+from kipi.dc.solver.via_barrel import barrel_copper_area, rule_for
 
 class SolveError(RuntimeError):
     pass
@@ -75,6 +76,8 @@ class Solution:
     load_current: Dict[str, float] = field(default_factory=dict)
     # A each source delivers at each of its pads, in the source's pad order (#71).
     source_pad_current: Dict[str, List[float]] = field(default_factory=dict)
+    # Optional loads' pads with no copper path to a source, which draw nothing (#88).
+    dead_pads: Dict[str, List[str]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +118,26 @@ def _rho_factor(problem: NetProblem, xy: np.ndarray, tcr=None) -> Optional[np.nd
     t = np.asarray(problem.temperature(xy), dtype=float)
     tcr = problem.settings.tcr_per_c if tcr is None else tcr
     return np.maximum(1.0 + tcr * (t - REF_TEMP_C), 0.05)
+
+
+def _barrel_area(s: SolveSettings, bar) -> float:
+    """Copper cross-section of a plated hole, from the via rule that covers it."""
+    rule = rule_for(s.via_rules, bar.hole_type, bar.drill_mm)
+    if rule is None:
+        raise SolveError(f"No via rule covers a {bar.hole_type} hole of {bar.drill_mm:g} mm "
+                         "drill; add one in the Mesh tab under Via plating")
+    return barrel_copper_area(rule, bar.drill_mm, bar.filled, s.rho_ohm_mm)
+
+
+def _fill_not_stated(s: SolveSettings, mesh: NetMesh) -> int:
+    """Vias whose rule fills them with a conductor but KiCad does not say whether they are
+    filled; they are solved unfilled (less copper, more drop)."""
+    n = 0
+    for bar in mesh.barrels:
+        rule = rule_for(s.via_rules, bar.hole_type, bar.drill_mm)
+        if bar.kind == "via" and bar.filled is None and rule and rule.fill != "nonconductive":
+            n += 1
+    return n
 
 
 def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
@@ -167,11 +190,9 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     # Barrels: resistors between ring unknowns on consecutive present layers.
     order = {cu.id: i for i, cu in enumerate(st.copper)}
     elements: List[BarrelElement] = []
-    tp = s.plating_mm
     for bi, bar in enumerate(mesh.barrels):
         layers = sorted(bar.ring_nodes, key=order.get)
-        d = bar.drill_mm
-        a_barrel = math.pi * (d * tp - tp * tp) if d > 2 * tp else math.pi * d * d / 4
+        a_barrel = _barrel_area(s, bar)
         for la, lb in zip(layers[:-1], layers[1:]):
             dz = abs(st.layer(la).z_mid_mm - st.layer(lb).z_mid_mm)
             g = a_barrel / (s.rho_ohm_mm * max(dz, 1e-6))
@@ -245,6 +266,11 @@ class LinearSystem:
                           for lid in mesh.layers}
         self.stats.update(n_nodes=mesh.n_nodes, n_tris=mesh.n_tris, n_unknowns=nm,
                           nnz=self.K.nnz)
+        unstated = _fill_not_stated(problem.settings, mesh)
+        if unstated:
+            self.warnings.append(f"{unstated} via(s) whose rule has a conducting fill: the board "
+                                 "does not say whether they are filled, so they were solved "
+                                 "unfilled")
 
         # Which unknowns are held by which source (structure only; voltages come later).
         self.source_unknowns: Dict[str, List[int]] = {}
@@ -262,8 +288,13 @@ class LinearSystem:
         ncomp, comp = connected_components(self.K, directed=False)
         live_comps = {comp[u] for u in owner}
         live = np.isin(comp, list(live_comps))
+        # load name -> its pads with no copper path to a source (optional loads only)
+        self.dead_pads: Dict[str, List[str]] = {}
         for load in problem.loads:
-            if not all(live[self.pad_unknown[pid]] for pid in load.pad_ids):
+            dead = [pid for pid in load.pad_ids if not live[self.pad_unknown[pid]]]
+            if dead and load.optional:
+                self.dead_pads[load.name] = dead
+            elif dead:
                 srcs = ", ".join(s.name for s in problem.sources)
                 raise SolveError(f"Load {load.name} has no copper path to the source ({srcs}) "
                                  f"on {problem.net}. If KiCad shows them connected, the link "
@@ -301,8 +332,13 @@ class LinearSystem:
 
         f = np.zeros(self.nm)
         for load in prob.loads:
-            share = amps[load.name] / len(load.pad_ids)
-            for pid in load.pad_ids:
+            dead = self.dead_pads.get(load.name, ())
+            pads = [pid for pid in load.pad_ids if pid not in dead]
+            if not pads:                       # not connected at all: draws nothing
+                amps[load.name] = 0.0
+                continue
+            share = amps[load.name] / len(pads)
+            for pid in pads:
                 f[self.pad_unknown[pid]] -= share
 
         # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail
@@ -346,7 +382,8 @@ class LinearSystem:
                         series_elements=self.series, series_current=series_current,
                         tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho,
                         source_voltage=volts, load_current=amps,
-                        source_pad_current=source_pad_current)
+                        source_pad_current=source_pad_current,
+                        dead_pads={k: list(v) for k, v in self.dead_pads.items()})
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,

@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from qtpy.QtCore import Qt  # noqa: E402
 from qtpy.QtWidgets import QApplication  # noqa: E402
 
-from kipi.core.kicad_io.snapshot import from_dict, to_dict  # noqa: E402
+from kipi.core.model.snapshot_io import from_dict, to_dict  # noqa: E402
 
 C0402 = "Capacitor_SMD:C_0402_1005Metric"
 C0603 = "Capacitor_SMD:C_0603_1608Metric"

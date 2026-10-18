@@ -1,9 +1,11 @@
 """The welcome screen shown while KiPI starts: the animated logo, the version and what it
 is running on.
 
-It closes itself once the logo has played through one loop (or after a few seconds if
-only the still logo can be shown), so it never waits for the user; a click closes it
-sooner. It is cosmetic: if it cannot be shown, KiPI starts without it.
+It is the first thing KiPI shows, before the slow part of starting (#55), and says what
+KiPI is doing meanwhile. Once the main window is open it closes itself when the logo has
+played through one loop (or after a few seconds if only the still logo can be shown), so
+it never waits for the user; a click closes it sooner. It is cosmetic: if it cannot be
+shown, KiPI starts without it.
 """
 
 from __future__ import annotations
@@ -12,13 +14,14 @@ import html
 import logging
 from typing import Optional
 
-from qtpy.QtCore import QSize, Qt, QTimer
+from qtpy.QtCore import QSize, Qt, QTimer, Signal
 from qtpy.QtGui import QCursor, QGuiApplication, QMovie, QPalette, QPixmap
 from qtpy.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from kipi import __version__
 from kipi.gui import about
 from kipi.gui.identity import APP_ID
+from kipi.host import Host, current as current_host
 
 log = logging.getLogger(__name__)
 
@@ -29,6 +32,8 @@ PACKAGES = ("kicad-python", "PySide6-Essentials", "pyvista", "numpy", "scipy")
 
 
 class Splash(QWidget):
+    closed = Signal()
+
     def __init__(self, show_ms: int = SHOW_MS):
         super().__init__(None, Qt.SplashScreen | Qt.FramelessWindowHint
                          | Qt.WindowStaysOnTopHint)
@@ -49,7 +54,11 @@ class Splash(QWidget):
             logo.setPixmap(QPixmap(str(path)).scaled(
                 LOGO_SIZE, LOGO_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
-        rows = [("Version", __version__), ("Plugin", APP_ID), ("License", about.LICENSE)]
+        host = current_host()
+        rows = [("Version", __version__), ("Mode", host.label)]
+        if host is Host.PLUGIN:
+            rows.append(("Plugin", APP_ID))
+        rows.append(("License", about.LICENSE))
         rows += [(k, v) for k, v in about.versions(solver=False)
                  if k == "Python" or k in PACKAGES]
         dim = self.palette().color(QPalette.PlaceholderText).name()
@@ -60,7 +69,7 @@ class Splash(QWidget):
         text.setWordWrap(True)
         text.setText(
             f"<h1 style='margin:0'>Welcome to {about.NAME}</h1>"
-            f"<p style='margin-top:4px'>{html.escape(about.DESCRIPTION)}</p>"
+            f"<p style='margin-top:4px; margin-bottom:12px;'>{html.escape(about.DESCRIPTION)}<br></p>"
             f"<table>{table}</table>"
             f"<p style='margin-bottom:0'>{about.AUTHOR} · {about.REPO}</p>")
         self.status = QLabel("Starting…", frame)
@@ -82,18 +91,40 @@ class Splash(QWidget):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.setInterval(show_ms)
-        self.timer.timeout.connect(self.close)
+        self.timer.timeout.connect(self._time_up)
         self._looped_from = None
+        self._held = False
+        self._due = False       # its time was up while held
         if self.movie is not None:
             self.movie.frameChanged.connect(self._on_frame)
-            self.movie.finished.connect(self.close)    # a GIF that does not repeat
+            self.movie.finished.connect(self._time_up)    # a GIF that does not repeat
 
     def _on_frame(self, n: int) -> None:
         """Close when the logo wraps back to its first frame: one full loop played."""
         if n > 0:
             self._looped_from = n
         elif self._looped_from is not None:
+            self._time_up()
+
+    def _time_up(self) -> None:
+        if self._held:
+            self._due = True
+        else:
             self.close()
+
+    def hold(self) -> None:
+        """Stay open, however long, until :meth:`release` (while KiPI is still starting)."""
+        self._held = True
+
+    def release(self) -> None:
+        """Close now if the splash's time is up, or else when it is."""
+        self._held = False
+        if self._due:
+            self.close()
+
+    def set_status(self, text: str) -> None:
+        self.status.setText(text)
+        self.status.repaint()
 
     def _animate(self, label: QLabel) -> Optional[QMovie]:
         """Play the animated logo, or None to fall back to the still one (the GIF can be
@@ -106,6 +137,7 @@ class Splash(QWidget):
             return None
         movie.setScaledSize(QSize(LOGO_SIZE, LOGO_SIZE))
         label.setMovie(movie)
+        movie.setSpeed(200)
         movie.start()
         return movie
 
@@ -130,6 +162,7 @@ class Splash(QWidget):
         if self.movie is not None:
             self.movie.stop()
         super().closeEvent(event)
+        self.closed.emit()
 
 
 def show_splash(app=None, show_ms: int = SHOW_MS) -> Optional[Splash]:

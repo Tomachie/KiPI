@@ -4,7 +4,365 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.7.2 (in development)
+## 0.8.0 (in development): plugin and standalone modes
+
+First milestone of running KiPI on its own, outside KiCad (#45). The plugin works as before.
+
+### Added
+- The part selected in the setup, or by clicking its name in 3D, **blinks** red and amber
+  for a few seconds before it stays amber, so it is easy to find among the PI Models marks.
+  A new **Snap to selected** tick in the View box chooses whether picking a part in the
+  setup's lists brings the 3D view to it (ticked, as before) or leaves the view where it
+  is. It is available only while **PI Models** is ticked, applies to DC and AC mode and is
+  remembered between sessions.
+- **PI Models** marks AC mode's parts too, having marked only DC mode's: the setup's VRMs,
+  series links, probes (violet) and capacitors with a model, on their pads on the nets
+  shown. The probes take the DC loads' place, the loads having no part in an impedance
+  sweep. The tick, the dot sizes and the names work as in DC mode, and so does picking
+  (#96): a VRM, series link or probe clicked in the AC setup's lists is marked in amber and
+  brought into view, and clicking its name in 3D selects it in the AC setup.
+- Capacitor models have an optional **Manufacturing tolerance** (% of nominal), and the
+  Sweep tab a **Capacitor manufacturing tolerance** tick that solves every model which has
+  one at the low end of it: the tolerance is subtracted, so a ±10 % model keeps 90 % of its
+  capacitance, the worst case for a PDN. It multiplies with the DC bias estimate, aging and
+  temperature, and the Results notes and HTML report say which models were derated.
+- Target calculator: **Subtract DC drop at the load** takes the DC drop at the selected
+  load's pins off the AC voltage tolerance, from the last power-tree solve: its effective
+  voltage (supply minus ground pins) against the set voltage of the VRM driving it. It needs
+  a DC solve, and stays disabled, with the reason in its tooltip, until that load has a
+  result. A boost (a load above the set voltage) is subtracted the same way.
+- AC Probes tab: **From DC load**, next to Add, Duplicate and Remove, adds a probe on the
+  same supply and ground nets, parts and pins as the DC load picked from its dropdown. A
+  load without ground pins gets its part's pins on its ground net.
+- **From DC load** also lists the input of every LDO and switcher, one entry per phase
+  ("VR4 phase 2 input"), and adds a probe on that phase's input and ground pins (#117). The
+  target calculator treats such a probe's regulator as its DC load: **Copy tolerance**
+  takes the tighter side of the regulator's input range (in volts, or in % of its input
+  rail), and **Copy current** and **Subtract DC drop** take its input current and the drop
+  at its input pins from the last power-tree solve.
+- **Standalone mode.** Started from KiCad's toolbar, KiPI runs as the plugin and reads the
+  board open in the PCB editor. Started any other way (`python -m kipi`, or the `kipi`
+  command of an installed package), it runs standalone: it opens board files and needs no
+  KiCad.
+  - `python -m kipi [board]` opens that board; a file KiPI cannot read stops it with a
+    message.
+  - The toolbar has **Open…** and **Reload** in place of *Load from KiCad*, *Refill zones*
+    and *Open snapshot…*. *Select in KiCad* and the part *Models* box are hidden, and the
+    copper uses KiPI's default layer colors.
+  - Standalone opens KiPI snapshots (`.kipi.json.gz`), KiCad board files and ODB++ jobs
+    (below). Reading HYP files comes next.
+  - The title bar says *(standalone)*, and the welcome screen and About show the mode.
+  - The plugin and standalone KiPI each allow one window of their own, so an open
+    standalone KiPI never takes over KiCad's KiPI button.
+  - `KIPI_HOST=plugin` (or `standalone`) overrides how KiPI tells the two apart, e.g. to run
+    the plugin workflow from a terminal.
+- **Standalone launcher** (`kipi_launcher.py`; double-click `kipi_launcher.pyw` on
+  Windows). The KiPI folder can be anywhere: the first start sets up an environment of
+  KiPI's own (`%LOCALAPPDATA%\KiPI`, `~/Library/Application Support/KiPI` or
+  `~/.local/share/kipi`), and later starts open KiPI straight away.
+  - The setup window lists every package that will be installed, with its version and
+    download size as PyPI gives them for this computer, and the totals to download and on
+    disk. Nothing is installed until you click *Install*. Offline, it shows the list saved
+    with the release.
+  - On Windows and Linux x86-64 it offers PARDISO, with its size, pros and cons; elsewhere
+    it says why not.
+  - It finds a Python 3.10 to 3.13 to use (the py launcher, `python3.N`, or one uv
+    installed) and says what is wrong with the others, such as Debian's missing
+    `python3-venv`. It installs with uv when uv is on the PATH, else venv and pip, and with
+    pip again if uv fails. Progress, the installer's output and Cancel are in the window.
+  - A setup that was canceled or failed is picked up on the next start, and so is a new
+    KiPI that needs different packages. The launcher keeps its own logs.
+  - With no tkinter (KiCad's bundled Python has none) or `--console`, setup runs in the
+    terminal; with neither a window nor a terminal, a message says how to start it.
+  - `--setup`, `--add-pardiso`, `--remove-pardiso`, `--repair` and `--reset` manage the
+    environment, and `--create-shortcut` adds KiPI to the Start menu (Windows) or the
+    applications menu (Linux).
+  - **About → Manage dependencies…** in standalone KiPI closes KiPI, opens the setup, and
+    starts KiPI again afterwards.
+  - `python -m kipi` in a Python without KiPI's packages says which are missing and to use
+    the launcher, instead of a traceback.
+- **Solver Guide** (#92, `docs/solver-guide.html`, served by GitHub Pages): a page
+  for newcomers on what power integrity analysis is and why it matters. It covers what
+  each analysis simulates, how the triangle mesh and the DC, electro-thermal and AC solvers
+  work, and what DC tolerance analysis and PDN impedance mean. It also explains how heat
+  raises copper resistance, how dielectric, DC bias, aging and tolerance shrink a
+  capacitor's effective value, what PARDISO gains over the default solvers, and the
+  problems PI simulation finds. It is linked at the top of the README, from the About
+  window and from the user guide.
+- **About → Check for updates** (#97) asks GitHub for the newest tagged release and says
+  whether it is newer than the KiPI running, with a link to its release page. It only asks
+  when clicked; offline (or rate-limited) it says it could not reach GitHub.
+- **KiCad board files without KiCad.** Standalone **Open…** (and `python -m kipi
+  board.kicad_pcb`) reads KiCad 7 to 10 `.kicad_pcb` files directly, giving the same board as
+  the plugin reads from the running KiCad: the same stackup, copper, pad shapes and item ids,
+  so a setup made in the plugin opens with the file and the other way round.
+  - Every pad shape (round, rectangle, rounded and chamfered rectangle, oval, trapezoid,
+    custom), KiCad 9 padstacks with their own inner and back shapes, plated pads that drop
+    unconnected layers, blind and micro vias, arc tracks, copper drawings with a net, and
+    footprints on either side.
+  - Net classes come from the project's `.kicad_pro` (assigned nets and patterns).
+  - Zones are read as KiCad last filled them. A zone saved unfilled has no copper, and the
+    board summary's *Placeholders* says so; fill zones in KiCad (B) and save first.
+  - When the open board file is saved (in KiCad or anywhere), KiPI offers to read it again.
+  - **Open…** has a menu of the boards opened lately.
+  - Checked against the KiCad API on real boards: identical copper, and identical DC results.
+- **ODB++ jobs.** Standalone **Open…** reads ODB++ as a `.zip`, `.tgz` or `.tar.gz`, or an
+  unpacked job (by its folder, or its `matrix/matrix` file).
+  - Pads, traces, arcs, vias (with their spans from the drill layers) and filled planes,
+    tied to nets and part pins through the job's netlist; the stackup from the layer matrix
+    and each layer's attributes.
+  - Pads keep their part and pin, so setups (which name parts, pins and nets) carry over;
+    the setup is found by the job's name.
+  - What the job does not give is listed under *Placeholders*: a dielectric with no
+    thickness, copper drawings whose net was guessed from the copper they touch.
+  - KiCad's export at its default 2 decimals rounds coordinates to 10 µm; copper thickness
+    is then taken from the copper weight. KiCad's quirks are handled: bottom pads already
+    mirrored, its names for pads with no number.
+  - Checked against the KiCad API on a real 8-layer board exported by KiCad 10: every
+    track, via and pad the same, and DC drops within 3 parts per million.
+- **Where the board came from, and its placeholders.** The board summary in the Info box
+  names the source ("From KiCad PCB editor 10.0.7") and the snapshot file it was opened from,
+  and lists under *Placeholders* each value KiPI had to fill in because the source did not
+  give it: a default stackup, a 2-layer guess from a KiCad too old to list its layers, or
+  pads kept on every layer when KiCad cannot say which layers plated pads are on. Snapshots
+  keep both; older snapshots read as coming from KiCad.
+- Loads not connected by copper (#88). Before a DC solve, KiPI checks each load pin for a path
+  to its VRM (or ground reference) through copper or series links, instead of stopping at
+  the first one without. Unconnected pins draw nothing and the load's current goes through
+  its other pins; a load with no supply pin, or no ground pin, connected is left out of the
+  solve and shows as **DISCONNECTED**. The Notes tab lists every unconnected pin. A rail
+  with no load connected at all still stops the solve.
+- The Target Impedance/Frequency Calculator has a **Copy tolerance from DC load** button. It
+  fills the AC voltage tolerance from a DC load on the probe's rail: ± its tolerance % of the
+  voltage of the VRM feeding it (#87).
+- VRM **Load line** (#94). A VRM with a load line, in mΩ, regulates to its set voltage less
+  the load line times its output current: the current its connected loads and the VRMs it
+  feeds actually draw, so disconnected loads add no droop. It is iterated with the rest of
+  the rail, works with remote sense, multi-phase VRMs and negative rails, and shows in the
+  Notes tab, the power tree diagram, the HTML report and the VRM CSV (**V target**). Drops
+  are still measured from the set voltage, so the droop counts against load tolerances.
+- Editable **color scale** limits (#101). The Results pane has a minimum and maximum for the
+  3D color scale, starting on the result's whole range; typed limits are kept per net group
+  and field (temperature limits for every group) until **Auto**.
+- The VRM, load or series link selected in the setup is marked in amber in the 3D view.
+  Clicking it in its list ticks **PI Models** and brings the view to it, and clicking a
+  part's name (or dot) in 3D selects it in the setup (#96).
+- Capacitor **DC bias** (#74). A capacitor model with a **Voltage rating** (and not a C0G
+  dielectric) is derated by DC bias: with the capacitance it **Keeps at rating** (40 % by
+  default), each of its parts is derated by the DC voltage across it, from the last DC
+  solve or else the rail's VRM set point. **Capacitor DC bias** in the Sweep tab turns it
+  off for every model. **Models from values** reads the rating from values like
+  `10uF 6.3V X5R` for class II dielectrics. The Results notes say where the voltages came from, and
+  the HTML report lists each model's capacitance at its bias.
+- Capacitor **aging** (#109). A capacitor model has a **Dielectric**, which fills in its
+  typical **Aging** rate (% per decade of hours; editable). With **Capacitor aging** ticked
+  in the Sweep tab, each model with a dielectric loses its rate for each decade of **Hours
+  operated** past 1000 hours (ten years by default; set by typing or with a log-scale
+  slider, shown in years), on top of its DC bias. **Models from
+  values** reads the dielectric from the value, and the Results notes and HTML report show
+  the derated capacitance.
+- AC solves at a **temperature** (#77). **Temperature** in the Sweep tab sets the copper's
+  resistivity (by its temperature coefficient, with skin effect) and the capacitance of
+  models with a dielectric (by a typical curve for each dielectric): **Fixed** at one board
+  temperature, or **From DC thermal co-simulation**, from the copper temperatures of the
+  last DC solve with thermal co-simulation or of DC results opened from a file. The Results
+  notes and the HTML report give the temperatures used.
+- KiPI can be **pinned to the Windows taskbar**. Its taskbar button used to refuse
+  pinning, as only KiCad could start KiPI; a pinned button now starts standalone KiPI
+  through the launcher (from the plugin too). The launcher's Start menu shortcut carries
+  KiPI's taskbar ID, so pinning it and the open KiPI share one button. Without the
+  launcher next to KiPI, pinning stays off.
+- The Target Impedance/Frequency Calculator has a **Copy current from DC load** button
+  beside the load step. It fills the load step from the current of a DC load on the
+  probe's rail, the probe's own part first, with a menu when there are several.
+- LDOs and switchers have a **DC accuracy** row under the input range: min and max of the
+  output's DC error, in % of the set voltage or in volts. The Target Impedance/Frequency
+  Calculator has a **Subtract VRM DC accuracy** button under the AC voltage tolerance,
+  which takes the larger side of the accuracy of the VRM driving the probe's rail off
+  the tolerance (a menu when several VRMs drive it).
+- **Via plating rules** (#89, from PR #42 by @Tomachie). The Mesh tab's single *Barrel
+  plating* value becomes a table of rules, first match wins: hole type (through, blind,
+  buried, microvia, component hole or any), a drill-size range, the plating, and what a
+  filled hole of that rule is filled with (copper, conductive or non-conductive epoxy). The
+  defaults are IPC-6012 Class 2 minimum average plating (through and blind 20 µm, buried
+  13 µm, microvia 12 µm). The DC and AC solves, the Notes tab and both HTML reports use them.
+- **Import a Tomachie power tree** (#120, from PR #43 by @Tomachie). **Import…** beside the
+  DC setup's Save fills the VRMs, loads and DC connections from a Tomachie `.pdn.json`:
+  sources; LDOs and switchers with their input pins, efficiency, quiescent current, dropout
+  and input range; load switches as DC connections with their on-resistance; series parts
+  with their datasheet DC resistance; each load's current, and a tolerance from its rail's
+  stated range, raised to the datasheet's minimum supply voltage where that is higher.
+  Schematic nets are matched to board nets through the pads. KiPI takes one current per load
+  and one resistance per DC connection, so the typical is used; the log lists each minimum
+  and maximum left out, each current the file does not know (imported as 0 A) and whatever
+  could not be placed on the board. Settings, thermal and the AC setup are kept.
+- **Filled vias** (#89). A via the KiCad board marks as filled carries its core too when its
+  rule's fill conducts: copper makes the whole hole copper, conductive epoxy adds its core at
+  the resistivity entered. A via whose fill is left to the design rules is solved unfilled,
+  and the Notes tab counts them. Read in plugin mode and from `.kicad_pcb` files; other
+  formats do not say, so their vias are solved unfilled.
+- **Via pads per layer** (#89). Each via's pad is read per layer from its padstack (normal,
+  front / inner / back, or custom), and a pad removed from an unused layer is not counted as
+  copper. In a `.kicad_pcb` file a via set to remove unused layers loses its pad on each
+  layer where no track, pad or zone of its net meets it, keeping the outer ones if it keeps
+  end layers.
+- Loads have an optional **Heat** (W) for the electro-thermal solve: with load power
+  included, it replaces the power the load draws, for a part that passes most of its power
+  on (a load switch, LED or motor driver). The Notes tab and the HTML report list the heat
+  put into the board by source (copper, vias, DC connections, VRM conversion, loads).
+
+### Changed
+- README and user guide screenshots retaken for 0.8.0 (#118): the main window, setup tabs,
+  DC results, HTML report and AC views show the current interface. New screenshots of the
+  launcher's setup window, PI Models, the Power tree and Stackup windows, the via plating
+  rules and the AC Board map.
+- Stackup window: **Lock to imported values** now also locks each copper layer's conductor
+  and its resistivity in the table, which could be changed while locked. Locking keeps the
+  conductor chosen rather than resetting it; the board's Resistivity and TCR stay editable.
+- Selecting a part in the setup no longer ticks **PI Models** in the 3D view; the marks
+  stay as you set them.
+- Setups and results saved with the single *Barrel plating* value load it as the plating of
+  every default via rule, so they solve as before. New setups use the IPC-6012 defaults
+  (20 µm for through vias, was 25 µm), which raises barrel resistance by about a quarter.
+- The Target Impedance/Frequency Calculator copies the tolerance and load step from the
+  DC load on the probe's pins, with no menu. A **DC load** dropdown picks among the loads on
+  the probe's part when none sits on its exact supply and ground pins.
+- Every VRM field can be edited from both the DC and the AC setup. Fields only one
+  analysis uses (control loop bandwidth and DC accuracy in DC; efficiency, input range and
+  the like in AC) are no longer grayed out; their tooltip says which analysis uses them.
+- A capacitor model no longer has an **Estimate DC bias** box: a **Voltage rating** turns
+  the DC bias estimate on. **Models from values** keeps the rating only for class II
+  ceramics (X5R, X7R…), and a C0G model is never derated.
+- A load's **tolerance has a separate min and max**, on one row like the VRM input range,
+  each in % from the VRM set point (e.g. -3 % / +5 %) or in volts (e.g. 3.135 to 3.465 V),
+  and either one optional. A load passes when every pin is within it. The results table,
+  the report and the power tree show the tolerance as set; the loads CSV has `tolerance`,
+  `tolerance_min_V` and `tolerance_max_V` in place of `tolerance_pct`. Copying a tolerance
+  into the target calculator takes its tighter side. Setups and results from earlier
+  versions keep their ± % tolerances.
+- A VRM's **input min and max share one row**, "Input range", and can be given in V or in
+  % from the input rail's nominal voltage, the set voltage of the VRM driving it (e.g.
+  -10 % / +10 %). Switching the unit converts the values when that VRM is known, and
+  clears them when not. A range in % with no VRM on the input rail is a setup error.
+- The Target Impedance/Frequency Calculator's slew rate starts at 10 A/µs instead of
+  empty, and the calculator no longer cites the target impedance paper (the help still
+  does).
+- `python -m kipi` with no arguments starts standalone instead of connecting to the running
+  KiCad. Use `KIPI_HOST=plugin python -m kipi` for the old behavior; `--dump` still
+  extracts from the running KiCad.
+- `kicad-python` is now the `kicad` extra of the Python package
+  (`pip install -e "<KiPI folder>[kicad]"`), since standalone KiPI does not need it. `requirements.txt`, which KiCad installs for the
+  plugin, still includes it.
+- **Laminate k** is gone from the thermal settings (#90). Each dielectric's thermal
+  conductivity is now edited in the Stackup window's k column instead: choosing a material
+  still sets its typical value, and it can be typed over while unlocked. The setup file
+  keeps it with the other stackup edits. A setup with a Laminate k opens with that value as
+  every dielectric's k.
+- The Airflow tooltip and help say the air flows parallel to the board in a fixed direction,
+  cooling every point equally (#98).
+- The 3D color bar sits against the right edge of the view, leaving a small gap, so it
+  covers less of the board; its title ends at the bar's right edge so long titles stay in
+  view (#103).
+- Hiding copper layers no longer rescales the result colors: the scale covers every layer
+  until you set its limits (#101).
+- KiPI answers its toolbar button at once (#55). The welcome screen now comes up first and
+  says what KiPI is doing (connecting to KiCad, loading its packages, opening the window)
+  until the window is open, instead of appearing only after everything has loaded. The
+  packages load on a thread, so it keeps animating. The first start after a reboot or
+  after KiCad starts can still take a while, since thousands of files are read from a
+  cold disk (16 s on one Windows machine, 1 s once cached), and the log records how long
+  each part took.
+- KiPI's window comes to the front when it opens, instead of behind KiCad (#112). On
+  Windows it takes the foreground from KiCad, and, if Windows refuses, it still opens on top
+  of the other windows. It stays in front after the welcome screen closes, unless you have
+  switched to another app in the meantime.
+- The standalone launcher installs KiPI's packages with uv even when uv is not on the PATH
+  (#113). It uses uvx or pipx to fetch uv, and falls back to venv and pip as before when
+  none of them is available. The setup log names the route taken, for example *uv (pipx)*.
+- Setups are saved as YAML, `<board>.kipi-setup.yml`, which is easier to read, diff and
+  edit by hand (#76). A `.kipi-setup.json` from an earlier KiPI still opens when there is no
+  `.yml` setup, with a log warning that JSON setups are deprecated and will stop being
+  read in a future version. The next save writes the `.yml` file and leaves the JSON file
+  as it was. KiPI now needs PyYAML. In an environment that does not have it yet, setups
+  stay JSON. The example and validation setups are now YAML.
+- Results files (`.kipi-results`, `.kipi-ac-results`) hold JSON and NumPy arrays in a zip
+  instead of a Python pickle (#99). They open on any computer and cannot run code, so they
+  are safe to share. Opening one builds only KiPI's own result classes, and arrays are read
+  without pickled objects.
+  - Saving is about 4x faster and the files about 3x smaller, because the 3D views are no
+    longer saved: they are rebuilt from the solution when the file opens. On the multiphase
+    example, saving takes 0.7 s instead of 2.8 s, for 30 MB instead of 92 MB. Saving and
+    opening DC results run in the background with progress, like a solve.
+  - A failed save leaves an earlier file of the same name as it was.
+  - Results saved by KiPI 0.7 and earlier still open, but KiPI first warns that a pickle
+    can run code and asks whether to open it. It then reads the pickle with an allowlist of
+    the classes results hold, and logs that the format is deprecated. Saving again writes
+    the new format.
+  - Electro-thermal results save and reopen in the new format too (#50).
+  - DC results files are named for what was solved: `.kipi-dc-results`, or
+    `.kipi-dc-thermal-results` after an electro-thermal solve. **Open results…** in DC mode
+    takes both, and `.kipi-results` files from earlier versions.
+- The via current limit starts at 1 A rather than none, a placeholder that marks vias PASS or
+  FAIL from the first solve (#114). Set your fab's rating, or 0 for none. A setup saved
+  with no limit keeps none.
+- **3D Models** shows every part on the board, not only the setup's parts on the nets shown:
+  the PI Models markers now say which parts are in the setup (#96).
+- New phases of a multi-phase VRM follow a board annotated by schematic sheet (#91): phase 1
+  on `L101`, `Q101` and `Q102` gives phase 2 `L201`, `Q201` and `Q202`, not the next parts in
+  sequence on phase 1's own sheet. A step the earlier phases set is kept too (`Q2`, `Q4` →
+  `Q6`).
+
+### Fixed
+- The DC HTML report's 3D view no longer draws triangles across holes and off the board,
+  which on a large board stretched the axes far past it (#102). The mesh is thinned by
+  dropping interior vertices only, so the copper keeps its outline, holes and solved
+  voltages; thinning also runs about ten times faster.
+
+### Internal
+- Board sources are kept apart from the rest of KiPI. `kipi/sources/` holds where boards
+  come from: `kicad_ipc/` (the running KiCad, moved from `kipi/core/kicad_io/`), the
+  snapshot file, and a registry of the file formats Open reads. The window sees only a
+  `BoardSource` (read, re-read, refill, select) and an `InstalledTool` (layer colors and
+  part models). `tests/core/test_layering.py` fails if kipy is imported outside the KiCad
+  source, or if core, DC, AC or the GUI import a source directly.
+- What any board reader shares moved into `kipi/core`: KiPI's copper layer ids
+  (`core/model/layers.py`, equal to KiCad's), stackup building and the default stackup
+  (`core/model/stackup.py`), snapshot I/O (`core/model/snapshot_io.py`), arc discretization
+  (`core/geometry/arcs.py`) and the default layer colors (`core/viz/layer_colors.py`).
+  Results saved by earlier versions still open.
+- `kipi/host.py` says how KiPI was started; the entry points set it.
+- `kipi/sources/kicad_pcb/` is the board-file reader. Its tests compare it item by item with
+  the KiCad API's reading of a fixture board KiCad saved (`tests/data/kicad_pcb/`, made by
+  `make_fixtures.py`). The stroke, bezier and outline helpers both KiCad readers use moved
+  to `core/geometry/shapes.py`, and the pad shapes cut as KiCad cuts them to
+  `core/geometry/pad_shapes.py`. Sources say which files they read
+  (`BoardSource.files()`), which the window watches.
+- `kipi/sources/odbpp/` is the ODB++ reader, tested against KiCad's ODB++ exports of the
+  same fixture board (`tests/data/odbpp/`, also made by `make_fixtures.py`). The registry
+  lets a format be a folder as well as a file.
+- `kipi/launcher/` is the launcher, standard library only (a test checks).
+  `requirements-standalone.txt` is what it installs, and
+  `.github/scripts/dep_sizes.py` writes the package list it shows offline
+  (`kipi/launcher/deps_manifest.json`), for Windows, Linux and macOS; a test fails when
+  that list is stale. Linux on ARM is left out: Triangle has no prebuilt package there, so
+  pip builds it.
+- The board heat model's log line names its direct solver, as the copper solves' lines
+  already did, and a test checks that DC and thermal solves both use PARDISO wherever it is
+  installed (#108).
+- CI no longer runs for hours (#115). The macOS test job hung in the launcher's setup-window
+  tests: a click handled while the window was still being drawn ended the window's loop
+  before it started, so it waited forever. The setup window now checks for an answer before
+  waiting (this could also happen to a user on a slow machine), and the tests end the window
+  if a check fails rather than hang. Every test now has a 5-minute limit (pytest-timeout)
+  and every job a limit of its own, a new push cancels that branch's older run, and pushes
+  that change only Markdown files skip CI. The tests themselves take about a minute; the
+  rest of a job is installing packages.
+- CI has a **KiCad versions** job with a step for each KiCad release KiPI is tested against
+  (9.0.0 to 10.0.6, through the fake KiCad that answers as each one does) and for board
+  files saved by KiCad 9 and 10, so the pipeline shows which versions pass (#106).
+  `tests/core/test_ci.py` fails if the steps and the tested versions drift apart.
+
+## 0.7.2
 
 ### Added
 - **PI Models in the 3D view** (#84): in DC mode, a new **PI Models** checkbox under

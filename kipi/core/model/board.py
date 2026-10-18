@@ -1,9 +1,10 @@
 """Toolkit-independent snapshot of the board data KiPI needs.
 
-Everything is in millimeters, with board coordinates as KiCad uses them
-(x right, y down). Z is up, with z = 0 at the bottom surface of the board.
-Polygons are stored as plain coordinate lists so a snapshot can be saved to
-JSON and reloaded without KiCad.
+Every board source (the running KiCad, a board file) produces one, and the rest of KiPI
+works from it alone. Everything is in millimeters, with board coordinates as KiCad uses
+them (x right, y down). Z is up, with z = 0 at the bottom surface of the board. Copper
+layers are numbered as in :mod:`kipi.core.model.layers`. Polygons are stored as plain
+coordinate lists so a snapshot can be saved to JSON and reloaded without KiCad.
 """
 
 from __future__ import annotations
@@ -13,6 +14,14 @@ from typing import Dict, List, Optional, Tuple
 
 Point = Tuple[float, float]
 Ring = List[Point]
+
+
+#: What each ``BoardSnapshot.source_format`` is called in the UI.
+FORMAT_NAMES: Dict[str, str] = {
+    "kicad-ipc": "KiCad PCB editor",
+    "kicad-pcb": "KiCad board file",
+    "odbpp": "ODB++",
+}
 
 
 @dataclass
@@ -46,6 +55,9 @@ class DielectricLayer:
     epsilon_r: float = 0.0
     above_layer: int = -1   # copper layer id directly above
     below_layer: int = -1   # copper layer id directly below
+    # In-plane thermal conductivity, W/(m K), set in the Stackup window; 0 = the typical
+    # value for its material (kipi.dc.thermal.materials).
+    k_w_mk: float = 0.0
 
 
 @dataclass
@@ -101,6 +113,15 @@ class Via:
     diameter_mm: float
     layers: List[int]       # copper layers spanned, top to bottom
     via_type: str = "through"
+    filled: Optional[bool] = None    # KiCad's drill filling; None when it does not say
+    # Pad diameter per copper layer. A spanned layer missing here has no pad (unused
+    # pads removed); empty (older snapshots) means diameter_mm on every spanned layer.
+    pad_mm: Dict[int, float] = field(default_factory=dict)
+
+    def pad_diameter(self, layer: int) -> float:
+        if not self.pad_mm:
+            return self.diameter_mm if layer in self.layers else 0.0
+        return self.pad_mm.get(layer, 0.0)
 
 
 @dataclass
@@ -158,8 +179,24 @@ class BoardSnapshot:
     footprints: List[Footprint]
     zones: List[Zone]
     outline: List[Poly]
-    source: str = "kicad"   # "kicad" or the snapshot path it was loaded from
+    source: str = "kicad"   # free text naming where the board came from, for the UI
     kicad_version: str = ""
+    # The format the board was first read from ("kicad-ipc"; later "kicad-pcb", "hyp",
+    # "odbpp", "cce"), kept when the board is saved as a snapshot. "" if unknown.
+    source_format: str = ""
+    # What the source did not give and KiPI filled in with a placeholder ("Stackup: the
+    # board's own is incomplete, ..."), one sentence each, shown with the board.
+    assumed: List[str] = field(default_factory=list)
+    # The snapshot file this was read from; "" when read from the board's own source.
+    # Never saved into a snapshot.
+    file: str = ""
+
+    @property
+    def format_name(self) -> str:
+        """What the board was read from, for the UI: the format's name, else whatever the
+        board says of itself (a generated board names its script)."""
+        return (FORMAT_NAMES.get(self.source_format) or self.source_format or self.source
+                or "unknown source")
 
     def net_names(self) -> List[str]:
         return [n.name for n in self.nets if n.name]

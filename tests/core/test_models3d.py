@@ -12,7 +12,7 @@ import pytest
 pytest.importorskip("pyvista")
 
 from glb_writer import TRI  # noqa: E402
-from kipi.core.kicad_io import models3d  # noqa: E402
+from kipi.sources.kicad_ipc import models3d  # noqa: E402
 from kipi.core.model.board import BoardSnapshot, Stackup  # noqa: E402
 from kipi.core.progress import Canceled, ProgressReporter  # noqa: E402
 from kipi.core.viz.glb import Part  # noqa: E402
@@ -151,9 +151,9 @@ def test_meshes_are_in_the_views_frame():
     assert "Normals" not in flat.point_data
 
 
-def _snap(name, project_dir="", source="kicad"):
+def _snap(name, project_dir="", file=""):
     return BoardSnapshot(name, project_dir, Stackup([], [], 1.6), [], [], [], [], [], [], [],
-                         source=source)
+                         file=file)
 
 
 def test_board_file_is_found_next_to_the_project_or_the_snapshot(tmp_path, board):

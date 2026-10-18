@@ -7,7 +7,7 @@ import pytest
 from kipi.core.model.board import Footprint, Net, Pad
 from kipi.core.model.nets import guess_voltage, voltage_from_name
 from kipi.dc.pi.autofill import (
-    ground_net, guess_other_side, input_net, next_part, other_net, part_nets,
+    ground_net, guess_other_side, input_net, next_part, next_phase_refs, other_net, part_nets,
 )
 from kipi.dc.pi.model import Load, PinRef, PISetup
 from synthetic import make_board
@@ -280,6 +280,80 @@ def test_new_phases_take_the_next_parts(app):
     ed.n_phases.setValue(4)
     assert v.phases[-1].output == PinRef("L3", "VCORE", ["2"])
     panel.close()
+
+
+def _sheets_board(per_sheet=100, sheets=(1, 2, 3), extra=()):
+    """A buck phase per schematic sheet, numbered from the sheet number x ``per_sheet``:
+    inductor L<s>01 to VCORE, high side Q<s>01 on +12V, two low sides Q<s>02, Q<s>03 on
+    GND, and input capacitors C<s>01, C<s>02 (#91)."""
+    pins = []
+    for s in sheets:
+        b = s * per_sheet
+        pins += [(f"L{b + 1}", "1", f"SW{s}"), (f"L{b + 1}", "2", "VCORE"),
+                 (f"Q{b + 1}", "1", "+12V"), (f"Q{b + 1}", "3", f"SW{s}"),
+                 (f"Q{b + 2}", "2", "GND"), (f"Q{b + 2}", "3", f"SW{s}"),
+                 (f"Q{b + 3}", "2", "GND"), (f"Q{b + 3}", "3", f"SW{s}"),
+                 (f"C{b + 1}", "1", "+12V"), (f"C{b + 1}", "2", "GND")]
+    pins += list(extra)
+    snap = make_board()
+    snap.pads, snap.footprints = [], []
+    names = sorted({n for _, _, n in pins})
+    snap.nets = [Net(0, "")] + [Net(i + 1, n) for i, n in enumerate(names)]
+    for i, (ref, pin, net) in enumerate(pins):
+        snap.pads.append(Pad(f"p{i}", net, ref, pin, (float(i), 0.0), "smd"))
+    snap.invalidate_index()
+    return snap
+
+
+def _phase(out, inp, gnd):
+    return [PinRef(out, "VCORE", ["2"]), PinRef(inp, "+12V", ["1"]), PinRef(gnd, "GND", ["2"])]
+
+
+@pytest.mark.parametrize("per_sheet", [100, 1000])
+def test_new_phases_follow_the_schematic_sheets(per_sheet):
+    """Q102 -> Q103 is the next part in sequence, but the next phase is on the next sheet."""
+    snap = _sheets_board(per_sheet)
+    b = per_sheet
+    phases = [_phase(f"L{b + 1}", f"Q{b + 1}", f"Q{b + 2}")]
+    phases.append(next_phase_refs(snap, phases))
+    assert [r.ref for r in phases[-1]] == [f"L{2 * b + 1}", f"Q{2 * b + 1}", f"Q{2 * b + 2}"]
+    assert phases[-1][2].pins == ["2"]
+    phases.append(next_phase_refs(snap, phases))
+    assert [r.ref for r in phases[-1]] == [f"L{3 * b + 1}", f"Q{3 * b + 1}", f"Q{3 * b + 2}"]
+    # Past the last sheet each role repeats its last part, for the user to change; not the
+    # next in sequence (Q303), which is on the last phase's own sheet.
+    last = [f"L{3 * b + 1}", f"Q{3 * b + 1}", f"Q{3 * b + 2}"]
+    assert [r.ref for r in next_phase_refs(snap, phases)] == last
+    again = next_phase_refs(snap, phases + [phases[-1]])
+    assert [r.ref for r in again] == [f"L{3 * b + 1}", f"Q{3 * b + 1}", f"Q{3 * b + 2}"]
+
+
+def test_sheets_that_are_not_next_to_each_other():
+    snap = _sheets_board(sheets=(2, 5, 7))
+    phases = [_phase("L201", "Q201", "Q202")]
+    phases.append(next_phase_refs(snap, phases))
+    assert [r.ref for r in phases[-1]] == ["L501", "Q501", "Q502"]
+    phases.append(next_phase_refs(snap, phases))
+    assert [r.ref for r in phases[-1]] == ["L701", "Q701", "Q702"]
+
+
+def test_a_sheet_on_must_fit_every_role():
+    """L301 is on VCORE but nothing on sheet 3 is a phase: the next parts in sequence."""
+    snap = _sheets_board(sheets=(1,), extra=[("L301", "2", "VCORE"), ("L102", "2", "VCORE"),
+                                            ("Q104", "1", "+12V"), ("Q105", "2", "GND")])
+    phases = [_phase("L101", "Q101", "Q102")]
+    assert [r.ref for r in next_phase_refs(snap, phases)] == ["L102", "Q104", "Q103"]
+
+
+def test_the_step_between_the_last_two_phases_is_kept():
+    """Paralleled low sides numbered in sequence: Q2, Q4 -> Q6, not Q5."""
+    snap = board()
+    for k, net in ((4, "GND"), (5, "GND"), (6, "GND")):
+        snap.pads.append(Pad(f"q{k}", net, f"Q{k}", "2", (0.0, 0.0), "smd"))
+    snap.invalidate_index()
+    snap.__dict__.pop("_ref_index", None)
+    phases = [[None, None, PinRef("Q2", "GND", ["2"])], [None, None, PinRef("Q4", "GND", ["2"])]]
+    assert next_phase_refs(snap, phases)[2] == PinRef("Q6", "GND", ["2"])
 
 
 def test_probe_takes_its_parts_ground(app):

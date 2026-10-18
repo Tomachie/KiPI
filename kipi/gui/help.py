@@ -14,12 +14,23 @@ _DOCS = Path(__file__).resolve().parents[2] / "docs"
 # Shown when the local copy is missing (a partial install) or cannot be opened.
 # GitHub Pages serves docs/ from main, so this is the rendered page, not its source.
 ONLINE = "https://drewsum.github.io/KiPI/help.html"
+# What PI analysis is and how KiPI's solvers work (#92).
+SOLVER_GUIDE_ONLINE = "https://drewsum.github.io/KiPI/solver-guide.html"
 
 
 def help_path() -> Optional[Path]:
     """The user guide, which lives beside the package in the plugin folder."""
     p = _DOCS / "help.html"
     return p if p.is_file() else None
+
+
+def solver_guide_url() -> str:
+    """The Solver Guide: the copy installed with KiPI, else the online one."""
+    p = _DOCS / "solver-guide.html"
+    if p.is_file():
+        from qtpy.QtCore import QUrl
+        return QUrl.fromLocalFile(str(p)).toString()
+    return SOLVER_GUIDE_ONLINE
 
 
 def open_help(parent: Optional[QWidget] = None) -> bool:

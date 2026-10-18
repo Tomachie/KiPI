@@ -74,14 +74,28 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from kipi.gui.viewer3d import Viewer3D  # noqa: E402
 
 
+class _Timer:
+    """Stands in for the blink QTimer: the test steps it by hand."""
+    active = False
+
+    def start(self):
+        self.active = True
+
+    def stop(self):
+        self.active = False
+
+
 def _view():
     v = NS(plotter=pv.Plotter(off_screen=True), _models={}, _model_actors={}, _board_top=0.0,
            _model_board=0.0, _zscale=1.0, _show_models=True, _show_models_result=False,
            _show_board=True, _show_vias=True, _show_pi=True, _pi_markers=[], _pi_actors={},
+           _pi_selected=None, _blink_left=0, _blink_timer=_Timer(),
            _result=None, _result_field="voltage", _chunk_actors={}, _result_actors={},
            _arrow_actors={}, _result_via_actor=None, _board_actors=[], _hidden_layers=set())
     for name in ("set_pi_markers", "_draw_pi_markers", "_remove_pi_actors", "_apply_visibility", "set_zscale",
-                 "set_feature_visible", "_place_models"):
+                 "set_feature_visible", "_place_models", "_selected_marker", "set_pi_selected",
+                 "pi_marker_at", "_to_screen", "focus_on", "_start_blink", "_blink_step",
+                 "_paint_selected"):
         setattr(v, name, MethodType(getattr(Viewer3D, name), v))
     return v
 
@@ -112,6 +126,25 @@ def test_markers_are_drawn_over_the_copper_only():
     assert v._pi_actors == {} and props.GetNumberOfItems() == 0
 
 
+def test_ac_mode_draws_its_probes_in_their_own_color():
+    from kipi.ac.model import Probe
+    from kipi.ac.viz.markers import ac_markers
+    from kipi.gui.viewer3d import _PI_COLORS
+    v = _view()
+    setup = two_phase(ground=True)
+    setup.probes.append(Probe("U2 core", PinRef("U2", "VOUT", ["1"]),
+                              PinRef("U2", "GND", ["2"])))
+    v.set_pi_markers(ac_markers(board(), setup, {"VOUT", "GND"}))
+    assert set(v._pi_actors) == {"pi_vrm_power", "pi_vrm_ground", "pi_vrm_labels",
+                                "pi_probe_power", "pi_probe_ground",
+                                "pi_probe_labels"} == _visible(v)
+    dots = v._pi_actors["pi_probe_power"]
+    np.testing.assert_allclose(dots.GetProperty().GetColor(), _PI_COLORS["probe"][0])
+    assert _PI_COLORS["probe"] not in [c for k, c in _PI_COLORS.items() if k != "probe"]
+    v.set_feature_visible("pi", False)
+    assert _visible(v) == set()
+
+
 def test_markers_follow_the_z_scale():
     v = _view()
     v.set_pi_markers(pi_markers(board(), two_phase(), {"VOUT"}))
@@ -119,6 +152,85 @@ def test_markers_follow_the_z_scale():
     z1 = z()
     v.set_zscale(4.0)
     assert z() == pytest.approx(4 * z1)
+
+
+def test_the_part_selected_in_the_setup_is_marked():
+    """#96: larger amber dots on its pads and its name, over its own marker."""
+    v = _view()
+    v.set_pi_markers(pi_markers(board(), two_phase(ground=True), {"VOUT", "GND"}))
+    v.set_pi_selected(("vrm", "U1"))
+    dots = v._pi_actors["pi_selected_dots"]
+    vrm = next(m for m in v._pi_markers if m.item == "U1")
+    assert dots.GetMapper().GetInput().GetNumberOfPoints() == len(vrm.power) + len(vrm.ground)
+    assert "pi_selected_label" in v._pi_actors
+    names = list(v._pi_actors)
+    assert names[-2:] == ["pi_selected_dots", "pi_selected_label"]      # drawn last
+    v.set_feature_visible("pi", False)                    # shown with the markers
+    assert not dots.GetVisibility()
+    v.set_pi_selected(("load", "nothing such"))
+    assert "pi_selected_dots" not in v._pi_actors
+    assert not v._blink_timer.active                      # nothing selected to blink
+    v.set_pi_selected(None)
+    assert "pi_selected_label" not in v._pi_actors
+
+
+def test_the_selected_part_blinks_then_stays_amber():
+    from kipi.gui.viewer3d import _PI_BLINK_COLORS, _PI_BLINKS, _PI_SELECTED_COLORS
+    v = _view()
+    v.set_pi_markers(pi_markers(board(), two_phase(ground=True), {"VOUT", "GND"}))
+    v.set_pi_selected(("vrm", "U1"))
+    assert v._blink_timer.active
+
+    def colors():
+        dots = v._pi_actors["pi_selected_dots"].GetProperty().GetColor()
+        label = (v._pi_actors["pi_selected_label"].GetMapper().GetLabelTextProperty()
+                 .GetBackgroundColor())
+        return tuple(round(c, 6) for c in (*dots, *label))
+
+    blink = tuple(round(c, 6) for c in (*_PI_BLINK_COLORS[0], *_PI_BLINK_COLORS[1]))
+    amber = tuple(round(c, 6) for c in (*_PI_SELECTED_COLORS[0], *_PI_SELECTED_COLORS[1]))
+
+    seen = []
+    for _ in range(2 * _PI_BLINKS):
+        v._blink_step()
+        seen.append(colors())
+    assert seen == [blink, amber] * _PI_BLINKS            # ends amber
+    assert not v._blink_timer.active
+    v.set_pi_selected(("load", "U2"))                     # another part blinks afresh
+    assert v._blink_timer.active and v._blink_left == 2 * _PI_BLINKS
+
+
+def _looking_down(v):
+    v.plotter.view_xy()
+    v.plotter.reset_camera(bounds=(0, 25, -10, 5, 0, 2))
+    v.plotter.render()
+
+
+def test_a_click_on_a_name_or_dot_finds_its_marker():
+    v = _view()
+    v.set_pi_markers(pi_markers(board(), two_phase(ground=True), {"VOUT", "GND"}))
+    _looking_down(v)
+    load = next(m for m in v._pi_markers if m.kind == "load")
+    anchor = [*load.anchor[:2], load.anchor[2] + 1.0]     # the name sits above the dots
+    (x, y), = v._to_screen(np.array([anchor]))[0]
+    assert v.pi_marker_at((x + 5, y + 3)) is load
+    (px, py) = v._to_screen(load.power)[0][0]
+    assert v.pi_marker_at((px + 2, py)) is not None
+    assert v.pi_marker_at((x + 2000, y)) is None
+    v.set_feature_visible("pi", False)                    # hidden markers are not clicked
+    assert v.pi_marker_at((x, y)) is None
+
+
+def test_focus_brings_the_view_to_the_part():
+    v = _view()
+    _looking_down(v)
+    cam = v.plotter.renderer.GetActiveCamera()
+    before = np.linalg.norm(np.array(cam.GetPosition()) - cam.GetFocalPoint())
+    v.focus_on(np.array([[10.0, 2.0, 1.6], [12.0, 2.0, 1.6]]))
+    np.testing.assert_allclose(cam.GetFocalPoint(), [11.0, -2.0, 1.6])
+    after = np.linalg.norm(np.array(cam.GetPosition()) - cam.GetFocalPoint())
+    assert after < before                                 # nearer: a part, not the board
+    np.testing.assert_allclose(cam.GetDirectionOfProjection(), [0, 0, -1], atol=1e-9)
 
 
 # --- The window ---------------------------------------------------------------------------
@@ -129,8 +241,10 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
-def test_the_window_marks_the_dc_setup_in_dc_mode(app, no_3d, monkeypatch):
+def test_the_window_marks_each_modes_parts(app, no_3d, monkeypatch):
+    """DC mode marks the loads; AC mode marks the probes in their place (#84)."""
     from qtpy.QtWidgets import QCheckBox
+    from kipi.ac.model import Probe
     from kipi.gui.main_window import MainWindow
     w = MainWindow()
     labels = [cb.text() for cb in w.findChildren(QCheckBox)]
@@ -138,13 +252,133 @@ def test_the_window_marks_the_dc_setup_in_dc_mode(app, no_3d, monkeypatch):
     assert not w.chk_pi.isChecked() and w.chk_models.text() == "3D Models"
     w.snapshot = board()
     w.solve_panel.setup = two_phase()
+    w.solve_panel.setup.probes.append(Probe("U2 core", PinRef("U2", "VOUT", ["1"]),
+                                            PinRef("U2", "GND", ["2"])))
     monkeypatch.setattr(w, "_checked_set", lambda: frozenset({"VOUT"}))
     drawn = []
     w.viewer.set_pi_markers = lambda markers: drawn.append([m.name for m in markers])
     w._sync_pi_markers()
     assert drawn[-1] == ["VRM U1", "Load U2"]
     w.set_mode("ac")
-    assert drawn[-1] == []
+    assert drawn[-1] == ["VRM U1", "Probe U2 core"]
     w.set_mode("dc")
     assert drawn[-1] == ["VRM U1", "Load U2"]
+    w.snapshot = None                                     # no board: nothing to mark
+    w._sync_pi_markers()
+    assert drawn[-1] == []
+    w.close()
+
+
+def test_picking_a_part_in_the_setup_marks_it_and_goes_there(app, no_3d, monkeypatch):
+    from kipi.gui.main_window import MainWindow
+    w = MainWindow()
+    w.snapshot = board()
+    w.solve_panel.setup = two_phase()
+    w.solve_panel.vrm_list.reload()
+    w.solve_panel.load_list.reload()
+    monkeypatch.setattr(w, "_checked_set", lambda: frozenset({"VOUT"}))
+    w._sync_pi_markers()
+    marked, focused = [], []
+    monkeypatch.setattr(w.viewer, "set_pi_selected", marked.append)
+    monkeypatch.setattr(w.viewer, "focus_on", focused.append)
+    w.chk_snap.blockSignals(True)                 # not saved to the user's settings
+    w.chk_snap.setChecked(True)
+    lst = w.solve_panel.load_list
+    w.solve_panel.tabs.setCurrentWidget(lst)
+    assert marked[-1] == ("load", "U2") and not focused       # shown, not flown to
+    assert not w.chk_pi.isChecked() and not w.chk_snap.isEnabled()
+    lst.lst.itemClicked.emit(lst.lst.item(0))                 # the user clicks it
+    assert not w.chk_pi.isChecked() and not focused           # PI Models stays off
+    w.chk_pi.setChecked(True)
+    assert w.chk_snap.isEnabled()
+    lst.lst.itemClicked.emit(lst.lst.item(0))
+    assert len(focused) == 1
+    np.testing.assert_allclose(focused[0][:, :2].mean(axis=0), [5.5, 0.5])
+    w.chk_snap.setChecked(False)                              # marked, but the view stays
+    lst.lst.itemClicked.emit(lst.lst.item(0))
+    assert marked[-1] == ("load", "U2") and len(focused) == 1
+    w.solve_panel.tabs.setCurrentIndex(3)                     # the Solve tab: none
+    assert marked[-1] is None
+    w.close()
+
+
+def test_clicking_a_name_in_3d_selects_the_part(app, no_3d, monkeypatch):
+    from kipi.gui.main_window import MainWindow
+    w = MainWindow()
+    w.snapshot = board()
+    w.solve_panel.setup = two_phase()
+    for il in (w.solve_panel.vrm_list, w.solve_panel.load_list):
+        il.reload()
+    monkeypatch.setattr(w, "_checked_set", lambda: frozenset({"VOUT"}))
+    w._sync_pi_markers()
+    load = next(m for m in w.viewer.pi_markers if m.kind == "load")
+    monkeypatch.setattr(w.viewer, "pi_marker_at", lambda xy: load)
+    picked = []
+    monkeypatch.setattr(w, "_on_pick", lambda *a: picked.append(a))
+    w._on_click((5.5, 0.5, 1.6), (10, 10))
+    assert w.solve_panel.tabs.currentWidget() is w.solve_panel.load_list
+    assert w.solve_panel.load_list.current().name == "U2"
+    assert picked == []                                       # not a copper pick
+    w.close()
+
+
+def _ac_window(monkeypatch):
+    from kipi.ac.model import Probe
+    from kipi.gui.main_window import MainWindow
+    w = MainWindow()
+    w.snapshot = board()
+    setup = two_phase()
+    setup.probes.append(Probe("U2 core", PinRef("U2", "VOUT", ["1"]),
+                              PinRef("U2", "GND", ["2"])))
+    w.solve_panel.setup = w.ac_panel.setup = setup         # the panels share one setup
+    monkeypatch.setattr(w, "_checked_set", lambda: frozenset({"VOUT"}))
+    w.solve_panel.load_list.reload()
+    w.set_mode("ac")
+    for il in w.ac_panel._lists():
+        il.reload()
+    return w
+
+
+def test_picking_a_probe_in_the_ac_setup_marks_it_and_goes_there(app, no_3d, monkeypatch):
+    w = _ac_window(monkeypatch)
+    marked, focused = [], []
+    monkeypatch.setattr(w.viewer, "set_pi_selected", marked.append)
+    monkeypatch.setattr(w.viewer, "focus_on", focused.append)
+    lst = w.ac_panel.probe_list
+    w.ac_panel.tabs.setCurrentWidget(lst)
+    assert marked[-1] == ("probe", "U2 core") and not focused  # shown, not flown to
+    assert not w.chk_pi.isChecked()
+    lst.lst.itemClicked.emit(lst.lst.item(0))                  # the user clicks it
+    assert not w.chk_pi.isChecked() and not focused            # PI Models stays off
+    w.chk_snap.blockSignals(True)                  # not saved to the user's settings
+    w.chk_snap.setChecked(True)
+    w.chk_pi.setChecked(True)
+    lst.lst.itemClicked.emit(lst.lst.item(0))
+    assert len(focused) == 1
+    np.testing.assert_allclose(focused[0][:, :2].mean(axis=0), [5.5, 0.5])
+    w.ac_panel.tabs.setCurrentWidget(w.ac_panel.cap_list)      # capacitors: none
+    assert marked[-1] is None
+    w.ac_panel.tabs.setCurrentWidget(w.ac_panel.vrm_list)
+    assert marked[-1] == ("vrm", "J1")
+    # The DC panel's lists say nothing while AC mode shows, and the mode switch brings
+    # back its own selection.
+    w.solve_panel.tabs.setCurrentWidget(w.solve_panel.load_list)
+    assert marked[-1] == ("vrm", "J1")
+    w.set_mode("dc")
+    assert marked[-1][0] == "load"
+    w.set_mode("ac")
+    assert marked[-1] == ("vrm", "J1")
+    w.close()
+
+
+def test_clicking_a_marker_in_ac_mode_selects_it_in_the_ac_setup(app, no_3d, monkeypatch):
+    from kipi.ac.viz.markers import ac_markers
+    w = _ac_window(monkeypatch)
+    probe = next(m for m in ac_markers(w.snapshot, w.ac_panel.setup, {"VOUT"})
+                 if m.kind == "probe")
+    monkeypatch.setattr(w.viewer, "pi_marker_at", lambda xy: probe)
+    w._on_click(None, (10, 10))
+    assert w.ac_panel.tabs.currentWidget() is w.ac_panel.probe_list
+    assert w.ac_panel.probe_list.current().name == "U2 core"
+    assert w.solve_panel.tabs.currentWidget() is not w.solve_panel.load_list
     w.close()

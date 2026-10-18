@@ -20,7 +20,7 @@ import shapely
 from shapely.geometry import LineString, MultiPolygon, Polygon
 from shapely.geometry.base import BaseGeometry
 
-from kipi.core.kicad_io.convert import arc_points as _arc_points
+from kipi.core.geometry.arcs import arc_points as _arc_points
 from kipi.core.model.board import BoardSnapshot, Pad, Poly
 from kipi.core.progress import NULL, ProgressReporter
 
@@ -34,6 +34,16 @@ def poly_to_shapely(p: Poly) -> Optional[Polygon]:
     if not g.is_valid:
         g = shapely.make_valid(g)
     return g
+
+
+def shapely_to_polys(geom) -> List[Poly]:
+    """The polygons of a shapely geometry (Polygon or a collection) as KiPI polys."""
+    if geom is None or geom.is_empty:
+        return []
+    return [Poly(outline=list(g.exterior.coords)[:-1],
+                 holes=[list(r.coords)[:-1] for r in g.interiors])
+            for g in getattr(geom, "geoms", [geom])
+            if g.geom_type == "Polygon" and not g.is_empty]
 
 
 def _polys(items: Iterable[Poly]) -> List[BaseGeometry]:
@@ -73,10 +83,10 @@ def net_layer_copper(snap: BoardSnapshot, net: str, layer: int,
     for p in pads:
         parts.extend(_polys(p.shapes.get(layer, [])))
 
-    span_vias = [v for v in vias if layer in v.layers]
+    span_vias = [v for v in vias if layer in v.layers and v.pad_diameter(layer) > 0]
     if span_vias:
         centers = shapely.points([v.position for v in span_vias])
-        radii = np.array([v.diameter_mm / 2.0 for v in span_vias])
+        radii = np.array([v.pad_diameter(layer) / 2.0 for v in span_vias])
         parts.extend(shapely.buffer(centers, radii, quad_segs=quad_segs))
 
     for z in zones:

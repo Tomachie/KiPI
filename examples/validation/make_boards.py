@@ -2,7 +2,7 @@
 
     python examples/validation/make_boards.py
 
-writes ``<name>/<name>.kipi.json.gz`` and ``<name>/<name>.kipi-setup.json`` for every board
+writes ``<name>/<name>.kipi.json.gz`` and ``<name>/<name>.kipi-setup.yml`` for every board
 below. ``tests/accuracy`` solves each one and compares the results with the engineering
 formulas they were designed around, so a change that moves the solvers' answers fails CI.
 Open any of them without KiCad:
@@ -46,7 +46,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parents[1]))
 
 from kipi.ac.model import CapModel, Probe  # noqa: E402
-from kipi.core.kicad_io.snapshot import save  # noqa: E402
+from kipi.core.model.snapshot_io import save  # noqa: E402
 from kipi.core.model.board import (  # noqa: E402
     BoardSnapshot, CopperLayer, DielectricLayer, Footprint, Net, Pad, Poly, Stackup, Track, Via,
     Zone,
@@ -153,7 +153,8 @@ def source(name, ref, net, pins, volts=1.0, ground=None):
 
 
 def load(name, net, pins, amps=1.0, ground=None, tol=None):
-    return Load(name, PinRef(name, net, pins), amps, ground=ground, tolerance_pct=tol)
+    return Load(name, PinRef(name, net, pins), amps, ground=ground,
+                tol_min=None if tol is None else -tol, tol_max=tol)
 
 
 # ---------------------------------------------------------------- DC boards
@@ -447,7 +448,7 @@ BOARDS = {f.__name__: f for f in (skinny_traces, right_angle, layer_change, plan
 def paths(name: str):
     """The snapshot and setup file of board ``name``."""
     d = HERE / name
-    return d / f"{name}.kipi.json.gz", d / f"{name}.kipi-setup.json"
+    return d / f"{name}.kipi.json.gz", d / f"{name}.kipi-setup.yml"
 
 
 def write(name: str):

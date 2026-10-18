@@ -98,6 +98,8 @@ def validate_ac(setup: PISetup, vrm_name: str, gnd: str) -> List[str]:
         errors.append("The stop frequency must be above the start frequency")
     if s.points_per_decade < 1:
         errors.append("Use at least one point per decade")
+    if s.aging and not s.aging_hours > 0:
+        errors.append("Enter the hours the capacitors have operated, or untick capacitor aging")
 
     names = [m.name for m in setup.caps]
     dupes = sorted({n for n in names if names.count(n) > 1})

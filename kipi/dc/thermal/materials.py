@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 DEFAULT_K_W_MK = 0.8          # FR4 core, used when a name is not recognized
 
@@ -74,11 +74,11 @@ def catalog() -> List[Dielectric]:
     return [Dielectric(n, n, by_name[n][0], False, by_name[n][1]) for n in _CATALOG_ORDER]
 
 
-def laminate_conductance(stackup, override_k_w_mk: Optional[float] = None):
+def laminate_conductance(stackup):
     """In-plane thermal sheet conductance of the dielectrics, in W/K per square.
 
-    Returns (conductance, [(material, thickness_mm, Dielectric), ...]). With an
-    override, every dielectric uses that conductivity instead.
+    Returns (conductance, [(material, thickness_mm, Dielectric), ...]). A dielectric with
+    its own conductivity (set in the Stackup window) uses that instead of its material's.
     """
     rows = []
     g = 0.0
@@ -89,8 +89,8 @@ def laminate_conductance(stackup, override_k_w_mk: Optional[float] = None):
         dielectrics = [DielectricLayer(t, "FR4")]
     for d in dielectrics:
         info = lookup(d.material)
-        if override_k_w_mk:
-            info = Dielectric(d.material, "user override", float(override_k_w_mk), False)
+        if getattr(d, "k_w_mk", 0.0) > 0:
+            info = Dielectric(d.material, "set in the Stackup window", float(d.k_w_mk), False)
         g += info.k_w_mk * 1e-3 * d.thickness_mm          # W/(mm K) * mm
         rows.append((d.material, d.thickness_mm, info))
     return g, rows

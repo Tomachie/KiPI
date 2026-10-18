@@ -11,14 +11,16 @@ KiCad's y axis is flipped (y -> -y) as everywhere else in the viewer.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pyvista as pv
 from scipy.spatial import cKDTree
 
-from kipi.core.model.board import BoardSnapshot
+from kipi.core.model.board import BoardSnapshot, Stackup
+from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.viz.meshes import slab_from_triangles
 
 # name -> (array, association, label, unit). Association "via" means the field lives
@@ -30,6 +32,15 @@ FIELDS = {
     "temperature": ("T", "point", "Temperature", "°C"),
     "via_current": ("I_mA", "via", "Via current", "mA"),
 }
+
+
+def scale_decimals(lo: float, hi: float) -> int:
+    """Decimals that tell apart six values spread over ``lo``..``hi``: a 3.3 V rail that
+    sags by 0.4 mV needs five, or every one reads "3.3"."""
+    span = abs(hi - lo)
+    if not span > 0 or not math.isfinite(span):
+        return 4
+    return min(9, max(0, int(np.ceil(-np.log10(span / 5))) + 1))
 
 
 @dataclass
@@ -177,11 +188,26 @@ def _range(chunks: List[np.ndarray]) -> Tuple[float, float]:
     return float(vals.min()), float(vals.max())
 
 
-def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16,
+def build_scenes(tree, board: Union[BoardSnapshot, Stackup],
+                 progress: ProgressReporter = NULL) -> Dict[str, ResultScene]:
+    """The 3D views of every group of a solved power tree, with the copper temperature of an
+    electro-thermal solve."""
+    temp = tree.thermal.sampler() if tree.thermal is not None else None
+    scenes = {}
+    for name, g in tree.groups.items():
+        progress.check_cancel()
+        progress.info(f"  {name}: {g.result.mesh.n_tris} triangles")
+        scenes[name] = build_result_scene(board, g.result, temperature=temp)
+    return scenes
+
+
+def build_result_scene(board: Union[BoardSnapshot, Stackup], result, n_sides: int = 16,
                        temperature=None) -> ResultScene:
-    """``temperature`` (optional): callable KiCad xy (mm) -> degC from a thermal solve."""
+    """``board``: the board solved, or just its stackup (all that is needed, and all that a
+    results file keeps). ``temperature`` (optional): callable KiCad xy (mm) -> degC from a
+    thermal solve."""
     mesh, sol, fields = result.mesh, result.solution, result.fields
-    st = snap.stackup
+    st = board if isinstance(board, Stackup) else board.stackup
     v_ref = fields.v_ref
     layers: Dict[int, LayerResult] = {}
     for lid in mesh.layers:
@@ -225,14 +251,13 @@ def build_result_scene(snap: BoardSnapshot, result, n_sides: int = 16,
                 for lr in layers.values()]
         ranges[key] = _range(data)
 
-    vias, via_range, via_segments, via_ids = _via_barrels(snap, result, n_sides)
+    vias, via_range, via_segments, via_ids = _via_barrels(st, result, n_sides)
     ranges["via_current"] = via_range
     return ResultScene(net=mesh.net, v_ref=v_ref, layers=layers, vias=vias, ranges=ranges,
                        via_range=via_range, via_segments=via_segments, via_ids=via_ids)
 
 
-def _via_barrels(snap: BoardSnapshot, result, n_sides: int):
-    st = snap.stackup
+def _via_barrels(st: Stackup, result, n_sides: int):
     fields = result.fields
     blocks = []
     currents = []

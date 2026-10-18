@@ -50,6 +50,7 @@ GROUPS_ADDED = (10, 0, 0)          # KOT_PCB_GROUP in GetItems
 
 # Versions worth testing: each is the first with something KiPI uses, the latest, and
 # 9.0.7 (the last without GetBoardLayerName, as reported by a user).
+# CI's KiCad versions job has a step for each (tests/core/test_ci.py checks).
 VERSIONS = ["9.0.0", "9.0.1", "9.0.3", "9.0.5", "9.0.7", "9.0.8", "10.0.0", "10.0.1", "10.0.6"]
 
 
@@ -131,6 +132,7 @@ class FakeBoardData:
         cl.layer = L.BL_F_Cu
         _v(cl.size, 0.6, 0.6)
         self.vias.append(_pack(v))
+        self.pad_present["via-1"] = COPPER       # a normal padstack: a pad on every layer
 
         fp = bt.FootprintInstance()
         fp.id.value = "fp-u1"

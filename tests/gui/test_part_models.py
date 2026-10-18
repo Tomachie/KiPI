@@ -135,9 +135,10 @@ def test_merged_models_keep_colors_and_normals_only_if_all_have_them():
 # --- The window picks the parts ----------------------------------------------------------
 
 def _window(no_3d, monkeypatch, nets=("VOUT",), found=None, cli=("no-such-kicad-cli",)):
-    from kipi.core.kicad_io import models3d
+    from kipi.sources.kicad_ipc import models3d
+    from kipi.sources.kicad_ipc.source import InstalledKiCad
     from kipi.gui.main_window import MainWindow
-    w = MainWindow()
+    w = MainWindow(tool=InstalledKiCad())
     w.snapshot = board()
     w.solve_panel.setup = two_phase()
     monkeypatch.setattr(w, "_checked_set", lambda: frozenset(nets))
@@ -162,23 +163,24 @@ def _settle(app, w):
         app.processEvents()
 
 
-def test_the_setups_parts_on_shown_nets_get_models(app, no_3d, monkeypatch):
+def test_every_part_on_the_board_gets_its_model(app, no_3d, monkeypatch):
+    """Not only the setup's parts, nor only those on the nets shown (#96)."""
     mesh = _part()
     w, shown, asked, _ = _window(no_3d, monkeypatch, found={"L1": mesh, "U2": mesh})
     w._sync_models()
     _settle(app, w)
-    # VOUT carries the VRM's phases (L1, L2) and the load (U2); J1, Q1 and Q2 are on VIN.
-    assert asked == [["L1", "L2", "U2"]]
+    parts = sorted({p.footprint for p in w.snapshot.pads} - {""})
+    assert asked == [parts] and {"J1", "Q1", "U2"} <= set(parts)
     models, top = shown[-1]
-    assert set(models) == {"L1", "U2"}                    # L2 has no model
+    assert set(models) == {"L1", "U2"}                    # the others have no model
     assert models["L1"] == (mesh, "top")
     assert top == pytest.approx(w.snapshot.stackup.board_thickness_mm)
 
-    # Known parts are not asked for again; a newly shown net adds its parts.
+    # Known parts are not asked for again, whatever nets are shown.
     monkeypatch.setattr(w, "_checked_set", lambda: frozenset({"VOUT", "VIN"}))
     w._sync_models()
     _settle(app, w)
-    assert asked[1:] == [["J1", "Q1", "Q2"]]
+    assert asked[1:] == []
 
     w.chk_models.setChecked(False)
     w._sync_models()

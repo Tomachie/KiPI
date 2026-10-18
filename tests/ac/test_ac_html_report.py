@@ -62,7 +62,7 @@ def test_report_name_is_safe_for_files():
 def test_html_report_setting_is_saved(tmp_path):
     setup = PISetup()
     setup.ac.html_report = True
-    path = tmp_path / "s.kipi-setup.json"
+    path = tmp_path / "s.kipi-setup.yml"
     setup.save(path)
     assert PISetup.load(path).ac.html_report
 

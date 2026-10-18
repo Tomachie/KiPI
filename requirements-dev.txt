@@ -1,3 +1,5 @@
 pytest>=8
+# Ends a test that hangs instead of holding a CI runner for hours (#115).
+pytest-timeout>=2.3
 # Pinned: a new ruff release can flag new things and break CI on its own.
 ruff==0.17.0

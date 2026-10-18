@@ -3,7 +3,7 @@
 import importlib.util
 from pathlib import Path
 
-from kipi.core.kicad_io.snapshot import load
+from kipi.core.model.snapshot_io import load
 from kipi.dc.pi.model import PISetup
 
 ROOT = Path(__file__).resolve().parents[2]

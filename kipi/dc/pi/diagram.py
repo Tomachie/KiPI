@@ -125,6 +125,8 @@ def build_diagram(setup: PISetup, snapshot=None) -> Diagram:
             lines.append(f"{len(v.phases) + 1} phases")
         if v.current_limit_a:
             lines.append(f"limit {si(v.current_limit_a, 'A')}")
+        if v.load_line_mohm:
+            lines.append(f"load line {v.load_line_mohm:g} mΩ")
         tip = [f"{VRM_KIND_LABELS[kind]} {v.name}: output on {v.output.ref} ({v.output.net})"]
         if v.input:
             tip.append(f"input on {v.input.ref} ({v.input.net})")
@@ -150,8 +152,8 @@ def build_diagram(setup: PISetup, snapshot=None) -> Diagram:
     for l in setup.loads:
         bid = f"load:{l.name}"
         lines = [si(l.current, "A")]
-        if l.tolerance_pct:
-            lines.append(f"± {l.tolerance_pct:g} %")
+        if l.has_tolerance():
+            lines.append(l.tolerance_label())
         if l.groups:
             lines.append(f"{len(l.groups)} pin groups")
         d.blocks[bid] = Block(bid, "load", l.name, lines, amps=l.current,

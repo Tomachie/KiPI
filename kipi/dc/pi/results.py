@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
@@ -9,6 +10,7 @@ from kipi.dc.solver import NetResult
 
 NOT_CONVERGED = "NOT CONVERGED"
 OUT_OF_REGULATION = "VRM OUT OF REGULATION"
+DISCONNECTED = "DISCONNECTED"       # no copper path to its VRM: not solved (#88)
 
 
 @dataclass
@@ -31,13 +33,15 @@ def drop_or_boost(dv: float):
     A load can sit above its VRM's set point: a remote-sensed VRM raises its output pins
     to hold a sense point further down the copper, so pins nearer the VRM see a boost.
     """
+    if math.isnan(dv):                 # nothing solved, as for a disconnected load (#88)
+        return dv, ""
     return (-dv, "boost") if dv < -BOOST_EPS else (max(dv, 0.0), "drop")
 
 
 def fmt_drop(dv: float, fmt: str = ".3f", scale: float = 1e3, unit: str = " mV") -> str:
     """``dv`` (volts, nominal - actual) as e.g. "1.234 mV drop" or "0.567 mV boost"."""
     mag, kind = drop_or_boost(dv)
-    return f"{mag * scale:{fmt}}{unit} {kind}"
+    return f"{mag * scale:{fmt}}{unit} {kind}" if kind else ""
 
 
 @dataclass
@@ -51,7 +55,7 @@ class LoadReport:
     v_ground: Optional[float]  # mean over the ground pins (None if not modeled)
     v_effective: float        # supply - ground
     drop: float               # nominal - effective, volts (negative: a boost)
-    tolerance_pct: Optional[float]       # +/- % of nominal
+    tolerance: str                       # as set, for tables: "±5 %", "3.1 to 3.5 V"
     passed: Optional[bool]               # judged on the worst pin
     v_worst: float = 0.0                 # whichever of v_low / v_high is further from nominal
     # (name, A, V mean, V min, V max) per pin group
@@ -59,11 +63,19 @@ class LoadReport:
     v_low: Optional[float] = None        # lowest supply pin minus highest ground pin
     v_high: Optional[float] = None       # highest supply pin minus lowest ground pin
     status: str = ""                     # why the load was not judged, or was failed outright
+    limit_low: Optional[float] = None    # the tolerance in volts, either end None if not set
+    limit_high: Optional[float] = None
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
-        # and pin groups have no highest pin.
-        state = {"v_low": state.get("v_worst"), "v_high": None, "status": "", **state}
+        # and pin groups have no highest pin. Before asymmetric tolerances: +/- one %.
+        t = state.pop("tolerance_pct", None)
+        if t is not None and "tolerance" not in state:
+            nom = state.get("nominal", 0.0)
+            state.update(tolerance=f"±{t:g} %", limit_low=nom - abs(nom) * t / 100,
+                         limit_high=nom + abs(nom) * t / 100)
+        state = {"v_low": state.get("v_worst"), "v_high": None, "status": "",
+                 "tolerance": "", "limit_low": None, "limit_high": None, **state}
         state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
                                for g in state.get("pin_groups", [])]
         self.__dict__.update(state)
@@ -128,12 +140,21 @@ class VrmReport:
     current_limit_a: Optional[float] = None   # total output current limit, if one is set
     passed: Optional[bool] = None             # |I out| within the limit
     regulation: str = ""                     # why the VRM cannot hold its set point
+    load_line_mohm: float = 0.0               # load line (#94), 0 = none
+    v_droop: float = 0.0                      # load line x I out: how far v_target is
+                                              # below v_set
 
     def __setstate__(self, state):
-        # Results files saved before multi-phase VRMs, current limits or regulation
-        # checks lack those fields.
+        # Results files saved before multi-phase VRMs, current limits, regulation
+        # checks or load lines lack those fields.
         self.__dict__.update({"phases": [], "current_limit_a": None, "passed": None,
-                              "regulation": "", **state})
+                              "regulation": "", "load_line_mohm": 0.0,
+                              "v_droop": 0.0, **state})
+
+    @property
+    def v_target(self) -> float:
+        """The voltage the VRM regulates to: its set point less the load-line droop."""
+        return self.v_set - self.v_droop
 
     @property
     def p_loss(self) -> Optional[float]:

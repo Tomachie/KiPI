@@ -15,15 +15,29 @@ plot between ``(frequency, impedance)`` corner points.
 The AC solve leaves the VRM out of circuit: it computes the *open-loop* PDN impedance.
 Below the converter's control loop bandwidth the loop holds the rail, so a target only
 applies above the VRM's bandwidth (:func:`judged_from`).
+
+The calculator's AC tolerance and load step can be copied from the DC load on the probe's
+pins (:func:`probe_loads`): +/- the tighter side of its tolerance, from the voltage of the
+VRM feeding it, and its current. Two things that eat into that tolerance before any load
+step can be taken off it: the DC accuracy of the VRM driving the rail
+(:func:`vrm_accuracies`), the larger side of it, and the DC drop the copper itself causes
+at the load's pins (:func:`load_drop`), which needs a DC solve.
+
+An LDO's or switcher's input pins load the rail feeding it just as a DC load does
+(#117): each phase's input counts as a load whose tolerance is the regulator's input
+range, and whose current and drop come from the DC solve (:func:`vrm_inputs`).
 """
 
 from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from kipi.dc.pi.model import Load, PinRef, PISetup, Vrm
 
 
 @dataclass
@@ -113,3 +127,202 @@ def _hz(f: float) -> str:
         if f >= scale * 0.9995:
             return f"{f / scale:.4g} {unit}"
     return f"{f:.4g} Hz"
+
+
+@dataclass
+class LoadTolerance:
+    name: str             # the DC load's name
+    tolerance: str        # as set: "±5 %", "-3 / +5 %", "3.1 to 3.5 V"
+    nominal_v: float      # the set point of the VRM feeding it
+    v_ac_v: float         # the tighter side of the tolerance, volts from nominal
+
+    @classmethod
+    def of(cls, load: "Load", nominal_v: float) -> Optional["LoadTolerance"]:
+        """The AC tolerance a DC load's tolerance allows: +/- its tighter side. None if
+        it has none, or nominal lies outside it."""
+        v_ac = _tighter_side(nominal_v, *load.limits(nominal_v))
+        return cls(load.name, load.tolerance_label(), nominal_v, v_ac) if v_ac else None
+
+    @classmethod
+    def of_vrm_input(cls, name: str, vrm: "Vrm", nominal_v: float, lo: Optional[float],
+                     hi: Optional[float]) -> Optional["LoadTolerance"]:
+        """The AC tolerance a regulator's input range ``lo`` to ``hi`` volts allows on its
+        input rail at ``nominal_v``: +/- its tighter side. None as for :meth:`of`."""
+        from kipi.dc.pi.model import tolerance_label
+        v_ac = _tighter_side(nominal_v, lo, hi)
+        label = tolerance_label(vrm.vin_min, vrm.vin_max, vrm.vin_pct)
+        return cls(name, label, nominal_v, v_ac) if v_ac else None
+
+    def label(self) -> str:
+        if self.tolerance.endswith("%"):
+            return f"{self.name}: {self.tolerance} of {self.nominal_v:g} V"
+        return f"{self.name}: {self.tolerance} (±{self.v_ac_v * 1e3:.4g} mV)"
+
+
+def _tighter_side(nominal: float, lo: Optional[float], hi: Optional[float]
+                  ) -> Optional[float]:
+    """How far ``nominal`` sits from the nearer end of the range ``lo`` to ``hi`` (either
+    None for no limit); None without either end, or with nominal outside the range."""
+    sides = [d for d in (None if lo is None else nominal - lo,
+                         None if hi is None else hi - nominal) if d is not None]
+    return min(sides) if sides and min(sides) > 0 else None
+
+
+@dataclass
+class VrmAccuracy:
+    name: str             # the VRM's name
+    accuracy: str         # as set: "±1 %", "1.19 to 1.21 V"
+    v: float              # its larger side, volts from the set voltage
+
+    def label(self) -> str:
+        return f"{self.name}: {self.accuracy} (±{self.v * 1e3:.4g} mV)"
+
+
+@dataclass
+class LoadDrop:
+    name: str             # the DC load's name
+    nominal: float        # the set voltage of the VRM that drove it in the solve
+    v_effective: float    # its solved effective voltage: supply pins minus ground pins
+    v: float              # how far that sits from nominal, volts (never negative)
+    kind: str             # "drop" (below the set voltage) or "boost" (above it)
+
+    def label(self) -> str:
+        return (f"{self.name}: {self.v_effective:.4g} V of {self.nominal:g} V "
+                f"({self.v * 1e3:.4g} mV {self.kind})")
+
+
+@dataclass
+class ProbeLoad:
+    name: str                           # the DC load's name
+    tolerance: Optional[LoadTolerance]  # the AC tolerance it allows, if it has one
+    current_a: float                    # its total current, 0 for none
+    exact: bool = False                 # its pins are the probe's pins
+    drop: Optional[LoadDrop] = None     # its DC drop, once the power tree is solved
+    vrm_input: bool = False             # an LDO's or switcher's input, not a DC load:
+                                        # its current is known only from a DC solve
+
+    def label(self) -> str:
+        return self.name
+
+
+def _same_pins(a: Optional["PinRef"], b: Optional["PinRef"]) -> bool:
+    return bool(a and b) and (a.ref, a.net, sorted(a.pins)) == (b.ref, b.net, sorted(b.pins))
+
+
+def load_drop(dc_result, name: str) -> Optional[LoadDrop]:
+    """How far a DC load's solved effective voltage sits from the set voltage of the VRM
+    feeding it, out of the power-tree result ``dc_result``. None without a solve, or when
+    that solve has no voltage for the load: it was not in the setup then, it has no copper
+    path to its VRM (#88), or no VRM drives it."""
+    from kipi.dc.pi.results import drop_or_boost
+    for r in getattr(dc_result, "loads", None) or []:
+        if r.name != name or not r.nominal or not math.isfinite(r.v_effective):
+            continue
+        v, kind = drop_or_boost(r.nominal - r.v_effective)
+        return LoadDrop(name, r.nominal, r.v_effective, v, kind) if kind else None
+    return None
+
+
+def vrm_input_name(vrm: str, phase: int, phases: int) -> str:
+    """The name of a regulator's input as a load: "VR1 input", or with several phases,
+    "VR1 phase 2 input" (``phase`` counts from 0)."""
+    return f"{vrm} input" if phases == 1 else f"{vrm} phase {phase + 1} input"
+
+
+def vrm_inputs(setup: "PISetup") -> List[Tuple[str, "Vrm", int]]:
+    """The input pins of every LDO and switcher, one entry per phase that has them:
+    ``(name, vrm, phase)``, the phase counting from 0 (see :meth:`Vrm.all_phases`)."""
+    out = []
+    for v in setup.vrms:
+        if v.kind not in ("ldo", "smps"):
+            continue
+        phases = v.all_phases()
+        out += [(vrm_input_name(v.name, k, len(phases)), v, k)
+                for k, ph in enumerate(phases) if ph.input]
+    return out
+
+
+def _vrm_input_solved(dc_result, vrm: str, phase: int
+                      ) -> Tuple[Optional[float], Optional[float]]:
+    """A regulator phase's (input volts, input amps) in the power-tree result
+    ``dc_result``; (None, None) without a solve, or with no input solved for it."""
+    for r in getattr(dc_result, "vrms", None) or []:
+        if r.name != vrm:
+            continue
+        if r.phases:
+            return ((r.phases[phase].v_in, r.phases[phase].i_in)
+                    if phase < len(r.phases) else (None, None))
+        return (r.v_in, r.i_in) if phase == 0 else (None, None)
+    return None, None
+
+
+def vrm_input_drop(dc_result, name: str, vrm: str, phase: int,
+                   nominal: Optional[float]) -> Optional[LoadDrop]:
+    """How far a regulator phase's solved input voltage sits from its input rail's
+    ``nominal`` voltage, as a :class:`LoadDrop` named ``name``; None as for
+    :func:`load_drop`."""
+    from kipi.dc.pi.results import drop_or_boost
+    v_in = _vrm_input_solved(dc_result, vrm, phase)[0]
+    if v_in is None or not nominal or not math.isfinite(v_in):
+        return None
+    v, kind = drop_or_boost(nominal - v_in)
+    return LoadDrop(name, nominal, v_in, v, kind) if kind else None
+
+
+def probe_loads(setup: "PISetup", rail: Optional["PinRef"],
+                ground: Optional["PinRef"] = None, dc_result=None) -> List[ProbeLoad]:
+    """The DC loads on the probe's part: their supply pins on the footprint of the probe's
+    supply pins ``rail``, and their ground pins, where both have them, on the footprint of
+    its ``ground``. A load whose supply and ground pins are the probe's own comes first,
+    ``exact``; a load without ground pins matches on its supply pins alone. With the result
+    of a power-tree solve, each load also carries its DC drop (:func:`load_drop`).
+
+    The input of each LDO and switcher phase (:func:`vrm_inputs`) counts as a load too,
+    with the regulator's input range as its tolerance; its current and drop come from the
+    solve."""
+    from kipi.dc.pi.model import net_groups, rail_nominal, vin_range
+    if rail is None:
+        return []
+    out = []
+    for load in setup.loads:
+        if load.supply.ref != rail.ref or (ground and load.ground
+                                           and load.ground.ref != ground.ref):
+            continue
+        tol = None
+        if load.has_tolerance():
+            group = net_groups(setup, [load.supply.net])[load.supply.net]
+            vrm = next((v for v in setup.vrms if v.voltage
+                        and any(ph.output.net in group for ph in v.all_phases())), None)
+            tol = vrm and LoadTolerance.of(load, vrm.voltage)
+        exact = _same_pins(load.supply, rail) and (load.ground is None
+                                                   or _same_pins(load.ground, ground))
+        out.append(ProbeLoad(load.name, tol or None, abs(load.total_current()), exact,
+                             load_drop(dc_result, load.name)))
+    for name, v, k in vrm_inputs(setup):
+        ph = v.all_phases()[k]
+        if ph.input.ref != rail.ref or (ground and ph.ground and ph.ground.ref != ground.ref):
+            continue
+        nominal = rail_nominal(setup, ph.input.net, v.name)
+        tol = nominal and LoadTolerance.of_vrm_input(name, v, nominal, *vin_range(setup, v))
+        i_in = _vrm_input_solved(dc_result, v.name, k)[1]
+        exact = _same_pins(ph.input, rail) and (ph.ground is None
+                                                or _same_pins(ph.ground, ground))
+        out.append(ProbeLoad(name, tol or None, abs(i_in or 0.0), exact,
+                             vrm_input_drop(dc_result, name, v.name, k, nominal), True))
+    out.sort(key=lambda p: not p.exact)
+    return out
+
+
+def vrm_accuracies(setup: "PISetup", rail: Optional["PinRef"] = None) -> List[VrmAccuracy]:
+    """LDOs and switchers with a DC accuracy: with the probe's supply pins ``rail``, only
+    those driving that rail (its nets joined by series links)."""
+    from kipi.dc.pi.model import net_groups
+    groups = net_groups(setup, [rail.net] if rail else [])
+    out = []
+    for v in setup.vrms:
+        acc = v.accuracy_v() if v.kind != "source" and v.has_accuracy() else None
+        if acc is None or (rail and not any(rail.net in groups[ph.output.net]
+                                            for ph in v.all_phases())):
+            continue
+        out.append(VrmAccuracy(v.name, v.accuracy_label(), acc))
+    return out

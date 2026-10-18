@@ -46,7 +46,6 @@ class ThermalSettings:
     iterations: int = 3
     airflow_m_s: float = 0.0
     grid_mm: float = 0.0        # 0 = automatic (~250 cells across the board)
-    laminate_k_w_mk: float = 0.0  # 0 = from the stackup's dielectric materials
     # Heat the loads themselves: each load dissipates the sum over its supply and ground
     # pins of pin current x pin voltage, spread over those pins (#62).
     load_power: bool = False
@@ -90,7 +89,7 @@ class BoardThermalModel:
 
         # In-plane sheet conductance per cell: copper coverage of every layer + laminate.
         from kipi.dc.thermal.materials import laminate_conductance
-        g_lam, self.dielectrics = laminate_conductance(st, settings.laminate_k_w_mk or None)
+        g_lam, self.dielectrics = laminate_conductance(st)
         for material, t, info in self.dielectrics:
             note = " (not recognized; assumed FR4)" if info.assumed else ""
             progress.info(f"  dielectric {material or '(unnamed)'} {t:.3f} mm: {info.matched}, "
@@ -139,7 +138,8 @@ class BoardThermalModel:
         from kipi.core.solver import direct
         self._solve = direct.factorize(A, progress.warn)
         progress.info(f"Thermal grid {nx} x {ny} ({n} cells inside the board, {d:.2f} mm), "
-                      f"h = {settings.h_w_mm2_k() * 1e6:.1f} W/m²K per face")
+                      f"h = {settings.h_w_mm2_k() * 1e6:.1f} W/m²K per face, "
+                      f"direct solve ({self._solve.name})")
 
     # ------------------------------------------------------------------ heat
     def empty_heat(self) -> np.ndarray:

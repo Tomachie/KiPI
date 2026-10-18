@@ -5,7 +5,9 @@ import math
 import pytest
 from shapely.geometry import box
 
-from kipi.dc.pi.model import DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate
+from kipi.dc.pi.model import (
+    DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate, vin_range,
+)
 from kipi.dc.pi.tree import NOT_CONVERGED, OUT_OF_REGULATION, solve_tree
 from kipi.dc.solver.fem import SolveError
 
@@ -109,15 +111,47 @@ def test_validation_rules():
     assert any("ground sense pins must be on" in e for e in validate(s))
 
 
-def test_setup_json_round_trip(tmp_path):
+def test_setup_file_round_trip(tmp_path):
     s = setup(kind="smps", eff=0.85, sense=True, ground=True, gsense=True)
     s.links.append(DcLink("FB1", PinRef("U2", "+3V3", ["1"]), PinRef("U2", "+3V3", ["1"]), 0.05))
     from kipi.dc.pi.model import PinGroup
     s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]
     s.settings.rho_by_layer = {"In1.Cu": 1.9e-5}
     s.settings.tcr_per_c = 0.0038
-    back = PISetup.load(s.save(tmp_path / "x.kipi-setup.json"))
-    assert back == s
+    path = s.save(tmp_path / "x.kipi-setup.json")
+    assert path.name == "x.kipi-setup.yml"           # YAML only from 0.8.0 (#76)
+    assert PISetup.load(path) == s
+
+
+def test_legacy_json_setups_still_load(tmp_path):
+    import json
+    s = setup(kind="smps", eff=0.85, sense=True, ground=True)
+    legacy = tmp_path / "x.kipi-setup.json"
+    legacy.write_text(json.dumps(s.to_dict(), indent=2), encoding="utf-8")
+    assert PISetup.load(legacy) == s
+    from kipi.dc.pi.model import find_setup
+    assert find_setup("x.kicad_pcb", str(tmp_path)) == legacy
+    s.save(legacy)
+    assert find_setup("x.kicad_pcb", str(tmp_path)) == tmp_path / "x.kipi-setup.yml"
+
+
+def test_hand_edited_yaml_reads_numbers_as_numbers(tmp_path):
+    from kipi.core import yaml_io
+    d = yaml_io.loads("a: 1e-9\nb: 2.5E+3\nc: 3\nd: '1e-9'\ne: .5\nf: 1_000.5\n")
+    assert d == {"a": 1e-9, "b": 2500.0, "c": 3, "d": "1e-9", "e": 0.5, "f": 1000.5}
+
+
+def test_without_pyyaml_setups_stay_json(tmp_path, monkeypatch):
+    from kipi.core import yaml_io
+    from kipi.dc.pi.model import setup_path
+    monkeypatch.setattr(yaml_io, "yaml", None)
+    s = setup()
+    assert setup_path("x.kicad_pcb", str(tmp_path)).name == "x.kipi-setup.json"
+    path = s.save(tmp_path / "x.kipi-setup.yml")
+    assert path.name == "x.kipi-setup.json" and PISetup.load(path) == s
+    (tmp_path / "y.kipi-setup.yml").write_text("nets: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="PyYAML"):
+        PISetup.load(tmp_path / "y.kipi-setup.yml")
 
 
 def test_resistivity_must_be_positive():
@@ -140,7 +174,7 @@ def board_two_pin():
 def test_per_pin_group_currents():
     from kipi.dc.pi.model import PinGroup
     s = setup("ldo")
-    s.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 0.0, tolerance_pct=0.05,
+    s.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 0.0, tol_min=-0.05, tol_max=0.05,
                       groups=[PinGroup(["3"], 0.3, "mid"), PinGroup(["1"], 0.7, "end")])
     res = solve_tree(board_two_pin(), s)
     ld = by_name(res.loads, "U2")
@@ -175,7 +209,7 @@ def test_pins_before_the_sense_point_are_boosted():
     pct = 100 * boost / 3.3
     for tol, ok in ((0.9 * pct, False), (1.1 * pct, True)):
         res = _sensed_at_end(Load("END", PinRef("U2", "+3V3", ["1"]), 1.0),
-                                Load("MID", PinRef("U2", "+3V3", ["3"]), 0.2, tolerance_pct=tol))
+                                Load("MID", PinRef("U2", "+3V3", ["3"]), 0.2, tol_min=-tol, tol_max=tol))
         mid = by_name(res.loads, "MID")
         assert by_name(res.loads, "END").v_supply == pytest.approx(3.3, abs=1e-9)
         assert mid.v_supply == pytest.approx(3.3 + boost, rel=1e-9)
@@ -188,7 +222,7 @@ def test_pins_before_the_sense_point_are_boosted():
 
 def test_worst_pin_is_furthest_from_nominal_either_way():
     # One load on both pins, sensed at the end pin: the end sits at 3.3 V, the mid pin above.
-    res = _sensed_at_end(Load("U2", PinRef("U2", "+3V3", ["1", "3"]), 1.0, tolerance_pct=1.0))
+    res = _sensed_at_end(Load("U2", PinRef("U2", "+3V3", ["1", "3"]), 1.0, tol_min=-1.0, tol_max=1.0))
     ld = by_name(res.loads, "U2")
     assert ld.v_low == pytest.approx(3.3, abs=1e-9)
     assert ld.v_high == pytest.approx(3.3 + 0.5 * R(4), rel=1e-9)
@@ -224,7 +258,7 @@ def test_negative_rail_is_judged_on_its_magnitude():
     s.vrms = [Vrm("U1", PinRef("U1", "+3V3", ["2"]), -3.3, "source")]
     s.loads[0].current = -1.0
     for tol, verdict in ((0.1, False), (0.2, True)):
-        s.loads[0].tolerance_pct = tol
+        s.loads[0].tol_min, s.loads[0].tol_max = -tol, tol
         ld = by_name(solve_tree(board(), s).loads, "U2")
         assert abs(ld.nominal - ld.v_worst) == pytest.approx(R(8), rel=1e-6)
         assert ld.passed is verdict
@@ -252,7 +286,7 @@ def test_load_above_nominal_fails_its_limit():
     # Remote sense at U2 lifts U1's output by the strip drop; a load on U1's output pad
     # sits above nominal by 1 A x R(8) (0.12 %), outside a 0.05 % limit.
     s = setup("ldo", sense=True)
-    s.loads.append(Load("U1out", PinRef("U1", "+3V3", ["2"]), 0.0, tolerance_pct=0.05))
+    s.loads.append(Load("U1out", PinRef("U1", "+3V3", ["2"]), 0.0, tol_min=-0.05, tol_max=0.05))
     ld = by_name(solve_tree(board(), s).loads, "U1out")
     assert ld.drop_worst_pct == pytest.approx(-100 * R(8) / 3.3, rel=1e-6)
     assert ld.passed is False
@@ -275,11 +309,90 @@ def test_switcher_below_its_input_minimum_fails_the_loads_it_feeds():
     assert by_name(res.loads, "U2").verdict == OUT_OF_REGULATION
 
 
+def test_input_range_in_percent_is_of_the_input_rails_vrm():
+    s = setup("smps", eff=0.9)
+    u1 = s.vrms[1]
+    u1.vin_pct, u1.vin_min, u1.vin_max = True, -10.0, 5.0          # of J1's 12 V
+    assert vin_range(s, u1) == pytest.approx((10.8, 12.6))
+    assert not validate(s)
+    assert by_name(solve_tree(board(), s).vrms, "U1").regulation == ""
+    u1.vin_min, u1.vin_max = 10.0, 15.0                            # 13.2 V: above 12 V
+    res = solve_tree(board(), s)
+    assert "below its 13.2 V minimum" in by_name(res.vrms, "U1").regulation
+    assert by_name(res.loads, "U2").verdict == OUT_OF_REGULATION
+    s.vrms[0].voltage = -12.0                  # -10 % of a negative rail is its high end
+    u1.vin_min, u1.vin_max = -10.0, 5.0
+    assert vin_range(s, u1) == pytest.approx((-12.6, -10.8))
+    assert PISetup.from_dict(s.to_dict()).vrms[1].vin_pct is True
+
+
+def test_load_tolerance_min_and_max_apart_in_percent_or_volts():
+    from kipi.dc.pi.model import tolerance_label
+    s = setup("ldo")                           # U2 sees a little under 3.3 V
+    u2 = s.loads[0]
+    v = by_name(solve_tree(board(), s).loads, "U2").v_low
+    assert 3.2 < v < 3.3
+    pct = (v / 3.3 - 1) * 100
+    for lo, hi, unit, passed in ((pct - 0.01, 0.0, True, True),       # just inside
+                                 (pct + 0.01, 10.0, True, False),     # min just above it
+                                 (None, 0.0, True, True), (None, -50.0, True, False),
+                                 (v - 1e-4, None, False, True), (v + 1e-4, 5.0, False, False),
+                                 (None, 3.0, False, False)):
+        u2.tol_min, u2.tol_max, u2.tol_pct = lo, hi, unit
+        ld = by_name(solve_tree(board(), s).loads, "U2")
+        assert ld.passed is passed, (lo, hi, unit)
+        assert ld.tolerance == u2.tolerance_label()
+    assert (ld.limit_low, ld.limit_high) == (None, 3.0)
+    u2.tol_min = u2.tol_max = None
+    assert by_name(solve_tree(board(), s).loads, "U2").passed is None    # not judged
+    assert [tolerance_label(*a) for a in ((-5, 5, True), (-3, 5, True), (None, 5, True),
+                                          (3.1, 3.5, False), (3.1, None, False),
+                                          (None, None, True))] == [
+        "±5 %", "-3 / +5 %", "max +5 %", "3.1 to 3.5 V", "min 3.1 V", ""]
+    u2.tol_min, u2.tol_max = 1.0, -1.0
+    assert any("tolerance minimum is above its maximum" in e for e in validate(s))
+
+
+def test_old_symmetric_tolerances_still_load():
+    import pickle
+    from kipi.dc.pi.results import LoadReport
+    d = setup("ldo").to_dict()
+    for ld in d["loads"]:
+        for k in ("tol_min", "tol_max", "tol_pct"):
+            del ld[k]
+        ld["tolerance_pct"] = 2.0
+    u2 = PISetup.from_dict(d).loads[0]
+    assert (u2.tol_min, u2.tol_max, u2.tol_pct) == (-2.0, 2.0, True)
+    old = Load("U2", PinRef("U2", "+3V3", ["1"]), 1.0)          # pickled before: one %
+    state = {k: v for k, v in old.__dict__.items() if not k.startswith("tol_")}
+    state["tolerance_pct"] = 1.5
+    old.__setstate__(state)
+    assert (old.tol_min, old.tol_max, old.tol_pct) == (-1.5, 1.5, True)
+    rep = by_name(solve_tree(board(), setup("ldo")).loads, "U2")
+    state = dict(rep.__dict__)
+    for k in ("tolerance", "limit_low", "limit_high"):
+        del state[k]
+    state["tolerance_pct"] = 1.0
+    rep2 = LoadReport.__new__(LoadReport)
+    rep2.__setstate__(state)
+    assert rep2.tolerance == "±1 %"
+    assert (rep2.limit_low, rep2.limit_high) == pytest.approx((3.267, 3.333))
+    assert pickle.loads(pickle.dumps(rep)).tolerance == rep.tolerance
+
+
+def test_input_range_in_percent_needs_a_vrm_on_the_input_rail():
+    s = setup("smps", eff=0.9)
+    s.vrms[1].vin_pct, s.vrms[1].vin_max = True, 10.0
+    del s.vrms[0]
+    assert vin_range(s, s.vrms[0]) == (None, None)
+    assert any("in % needs a VRM" in e for e in validate(s))
+
+
 def test_unconverged_group_leaves_its_loads_unjudged(monkeypatch):
     import kipi.dc.pi.tree as tree
     monkeypatch.setattr(tree, "MAX_TREE_ITERATIONS", 1)
     s = setup("smps", eff=0.9)
-    s.loads.append(Load("U1in", PinRef("U1", "VIN", ["1"]), 0.0, tolerance_pct=50.0))
+    s.loads.append(Load("U1in", PinRef("U1", "VIN", ["1"]), 0.0, tol_min=-50.0, tol_max=50.0))
     res = solve_tree(board(), s)
     ld = by_name(res.loads, "U1in")
     assert ld.passed is None and ld.verdict == NOT_CONVERGED

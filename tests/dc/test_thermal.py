@@ -106,6 +106,40 @@ def test_first_iteration_solves_copper_at_ambient():
     assert ratio == pytest.approx(1 + TCR * 65.0, rel=1e-3)
 
 
+def test_loads_heat_the_board_with_the_power_they_take():
+    snap = board()
+    s = setup("ldo")
+    res = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1, grid_mm=0.5,
+                                                   load_power=True))
+    ld = by_name(res.loads, "U2")
+    th = res.thermal
+    assert th.heat_by_kind["loads"] == pytest.approx(ld.v_effective * ld.current, rel=1e-9)
+    assert sum(th.heat_by_kind.values()) == pytest.approx(th.heat_w, rel=1e-9)
+    # The LDO's own loss is its input power minus its output power.
+    u1 = by_name(res.vrms, "U1")
+    assert th.heat_by_kind["VRM conversion"] == pytest.approx(u1.p_loss, rel=1e-9)
+
+
+def test_stated_dissipation_replaces_supply_power():
+    snap = board()
+    s = setup("ldo")
+    s.loads[0].dissipation_w = 0.25          # a part passing most of its power on
+    res = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1, grid_mm=0.5,
+                                                   load_power=True))
+    assert res.thermal.heat_by_kind["loads"] == pytest.approx(0.25)
+
+
+def test_load_heat_raises_the_board_temperature():
+    snap = board()
+    s = setup("ldo")
+    hot = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1, grid_mm=0.5,
+                                                   load_power=True))
+    s.loads[0].dissipation_w = 0.0
+    cool = solve_electrothermal(snap, s, ThermalSettings(enabled=True, iterations=1, grid_mm=0.5,
+                                                   load_power=True))
+    assert hot.thermal.t_max > cool.thermal.t_max + 1.0
+
+
 @pytest.mark.parametrize("name,k,assumed", [
     ("FR4", 0.8, False), ("FR4 core", 0.8, False), ("FR408-HR", 0.8, False), ("370HR", 0.8, False),
     ("2116 RC54%", 0.6, False), ("3313 RC57%", 0.6, False), ("Prepreg", 0.6, False),
@@ -130,7 +164,9 @@ def test_laminate_conductance_follows_stackup_materials():
     st.dielectrics = [DielectricLayer(1.5, "Ceramic")]
     g_cer, _ = laminate_conductance(st)
     assert g_cer == pytest.approx(24e-3 * 1.5)
-    assert laminate_conductance(st, override_k_w_mk=2.0)[0] == pytest.approx(2e-3 * 1.5)
+    st.dielectrics = [DielectricLayer(1.5, "Ceramic", k_w_mk=2.0)]    # set in the Stackup window
+    g_set, rows = laminate_conductance(st)
+    assert g_set == pytest.approx(2e-3 * 1.5) and rows[0][2].matched == "set in the Stackup window"
     # A ceramic board spreads heat far better: the hot spot is much cooler.
     peaks = []
     for mat in ("FR4", "Ceramic"):
@@ -177,3 +213,22 @@ def test_a_layers_conductor_sets_its_heat_spreading():
     lam = 0.8e-3 * 1.5
     assert np.nanmax(copper.g) - lam == pytest.approx(0.39 * 0.035, rel=1e-6)
     assert np.nanmax(alu.g) - lam == pytest.approx(0.237 * 0.035, rel=1e-6)
+
+
+def test_dc_and_thermal_solves_use_the_direct_backend(monkeypatch):
+    # #108: both the copper and the heat systems go through kipi.core.solver.direct, so
+    # they get PARDISO wherever it is installed (SuperLU otherwise).
+    from kipi.core.solver import direct
+    names, factorize = [], direct.factorize
+
+    def spy(A, *a, **k):
+        f = factorize(A, *a, **k)
+        names.append(f.name)
+        return f
+
+    monkeypatch.setattr(direct, "factorize", spy)
+    snap = board()
+    solve_electrothermal(snap, setup("ldo"), ThermalSettings(enabled=True, iterations=2,
+                                                             grid_mm=0.5))
+    assert len(names) >= 3                          # the heat grid, then copper per pass
+    assert set(names) == {direct.backend()}

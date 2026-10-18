@@ -40,7 +40,8 @@ def _status(p):
 
 def test_limit_marks_rows_and_none_clears_them(app):
     p = _panel(app, 10)                       # 0..9 mA, listed highest first
-    assert _status(p) == [""] * 10
+    assert p.spin_via_limit.value() == 1000   # 1 A until changed (#114)
+    assert _status(p) == ["PASS"] * 10
     p.spin_via_limit.setValue(4.5)            # mA
     assert _status(p) == ["FAIL"] * 5 + ["PASS"] * 5
     assert p.setup.via_current_limit_a == pytest.approx(4.5e-3)
@@ -63,3 +64,13 @@ def test_limit_change_keeps_rows_and_column_sizing(app):
     assert all(header.sectionResizeMode(c) == QHeaderView.ResizeToContents
                for c in range(header.count()))
     p.close()
+
+
+def test_the_default_limit_is_1_a_and_none_is_kept():
+    from kipi.dc.pi.model import PISetup
+    assert PISetup().via_current_limit_a == 1.0
+    d = PISetup().to_dict()
+    del d["via_current_limit_a"]                  # a setup that never saved one
+    assert PISetup.from_dict(d).via_current_limit_a == 1.0
+    d["via_current_limit_a"] = None               # the user chose "none"
+    assert PISetup.from_dict(d).via_current_limit_a is None

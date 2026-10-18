@@ -65,7 +65,7 @@ def test_vtk_export_and_results_round_trip(solved, tmp_path):
     (vtm,) = [p for p in export_vtk(tree, scenes, snap, tmp_path, "t") if "3V3" in p.name]
     mb = pv.read(str(vtm))
     assert "F.Cu" in mb.keys() and "V" in mb["F.Cu"].point_data
-    path = save_results(tmp_path / "r.kipi-results", tree, scenes, snap, s)
+    path = save_results(tmp_path / "r.kipi-results", tree, snap, s)
     back = load_results(path)
     assert back["board"] == snap.board_name and back["setup"] == s
     assert [l.drop for l in back["tree"].loads] == [l.drop for l in tree.loads]

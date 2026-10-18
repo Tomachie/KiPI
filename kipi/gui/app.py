@@ -16,6 +16,7 @@ from typing import Optional
 LOG_DIR = Path(tempfile.gettempdir()) / "kipi"
 LOG_PATH = LOG_DIR / "kipi.log"          # replaced per session by setup_logging()
 KEEP_SESSIONS = 15
+STARTED = time.monotonic()      # this module is the first of KiPI's an entry point loads
 
 log = logging.getLogger("kipi")
 _crash_file = None   # kept open for faulthandler for the life of the process
@@ -142,8 +143,8 @@ def watchdog_start(seconds: float = 60.0, native_seconds: float = 300.0,
                 lag = time.monotonic() - _ui_beat
                 if lag > ui_stall_seconds and not ui_reported:
                     ui_reported = True
-                    frame = sys._current_frames().get(threading.main_thread().ident)
-                    stack = "".join(traceback.format_stack(frame)) if frame else "(none)\n"
+                    stack = _python_stacks().get(threading.main_thread().ident)
+                    stack = "".join(stack.format()) if stack else "(none)\n"
                     log.warning("UI thread has not responded for %.1f s; it is at:\n%s",
                                 lag, stack)
                 elif lag <= ui_stall_seconds and ui_reported:
@@ -168,14 +169,38 @@ def watchdog_stop():
     faulthandler.cancel_dump_traceback_later()
 
 
+def _python_stacks() -> dict:
+    """Every thread's Python stack, by thread ident, taken in one go.
+
+    A frame's callers are only found by walking ``f_back``, and a thread that runs on
+    meanwhile can leave the frame it was in: a finished generator's frame no longer knows
+    its caller, so formatting the stacks as they are walked could lose the functions that
+    matter. The frames are read with thread switches held off, then formatted.
+    """
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(max(old, 1.0))
+    try:
+        out = {}
+        for ident, frame in sys._current_frames().items():
+            entries = []
+            while frame is not None:
+                entries.append((frame.f_code.co_filename, frame.f_lineno,
+                                frame.f_code.co_name, None))
+                frame = frame.f_back
+            out[ident] = entries[::-1]
+    finally:
+        sys.setswitchinterval(old)
+    return {ident: traceback.StackSummary.from_list(e) for ident, e in out.items()}
+
+
 def _dump_python_stacks(elapsed: float):
     names = {t.ident: t.name for t in threading.enumerate()}
     me = threading.get_ident()
     lines = [f"Task still running after {elapsed:.0f} s ({time.strftime('%H:%M:%S')}):\n"]
-    for ident, frame in sys._current_frames().items():
+    for ident, stack in _python_stacks().items():
         if ident != me:
             lines.append(f"Thread {names.get(ident, ident)} (most recent call last):\n")
-            lines += traceback.format_stack(frame)
+            lines += stack.format()
     try:
         _crash_file.write("".join(lines) + "\n")
         _crash_file.flush()
@@ -203,24 +228,116 @@ def _install_excepthooks():
                                             f"thread {a.thread.name if a.thread else '?'}")
 
 
-def run(kicad=None, board=None, snapshot=None, instance=None) -> int:
-    """Show the main window until it is closed. ``instance`` is this KiPI's
-    :class:`~kipi.gui.single_instance.InstanceGuard`; a KiPI started later brings this
-    window to the front through it."""
-    os.environ.setdefault("QT_API", "pyside6")
-    from kipi.gui.identity import make_app, tag_window
-    from kipi.gui.main_window import MainWindow
+def _refocus(app, win) -> None:
+    from qtpy.QtCore import Qt
     from kipi.gui.single_instance import bring_to_front
+    if app.applicationState() == Qt.ApplicationActive and not win.isActiveWindow():
+        bring_to_front(win)
+
+
+def start_splash():
+    """The QApplication, and the welcome screen shown on it (None if it cannot be), held
+    open until :func:`run` has opened the main window. Shown before anything slow, so
+    KiPI answers the click at once (#55)."""
+    os.environ.setdefault("QT_API", "pyside6")
+    from kipi.gui.identity import make_app
     from kipi.gui.splash import show_splash
 
     app = make_app()
     app.setStyle("Fusion")
     splash = show_splash(app)
-    win = MainWindow(kicad=kicad, board=board, snapshot=snapshot)
-    win.show()
+    if splash is not None:
+        splash.hold()
+    return app, splash
+
+
+def set_status(splash, text: str) -> None:
+    """Say on the welcome screen what KiPI is doing."""
+    log.info("Starting: %s", text)
+    if splash is not None:
+        try:
+            splash.set_status(text)
+            from qtpy.QtWidgets import QApplication
+            QApplication.processEvents()
+        except RuntimeError:      # closed by a click; its widgets are gone
+            pass
+
+
+# What the main window needs, slowest first, with what the welcome screen says meanwhile.
+# The first start after a reboot or after KiCad starts reads these thousands of files
+# from a cold disk (and past a virus scanner), which can take tens of seconds (#55).
+_PRELOAD = (
+    ("Loading NumPy and SciPy…", ("numpy", "scipy.sparse", "scipy.sparse.linalg",
+                                  "scipy.sparse.csgraph", "scipy.spatial",
+                                  "scipy.interpolate", "shapely")),
+    ("Loading the 3D viewer…", ("pyvista", "pyvista.plotting", "matplotlib.pyplot")),
+    ("Loading the solvers…", ("kipi.core.mesh.mesher", "kipi.core.solver.spd",
+                              "kipi.dc.solver.setup", "kipi.dc.thermal.model",
+                              "kipi.dc.viz.results", "kipi.ac.solver.fem", "kipi.ac.checks")),
+)
+
+
+def preload(splash=None, preload=_PRELOAD) -> None:
+    """Import the main window's packages on a thread, keeping the welcome screen painted
+    and animated (and Windows from calling KiPI not responding) meanwhile. None of them
+    touch Qt. A package that fails here is left for the main window's own import to
+    report, on the UI thread as before."""
+    import importlib
+    from qtpy.QtWidgets import QApplication
+
+    stage = [0]
+
+    def load():
+        for i, (_, modules) in enumerate(preload):
+            stage[0] = i
+            for m in modules:
+                try:
+                    importlib.import_module(m)
+                except Exception:  # noqa: BLE001 - imported again where it is used
+                    log.debug("Preloading %s failed", m, exc_info=True)
+
+    t0 = time.perf_counter()
+    set_status(splash, preload[0][0])
+    thread = threading.Thread(target=load, name="kipi-preload", daemon=True)
+    thread.start()
+    shown = 0
+    while thread.is_alive():
+        if stage[0] != shown:
+            shown = stage[0]
+            set_status(splash, preload[shown][0])
+        QApplication.processEvents()
+        thread.join(0.03)
+    log.info("Loaded KiPI's packages in %.1f s", time.perf_counter() - t0)
+
+
+def run(source=None, tool=None, snapshot=None, instance=None, splash=False) -> int:
+    """Show the main window until it is closed. ``source`` and ``tool`` are the window's
+    :class:`~kipi.sources.base.BoardSource` and :class:`~kipi.sources.base.InstalledTool`;
+    ``instance`` is this KiPI's :class:`~kipi.gui.single_instance.InstanceGuard`, through
+    which a KiPI started later brings this window to the front. ``splash`` is the welcome
+    screen from :func:`start_splash` if one was shown already."""
+    if splash is False:
+        app, splash = start_splash()
+    else:
+        from kipi.gui.identity import make_app
+        app = make_app()
+    preload(splash)
+    set_status(splash, "Opening the window…")
+    from kipi.gui.identity import tag_window
+    from kipi.gui.main_window import MainWindow
+    from kipi.gui.single_instance import bring_to_front
+
+    win = MainWindow(source=source, tool=tool, snapshot=snapshot)
+    bring_to_front(win)     # shows it; it opens behind KiCad otherwise (#112)
     tag_window(win)
+    log.info("Window open %.1f s after KiPI started", time.monotonic() - STARTED)
     if splash is not None and splash.isVisible():
+        splash.set_status("Ready")
         splash.raise_()     # over the new window until its timer closes it
+        # Closing the splash hands the focus back to whatever is under it; keep it in
+        # KiPI unless the user went elsewhere meanwhile.
+        splash.closed.connect(lambda: _refocus(app, win))
+        splash.release()    # closes it now if it has played through, as KiPI was slow
     if instance is not None:
         instance.listen(lambda: bring_to_front(win))
     code = app.exec()

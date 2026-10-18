@@ -2,7 +2,7 @@
 
 import pytest
 
-from kipi.core.kicad_io import extract, instances
+from kipi.sources.kicad_ipc import extract, instances
 
 
 def test_recognizes_kicad_executables_on_every_platform():

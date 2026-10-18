@@ -372,15 +372,27 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     # ---------------- capacitors
     parts.append("<h2 id='caps'>Capacitor models</h2>")
     rows = []
+    bias = getattr(result, "cap_bias", None) or {}
     for m, n in models:
         refs = sorted((r for r in result.caps if model_of.get(r) is m), key=_natural)
         srf = m.srf_hz()
-        rows.append([_e(m.name), _si(m.capacitance_f, "F"), _si(m.esl_h, "H"),
-                     _si(m.esr_ohm, "Ω"), _hz(srf) if srf else "", str(n),
-                     _e(", ".join(refs))])
-    parts.append(_table(["Model", "C", "ESL", "ESR", "Self-resonance", "Parts on rail",
-                         "References"], rows, "caps"))
+        row = [_e(m.name), _si(m.capacitance_f, "F"), _si(m.esl_h, "H"),
+               _si(m.esr_ohm, "Ω"), _hz(srf) if srf else "", str(n), _e(", ".join(refs))]
+        if bias:
+            row.insert(2, _bias_text(m, [bias[r] for r in refs if r in bias]))
+        rows.append(row)
+    head = ["Model", "C", "ESL", "ESR", "Self-resonance", "Parts on rail", "References"]
+    if bias:
+        head.insert(2, "C derated")
+    parts.append(_table(head, rows, "caps"))
+    if bias:
+        parts.append(f"<p class='note'>{_e(result.bias_note)}. DC bias follows a typical "
+                     "class II ceramic's curve through each model's capacitance kept at its "
+                     "voltage rating; aging takes each model's rate per decade of hours past "
+                     "1000 hours; a manufacturing tolerance is applied at its low end.</p>")
     total_c = sum(m.capacitance_f * n for m, n in models)
+    total_c -= sum(model_of[r].capacitance_f - c for r, (_v, c) in bias.items()
+                   if r in model_of)
     parts.append(f"<p class='note'>{_si(total_c, 'F')} of capacitors in the model, plus "
                  f"{result.plane_capacitance_f * 1e9:.3g} nF between the rail's copper and "
                  f"{_e(result.ground)}. ESL is the part's own; the mounting (pads, vias, "
@@ -405,8 +417,10 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
                  f"holes, grading {s.grading:g}"],
         ["Dielectric", f"loss tangent {s.loss_tangent:g}; εr top to bottom: "
                        f"{dielectric_summary(snap.stackup, s.default_er)}"],
-        ["Copper", f"resistivity {setup.settings.rho_ohm_mm * 1e-3:.4g} Ω·m, barrel plating "
-                   f"{setup.settings.plating_mm * 1000:g} µm"],
+        ["Copper", f"resistivity {setup.settings.rho_ohm_mm * 1e-3:.4g} Ω·m"],
+        ["Via plating", _e("; ".join(r.label() for r in setup.settings.via_rules))
+         + " (first matching rule)"],
+        ["Temperature", _temperature_text(s, st)],
     ]))
     times = ", ".join(f"{k} {v:.1f} s" for k, v in st.times.items())
     parts.append("<h3>Solver</h3>" + _table(["Quantity", "Value"], [
@@ -435,6 +449,32 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     path.write_text(doc, encoding="utf-8")
     info(f"Report written: {path} ({path.stat().st_size / 1e6:.1f} MB)")
     return path
+
+
+def _temperature_text(s, st) -> str:
+    """How the solve took temperature (#77), for the settings table."""
+    t = getattr(st, "t_copper", None)
+    if getattr(s, "temperature", "none") == "none" or t is None:
+        return "not modeled: copper at 20 °C, capacitors at their rated values"
+    span = f"{t[0]:.3g} °C" if t[1] - t[0] < 0.05 else f"{t[0]:.3g} to {t[1]:.3g} °C"
+    where = ("from the DC thermal co-simulation" if s.temperature == "thermal"
+             and t[1] - t[0] >= 0.05 else "fixed")
+    return (f"{span} ({where}): copper resistivity and capacitors with a dielectric "
+            "follow it")
+
+
+def _bias_text(m, at: list) -> str:
+    """A model's derated capacitance: "4.1 µF at 3.3 V (41 %)" at the DC bias its parts see,
+    "9.6 µF (96 %)" when only aged, or the range over its parts; empty when not derated."""
+    if not at:
+        return ""
+    vs, cs = [v for v, _c in at if v is not None], [c for _v, c in at]
+
+    def span(lo, hi, fmt):
+        return fmt(lo) if abs(hi - lo) <= 1e-3 * max(abs(hi), 1e-30) else f"{fmt(lo)} to {fmt(hi)}"
+    kept = span(min(cs) / m.capacitance_f, max(cs) / m.capacitance_f, lambda x: f"{x:.0%}")
+    at_v = f" at {span(min(vs), max(vs), lambda v: f'{v:.3g} V')}" if vs else ""
+    return f"{span(min(cs), max(cs), lambda c: _si(c, 'F'))}{at_v} ({kept})"
 
 
 def _natural(ref: str):

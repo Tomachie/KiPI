@@ -19,8 +19,8 @@ import shapely
 from shapely.geometry.base import BaseGeometry
 
 from kipi.core.geometry.copper import drill_holes, iter_polygons, poly_to_shapely
-from kipi.core.kicad_io.colors import DEFAULT_COPPER, layer_key
 from kipi.core.model.board import BoardSnapshot, CopperLayer
+from kipi.core.viz.layer_colors import DEFAULT_COPPER, layer_key
 
 # Copper layer colors, keyed like a KiCad color theme ("f", "in1".., "b"): KiCad's default
 # theme until :func:`set_layer_colors` gives the PCB editor's.

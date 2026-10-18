@@ -32,9 +32,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Physics",
     "Environment :: X11 Applications :: Qt",
 ]
-# Keep in sync with requirements.txt, which KiCad installs into the plugin's venv.
+# What KiPI needs standalone. requirements.txt, which KiCad installs into the plugin's
+# venv, is these plus the "kicad" extra; tests/test_requirements.py keeps them in step.
 dependencies = [
-    "kicad-python>=0.7.1",
     "PySide6-Essentials>=6.6",
     "qtpy>=2.4",
     "pyvista>=0.44",
@@ -46,10 +46,13 @@ dependencies = [
     "pyamg>=5.0",
     "plotly>=5.20",
     "matplotlib>=3.8",
+    "PyYAML>=6.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8", "ruff==0.17.0"]  # keep in sync with requirements-dev.txt
+# Talking to a running KiCad: the plugin, `python -m kipi --dump`, and KIPI_HOST=plugin.
+kicad = ["kicad-python>=0.7.1"]
+dev = ["pytest>=8", "pytest-timeout>=2.3", "ruff==0.17.0"]  # keep in sync with requirements-dev.txt
 
 [project.urls]
 Homepage = "https://github.com/drewsum/KiPI"
@@ -58,7 +61,7 @@ Issues = "https://github.com/drewsum/KiPI/issues"
 Documentation = "https://github.com/drewsum/KiPI/blob/main/docs/research.md"
 
 [project.scripts]
-# Standalone app: connect to the running KiCad, or open a saved snapshot.
+# Standalone app: `kipi [board file]` (see kipi/__main__.py).
 kipi = "kipi.__main__:main"
 
 [tool.setuptools.dynamic]
@@ -84,8 +87,11 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["E402"]                     # imports follow pytest.importorskip
 "kipi/dc/pi/tree.py" = ["B023"]              # regulated() is only called in the iteration defining it
+"tests/data/kicad_pcb/make_fixtures.py" = ["E501"]   # board text, kept as KiCad writes it
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = [".", "tests/helpers"]
 addopts = "-ra"
+# pytest-timeout: no test takes near this; one that does has hung (#115).
+timeout = 300

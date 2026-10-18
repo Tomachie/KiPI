@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import html
 import json
+import os
 import platform
+import subprocess
 import sys
 import threading
 import urllib.request
@@ -16,10 +18,13 @@ from typing import Any, List, Optional, Tuple
 from qtpy.QtCore import QObject, QSettings, QSize, Qt, Signal
 from qtpy.QtGui import QGuiApplication, QMovie, QPixmap
 from qtpy.QtWidgets import (
-    QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QApplication, QDialog, QDialogButtonBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QVBoxLayout, QWidget,
 )
 
 from kipi import __version__
+from kipi.gui.help import solver_guide_url
+from kipi.host import Host, current as current_host
 
 NAME = "KiPI"
 DESCRIPTION = ("Power integrity analysis for KiCad: DC IR drop, current density, "
@@ -58,7 +63,8 @@ def animated_icon_path() -> Optional[Path]:
 def versions(solver: bool = True) -> List[Tuple[str, str]]:
     """Python and the dependency versions; ``solver`` adds the direct solver backend,
     which imports the solver stack (slow the first time)."""
-    rows = [("Python", f"{platform.python_version()} ({sys.platform})")]
+    rows = [("Mode", current_host().label),
+            ("Python", f"{platform.python_version()} ({sys.platform})")]
     for dist in _DEPS:
         try:
             rows.append((dist, metadata.version(dist)))
@@ -113,6 +119,78 @@ def fetch_stats(url: str = STATS_URL, timeout: float = STATS_TIMEOUT_S) -> Optio
     except Exception:          # any failure just leaves the stats out
         return None
     return data if parse_stats(data) is not None else None
+
+
+#: The newest tagged release, from GitHub's API (no token needed for a public repo).
+RELEASES_URL = "https://api.github.com/repos/drewsum/KiPI/releases/latest"
+
+
+def version_tuple(text: str) -> Optional[Tuple[int, ...]]:
+    """``"v0.7.2"`` -> (0, 7, 2); None if it is not a plain version."""
+    parts = text.strip().lstrip("vV").split(".")
+    try:
+        return tuple(int(p) for p in parts)
+    except ValueError:
+        return None
+
+
+def fetch_latest_release(url: str = RELEASES_URL,
+                         timeout: float = STATS_TIMEOUT_S) -> Optional[Tuple[str, str]]:
+    """``(tag, release page)`` of the newest release, or None if GitHub cannot be asked:
+    offline, a firewall, its rate limit, or a Python without CA certificates."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": f"KiPI/{__version__}",
+                                                   "Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read(1 << 20))
+        return str(data["tag_name"]), str(data.get("html_url") or REPO + "/releases")
+    except Exception:          # any failure is said in the dialog instead
+        return None
+
+
+def update_text(latest: Optional[Tuple[str, str]], current: str = __version__) -> str:
+    """What the About dialog says once it has checked for updates (rich text)."""
+    if latest is None:
+        return ("Could not reach GitHub to check for updates; see "
+                f"<a href='{REPO}/releases'>the releases</a>.")
+    tag, url = latest
+    new, have = version_tuple(tag), version_tuple(current)
+    if new is not None and have is not None and new > have:
+        return (f"KiPI {html.escape(tag)} is available: "
+                f"<a href='{html.escape(url)}'>download it</a>.")
+    return f"KiPI {html.escape(current)} is up to date (the latest release is {html.escape(tag)})."
+
+
+class _UpdateCheck(QObject):
+    """Asks GitHub for the newest release on a daemon thread; ``ready`` arrives on the UI
+    thread."""
+
+    ready = Signal(object)    # (tag, url), or None
+
+    def start(self):
+        threading.Thread(target=lambda: self.ready.emit(fetch_latest_release()),
+                         name="kipi-update-check", daemon=True).start()
+
+
+def launcher_command() -> Optional[List[str]]:
+    """The command that opens the launcher's setup once this KiPI has closed, or None if
+    the launcher did not start this KiPI (as a plugin, or with ``python -m kipi``)."""
+    launcher = os.environ.get("KIPI_LAUNCHER", "")
+    python = os.environ.get("KIPI_LAUNCHER_PYTHON", "")
+    if current_host() is not Host.STANDALONE or not (launcher and python):
+        return None
+    if not (Path(launcher).is_file() and Path(python).is_file()):
+        return None
+    pythonw = Path(python).with_name("pythonw.exe")
+    if sys.platform == "win32" and pythonw.is_file():
+        python = str(pythonw)                    # no console window
+    script = Path(launcher).with_suffix(".pyw")  # the setup window, no terminal
+    if not script.is_file():
+        script = Path(launcher)
+    # A venv's python.exe on Windows is a small program that starts the real Python as a
+    # child; the environment is free only once both have exited.
+    pids = [os.getpid()] + ([os.getppid()] if sys.platform == "win32" else [])
+    return [python, str(script), "--setup"] + [a for p in pids for a in ("--after-pid", str(p))]
 
 
 def _settings() -> QSettings:
@@ -174,7 +252,9 @@ class AboutDialog(QDialog):
         text.setText(
             f"<h2 style='margin-bottom:0'>{NAME}</h2>"
             f"<p style='margin-top:2px'>Version {__version__}</p>"
-            f"<p>{html.escape(DESCRIPTION)}</p>"
+            f"<p style='margin-top:4px; margin-bottom:4px;'>{html.escape(DESCRIPTION)}<br><br>"
+            f"<a href='{html.escape(solver_guide_url())}'>Solver Guide</a>: what power "
+            f"integrity analysis is and how the solvers work</p>"
             f"<p>Author: {AUTHOR} (<a href='mailto:{EMAIL}'>{EMAIL}</a>)<br>"
             f"Source: <a href='{REPO}'>{REPO}</a><br>"
             f"Report a bug: <a href='{ISSUES}'>{ISSUES}</a><br>"
@@ -198,6 +278,14 @@ class AboutDialog(QDialog):
         col = QVBoxLayout()
         col.addWidget(text)
         col.addWidget(self.stats_label)
+        # What Check for updates found; hidden until it is asked.
+        self.update_label = QLabel(self)
+        self.update_label.setTextFormat(Qt.RichText)
+        self.update_label.setOpenExternalLinks(True)
+        self.update_label.setWordWrap(True)
+        self.update_label.setVisible(False)
+        col.addWidget(self.update_label)
+        self._update_check: Optional[_UpdateCheck] = None
         col.addStretch(1)
 
         top = QHBoxLayout()
@@ -210,12 +298,57 @@ class AboutDialog(QDialog):
         copy.setToolTip("Copy the versions above, for pasting into a bug report")
         copy.clicked.connect(lambda: QGuiApplication.clipboard().setText(info_text()))
         buttons.addButton(copy, QDialogButtonBox.ActionRole)
+        self.btn_update = QPushButton("Check for updates", self)
+        self.btn_update.setToolTip("Ask GitHub whether a newer KiPI has been released")
+        self.btn_update.clicked.connect(self.check_for_updates)
+        buttons.addButton(self.btn_update, QDialogButtonBox.ActionRole)
+        if launcher_command() is not None:
+            manage = QPushButton("Manage dependencies…", self)
+            manage.setToolTip("Close KiPI and open its setup, to add or remove PARDISO or "
+                              "reinstall KiPI's packages; KiPI starts again afterwards")
+            manage.clicked.connect(self._manage_dependencies)
+            buttons.addButton(manage, QDialogButtonBox.ActionRole)
         buttons.rejected.connect(self.reject)
 
         lay = QVBoxLayout(self)
         lay.addLayout(top)
         lay.addWidget(buttons)
         self.setMinimumWidth(520)
+
+    def check_for_updates(self):
+        """Ask GitHub for the newest release, on a thread; the answer shows below."""
+        self.btn_update.setEnabled(False)
+        self.update_label.setText("Checking for updates…")
+        self.update_label.setVisible(True)
+        self._update_check = _UpdateCheck()
+        self._update_check.ready.connect(self._update_ready)
+        self._update_check.start()
+
+    def _update_ready(self, latest):
+        try:
+            self.update_label.setText(update_text(latest))
+            self.btn_update.setEnabled(True)
+        except RuntimeError:   # the dialog was deleted while the check ran
+            pass
+
+    def _manage_dependencies(self):
+        if QMessageBox.question(
+                self, "Manage dependencies",
+                "KiPI closes and its setup opens, where you can add or remove PARDISO. KiPI "
+                "starts again when the setup is done.\n\nSave your setup first if you have "
+                "unsaved changes. Close KiPI now?") != QMessageBox.Yes:
+            return
+        cmd = launcher_command()
+        try:
+            flags = 0x00000008 if sys.platform == "win32" else 0    # DETACHED_PROCESS
+            subprocess.Popen(cmd, close_fds=True, creationflags=flags,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+        except OSError as e:
+            QMessageBox.warning(self, "KiPI", f"Could not start KiPI's setup: {e}")
+            return
+        self.accept()
+        QApplication.instance().closeAllWindows()
 
     def _show_stats(self, stats: Optional[RepoStats]):
         if stats is not None:
@@ -242,5 +375,6 @@ class AboutDialog(QDialog):
             return None
         movie.setScaledSize(QSize(ICON_SIZE, ICON_SIZE))
         label.setMovie(movie)
+        movie.setSpeed(200)
         movie.start()
         return movie
