@@ -404,14 +404,17 @@ class TomachiePdnImporter:
                                  else f"{l['refdes']} ({name})")
             current = self._current(l, name, label)
             self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
-                                         current_max=self.max_current.get(label)))
+                                         current_max=self.max_current.get(label),
+                                         current_known=label not in self.unknown_current))
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
                 label = self._unique(f"{pin} (off-board)")
                 self.unknown_current.append(label)
+                # Power leaving the board at a connector is spent off the board: no heat.
                 self.setup.loads.append(Load(label, supply, 0.0,
-                                             **self._tolerance(rail, {"refdes": pin})))
+                                             **self._tolerance(rail, {"refdes": pin}),
+                                             dissipation_w=0.0, current_known=False))
 
     def _loads(self):
         for name, r in self.rails.items():
@@ -461,7 +464,8 @@ class TomachiePdnImporter:
         kept = {x.name for x in self.setup.loads}
         unknown = [n for n in self.unknown_current if n in kept]
         if unknown:
-            self.notes.append("Current not known, imported as 0 A; enter it on the Loads tab: "
+            self.notes.append("Current not known, imported as 0 A and marked not known (the "
+                              "results they touch are INCOMPLETE); enter it on the Loads tab: "
                               + ", ".join(unknown))
         unused = [f"{n} ({r})" for n, r in self.unused_current if n in kept]
         if unused:

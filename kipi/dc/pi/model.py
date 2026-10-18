@@ -147,6 +147,9 @@ class Load:
     dissipation_w: Optional[float] = None
     # The maximum current, for a worst-case solve (kipi.dc.pi.corner); None = the typical.
     current_max: Optional[float] = None
+    # False: the current is not known and is solved as entered (0 A from an import). Every
+    # load whose result depends on it is INCOMPLETE rather than PASS (kipi.dc.pi.tree).
+    current_known: bool = True
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
@@ -294,7 +297,8 @@ class PISetup:
                                          g.get("current_max"))
                                 for g in l.get("groups", [])],
                         dissipation_w=l.get("dissipation_w"),
-                        current_max=l.get("current_max"))
+                        current_max=l.get("current_max"),
+                        current_known=bool(l.get("current_known", True)))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"),
