@@ -34,3 +34,18 @@ def test_milliamp_test_currents_and_no_figures():
     assert slope == pytest.approx(0.1 / 0.9)
     assert forward_drop(diode({"spec": "i_leakage", "max": "1", "unit": "mA"})) == \
         (None, None, 0.0, [])
+
+
+def test_a_vf_curve_is_fitted_where_the_diode_conducts():
+    """The 25 C curve, a line through its points above a tenth of its highest current;
+    a printed maximum lifts it for the worst case."""
+    d = diode({"spec": "vf", "max": "0.60", "unit": "V", "if": "3A"})
+    d["vf_curves"] = [
+        {"label": "TJ=125C", "points": [[0.1, 0.20], [1, 0.30], [3, 0.40]]},
+        {"label": "TJ=25C", "points": [[0.01, 0.15], [0.5, 0.375], [1, 0.40], [3, 0.50]],
+         "page": 3}]
+    vf, vf_max, slope, notes = forward_drop(d)
+    assert slope == pytest.approx(0.05, rel=1e-6)      # through 0.5, 1 and 3 A
+    assert vf == pytest.approx(0.35, rel=1e-6)
+    assert vf_max == pytest.approx(0.60 - 3 * 0.05)
+    assert "TJ=25C" in notes[0] and "page 3" in notes[0]
