@@ -41,7 +41,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, number
 from kipi.dc.pi.model import (
-    DcLink, Load, PISetup, Vrm, group_name, net_groups, volts_to_pct,
+    DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
 )
 
 SCHEMA = "tomachie-pdn"
@@ -192,7 +192,17 @@ class TomachiePdnImporter:
                     self.skipped_rails.add(name)
                     continue
                 self.setup.vrms.append(Vrm(self._unique(f"{src.get('refdes') or name} {name}"),
-                                           out, v, "source"))
+                                           out, v, "source",
+                                           ground=self._ground(src.get("refdes"))))
+
+    def _ground(self, ref: Optional[str]) -> Optional[PinRef]:
+        """The part's pads on the file's ground net, so its return current flows in the
+        ground copper too (None: it has none there, and returns through an ideal ground)."""
+        for name in self.pdn.get("ground_nets", []):
+            pins = self.idx.part_on_net(ref, self.idx.board_net(name) or name) if ref else None
+            if pins is not None:
+                return pins
+        return None
 
     def _regulator_input(self, reg: dict):
         """The regulator's pins on its input rail, from its load entry there."""
@@ -246,7 +256,8 @@ class TomachiePdnImporter:
                                        quiescent_a=amps(reg.get("quiescent_current")) or 0.0,
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
-                                       vin_max=_volts(reg.get("input_voltage_max"))))
+                                       vin_max=_volts(reg.get("input_voltage_max")),
+                                       ground=self._ground(reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
@@ -304,7 +315,8 @@ class TomachiePdnImporter:
         self._output_path(ref, src, rail)
         iq = amps(reg.get("quiescent_current"))
         if iq is not None:
-            self.setup.loads.append(Load(self._unique(f"{ref} quiescent"), vin, iq))
+            self.setup.loads.append(Load(self._unique(f"{ref} quiescent"), vin, iq,
+                                         ground=self._ground(ref)))
 
     # ------------------------------------------------------------ series parts
     def _link(self, e: dict, loop_of: Optional[str] = None):
@@ -419,14 +431,18 @@ class TomachiePdnImporter:
             label = self._unique(l["refdes"] if l["refdes"] not in taken
                                  else f"{l['refdes']} ({name})")
             current = self._current(l, name, label)
-            self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l)))
+            # A resistor / LED chain returns through the LAST part of its path.
+            returns = (l.get("path_parts") or [l["refdes"]])[-1]
+            self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
+                                         ground=self._ground(returns)))
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
                 label = self._unique(f"{pin} (off-board)")
                 self.unknown_current.append(label)
                 self.setup.loads.append(Load(label, supply, 0.0,
-                                             **self._tolerance(rail, {"refdes": pin})))
+                                             **self._tolerance(rail, {"refdes": pin}),
+                                             ground=self._ground(supply.ref)))
 
     def _loads(self):
         for name, r in self.rails.items():
