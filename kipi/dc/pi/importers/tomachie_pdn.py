@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from kipi.core.model.board import BoardSnapshot
+from kipi.core.model.parts import parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, forward_drop, number
 from kipi.dc.pi.model import (
@@ -52,6 +53,8 @@ NOT_A_LOAD = ("signal_pin_only", "not_a_supply")
 SCHEMA = "tomachie-pdn"
 SCHEMA_VERSION = 1
 SOURCE_ROLES = ("board_input", "battery", "generator")
+# A resistor joining two ground nets above this carries no DC to speak of (a shield's 1M).
+GROUND_LINK_MAX_OHMS = 1e3
 VRM_KIND = {"linear": "ldo", "switching": "smps", "isolated": "smps"}
 
 
@@ -198,13 +201,21 @@ class TomachiePdnImporter:
                                       "found on the board; its loads are not imported")
                     self.skipped_rails.add(name)
                     continue
+                ret = src.get("return") if isinstance(src.get("return"), dict) else {}
                 self.setup.vrms.append(Vrm(self._unique(f"{src.get('refdes') or name} {name}"),
                                            out, v, "source",
-                                           ground=self._ground(src.get("refdes"))))
+                                           ground=self._ground(src.get("refdes"),
+                                                               ret.get("net") or r.get("ground"))))
 
-    def _ground(self, ref: Optional[str]) -> Optional[PinRef]:
-        """The part's pads on the file's ground net, so its return current flows in the
-        ground copper too (None: it has none there, and returns through an ideal ground)."""
+    def _ground(self, ref: Optional[str], net: Optional[str] = None) -> Optional[PinRef]:
+        """The part's pads on its ground net - ``net`` when the file names it (the ground
+        its rail returns on), else the first of the file's ground nets it has pads on - so
+        its return current flows in the ground copper too (None: it has none there, and
+        returns through an ideal ground)."""
+        if ref and net and net not in ("unknown", "not_specified"):
+            pins = self.idx.part_on_net(ref, self.idx.board_net(net) or net)
+            if pins is not None:
+                return pins
         for name in self.pdn.get("ground_nets", []):
             pins = self.idx.part_on_net(ref, self.idx.board_net(name) or name) if ref else None
             if pins is not None:
@@ -258,21 +269,40 @@ class TomachiePdnImporter:
                 self.notes.append(f"{reg['refdes']} ({name}): input pins not found; modeled "
                                   "as an ideal source")
                 kind = "source"
+            ground, out_ground = self._regulator_grounds(reg, r, kind)
             self.setup.vrms.append(Vrm(self._unique(f"{reg['refdes']} {name}"), out, v, kind,
                                        efficiency=eff, input=vin,
                                        quiescent_a=amps(reg.get("quiescent_current")) or 0.0,
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max")),
-                                       # A source VRM's ground pins are a 0 V reference;
-                                       # a regulator only standing in as one is not the
-                                       # board's reference, so its ground floats with
-                                       # the copper (one reference, at the board input).
-                                       ground=None if kind == "source"
-                                       else self._ground(reg["refdes"])))
+                                       ground=ground, output_ground=out_ground))
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
+
+    def _regulator_grounds(self, reg: dict, rail: dict, kind: str):
+        """(ground, output ground) pins of a regulator. A source VRM's ground pins are a 0 V
+        reference; a regulator only standing in as one is not the board's reference, so
+        its ground floats with the copper (one reference, at the board input). An isolated
+        converter returns its input on its input rail's ground and holds its output rail's
+        ground - isolated from it - at 0 V at its own pins there."""
+        if kind == "source":
+            return None, None
+        ref = reg["refdes"]
+        out_net = rail.get("ground")
+        in_rail = next(iter(reg.get("input_rails") or []), None)
+        in_net = self.rails.get(in_rail, {}).get("ground") if in_rail else None
+        if reg.get("type") != "isolated":
+            return self._ground(ref, out_net), None
+        ground = self._ground(ref, in_net)
+        out_ground = self._ground(ref, out_net)
+        if out_ground is None or ground is None or out_ground.net == ground.net:
+            self.notes.append(f"{ref} ({rail['name']}): isolated converter whose output "
+                              "ground pins were not found; its output returns as if on its "
+                              "input's ground")
+            return ground, None
+        return ground, out_ground
 
     def _output_path(self, ref: str, src: dict, rail: str, in_loop: bool = False):
         """The parts between a regulator's output pins and its rail, as DC connections.
@@ -381,6 +411,25 @@ class TomachiePdnImporter:
                                        else None,
                                        forward_v=forward_v, forward_v_max=forward_v_max))
 
+    def _ground_links(self):
+        """The parts joining one ground net to another (a common-mode choke's return
+        winding, a 0R, a net-tie) as DC connections, so a return reaches the reference
+        through them. Capacitors, TVS diodes and resistors above 1 kOhm carry no DC to
+        speak of; shield nets carry no load current."""
+        for g in self.pdn.get("grounds", []):
+            if g.get("kind") == "shield":
+                continue
+            for c in g.get("connections", []):
+                cls = str(c.get("class", "")).lower()
+                if cls in ("capacitor", "tvs", "diode", "esd"):
+                    continue
+                ohms = parse_resistance(str(c.get("value", ""))) if cls == "resistor" else None
+                if ohms is not None and ohms > GROUND_LINK_MAX_OHMS:
+                    continue
+                self._link({"refdes": c["refdes"], "class": cls, "net_in": g["net"],
+                            "net_out": c.get("to"), "datasheet_figures": [],
+                            "resistance_ohm": ohms if ohms is not None else "unknown"})
+
     def _series_parts(self):
         for r in self.rails.values():
             for e in r.get("series_from_parent", []):
@@ -457,7 +506,7 @@ class TomachiePdnImporter:
             # A resistor / LED chain returns through the LAST part of its path.
             returns = (l.get("path_parts") or [l["refdes"]])[-1]
             self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
-                                         ground=self._ground(returns),
+                                         ground=self._ground(returns, rail.get("ground")),
                                          current_max=self.max_current.get(label),
                                          current_known=label not in self.unknown_current))
         for pin in rail.get("offboard_pins", []):
@@ -468,7 +517,8 @@ class TomachiePdnImporter:
                 # Its current is not in the file: 0 A, not known (so it heats nothing).
                 self.setup.loads.append(Load(label, supply, 0.0,
                                              **self._tolerance(rail, {"refdes": pin}),
-                                             ground=self._ground(supply.ref),
+                                             ground=self._ground(supply.ref,
+                                                                 rail.get("ground")),
                                              current_known=False))
 
     def _loads(self):
@@ -509,6 +559,7 @@ class TomachiePdnImporter:
         self._board_sources()
         self._regulated_rails()
         self._series_parts()
+        self._ground_links()
         self._loads()
         self._drop_unpowered()
         self._unreferenced_grounds()
@@ -516,13 +567,14 @@ class TomachiePdnImporter:
         return self.setup, self.notes
 
     def _unreferenced_grounds(self):
-        """A ground net carries return current only from a source VRM's ground pins (its
-        reference). An isolated converter's output ground (a CAN or RS-485 transceiver's
-        own ground) has none in a DC tree, so the loads and converters returning there go
-        to an ideal ground instead, named once."""
+        """A ground net carries return current only from a reference: a source VRM's ground
+        pins, or an isolated converter's output ground pins. A ground with neither (an
+        isolated converter whose output ground pins were not found) sends what returns
+        there to an ideal ground instead, named once."""
         groups = net_groups(self.setup)
         referenced = {groups[v.ground.net] for v in self.setup.vrms
                       if v.kind == "source" and v.ground}
+        referenced |= {groups[v.output_ground.net] for v in self.setup.vrms if v.output_ground}
         ideal = set()
         for x in [*self.setup.vrms, *self.setup.loads]:
             if x.ground and groups[x.ground.net] not in referenced:

@@ -440,3 +440,40 @@ def test_a_series_diode_is_imported_with_its_forward_drop():
     setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
     assert by_name(setup.links, "FB1").forward_v is None
     assert any("no forward voltage in the file" in n for n in notes)
+
+
+def isolated_board():
+    """board() with its ground split: GND under the input side (x 0..11), GND_ISO under
+    the output side (x 12..22); U1 has a pad on each, U2 returns on GND_ISO."""
+    from kipi.core.model.board import Net, Zone
+    from tree_boards import B, pad, poly
+    snap = board()
+    snap.pads = [p for p in snap.pads if p.id != "u2_2"] + [
+        pad("u1_4", "GND_ISO", "U1", "4", box(12, 0, 13, 1), B),
+        pad("u2_2", "GND_ISO", "U2", "2", box(21, 0, 22, 1), B)]
+    snap.zones = [z for z in snap.zones if z.net != "GND"] + [
+        Zone("g1", "GND", "", 0, {B: [poly(box(0, 0, 11, 1))]}),
+        Zone("g2", "GND_ISO", "", 0, {B: [poly(box(12, 0, 22, 1))]})]
+    snap.nets = list(snap.nets) + [Net(len(snap.nets) + 1, "GND_ISO")]
+    return snap
+
+
+def test_an_isolated_converter_holds_its_output_ground_at_its_own_pins():
+    """An isolated converter returns its input on its input rail's ground and holds its
+    output rail's ground (isolated from it) at 0 V at its own pins there, so the loads
+    behind it return through real copper, not an ideal ground."""
+    from kipi.dc.pi.model import validate
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="isolated", efficiency=0.8)
+    pdn["ground_nets"] = ["GND", "GND_ISO"]
+    pdn["rails"][0]["ground"] = "GND"
+    pdn["rails"][1]["ground"] = "GND_ISO"
+    snap = isolated_board()
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), snap).run()
+    u1 = by_name(setup.vrms, "U1 +3V3")
+    assert (u1.ground.net, u1.output_ground.net) == ("GND", "GND_ISO")
+    assert by_name(setup.loads, "U2").ground.net == "GND_ISO"
+    assert not validate(setup)
+    assert not any("ideal ground" in n for n in notes)
+    u2 = by_name(solve_tree(snap, setup).loads, "U2")
+    assert u2.v_ground > 0                        # the return drop in GND_ISO's copper

@@ -80,6 +80,9 @@ class Vrm:
     sense: Optional[PinRef] = None       # remote sense: regulate the voltage here
     ground: Optional[PinRef] = None      # ground pins (enables ground-net simulation)
     ground_sense: Optional[PinRef] = None  # negative remote sense: regulate against these
+    # An isolated converter: its output side's return pins, on a ground isolated from its
+    # input's. That ground is held at 0 V there; ``ground`` carries only the input return.
+    output_ground: Optional[PinRef] = None
     # Phases 2..N of a multi-phase VRM (empty = single phase). Each phase carries
     # 1/N of the output current; sense and ground sense are shared by all phases.
     phases: List[VrmPhase] = field(default_factory=list)
@@ -112,7 +115,7 @@ class Vrm:
 
     def pin_refs(self) -> List[PinRef]:
         """Every pin reference of the VRM, all phases included."""
-        refs = [self.sense, self.ground_sense]
+        refs = [self.sense, self.ground_sense, self.output_ground]
         for ph in self.all_phases():
             refs.extend((ph.output, ph.input, ph.ground))
         return [r for r in refs if r]
@@ -345,6 +348,7 @@ class PISetup:
                       quiescent_a=v.get("quiescent_a", 0.0), input=pin(v.get("input")),
                       sense=pin(v.get("sense")), ground=pin(v.get("ground")),
                       ground_sense=pin(v.get("ground_sense")),
+                      output_ground=pin(v.get("output_ground")),
                       phases=[VrmPhase(pin(ph["output"]), pin(ph.get("input")),
                                        pin(ph.get("ground"))) for ph in v.get("phases", [])],
                       current_limit_a=v.get("current_limit_a"),
@@ -625,6 +629,8 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: input and output are on the same net group")
         if v.ground:
             ground_groups.add(groups[v.ground.net])
+        if v.output_ground:
+            ground_groups.add(groups[v.output_ground.net])
         errors.extend(_phase_errors(v, groups))
     for g, vs in by_group.items():
         if len(vs) > 1:
@@ -663,7 +669,8 @@ def validate(setup: PISetup) -> List[str]:
     for g in ground_groups:
         if g in rail_groups:
             errors.append(f"{group_name(g)} is used both as a supply and as ground")
-        if not any(v.kind == "source" and v.ground and groups[v.ground.net] == g
+        if not any((v.kind == "source" and v.ground and groups[v.ground.net] == g)
+                   or (v.output_ground and groups[v.output_ground.net] == g)
                    for v in setup.vrms):
             errors.append(f"Ground {group_name(g)} needs a reference: set the ground pins of "
                           "the source VRM that returns current through it (and solve that "

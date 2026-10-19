@@ -249,7 +249,8 @@ class _TreeSolver:
 
     def _ground_groups(self) -> List[Group]:
         out: List[Group] = []
-        refs = [v.ground for v in self.setup.vrms] + [l.ground for l in self.setup.loads]
+        refs = ([v.ground for v in self.setup.vrms] + [v.output_ground for v in self.setup.vrms]
+                + [l.ground for l in self.setup.loads])
         for ref in refs:
             if ref and self.groups[ref.net] not in out:
                 out.append(self.groups[ref.net])
@@ -339,6 +340,11 @@ class _TreeSolver:
         refs = [v for v in self.setup.vrms
                 if v.kind == "source" and v.ground and v.ground.net in g]
         sources = [VoltageSource(f"{v.name} (gnd)", self.pads(v.ground), 0.0) for v in refs]
+        # An isolated converter holds its output side's ground at 0 V at its return pins.
+        isolated = [v for v in self.setup.vrms if v.output_ground and v.output_ground.net in g]
+        sources += [VoltageSource(f"{v.name} (output gnd)", self.pads(v.output_ground), 0.0)
+                    for v in isolated]
+        refs = refs + isolated
         loads = [CurrentLoad(f"{l.name} (return)", self.pads(l.ground), -l.total_current(),
                              optional=True)
                  for l in self.setup.loads if l.ground and l.ground.net in g]
@@ -522,7 +528,9 @@ class _TreeSolver:
         currents = {}
         for v, k, _ in self._vrm_ground_phases(g):
             i_back = self.i_in[v.name][k] if v.name in self.i_in else 0.0
-            currents[_term(v, "gnd", k + 1)] = self.i_out[v.name][k] - i_back
+            # An isolated converter's output current returns on its output ground.
+            i_out = 0.0 if v.output_ground else self.i_out[v.name][k]
+            currents[_term(v, "gnd", k + 1)] = i_out - i_back
         return currents
 
     def _solve_ground(self, g: Group, suffix: str, warnings: List[str]):

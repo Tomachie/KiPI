@@ -460,6 +460,7 @@ class VrmEditor(_Editor):
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
         self.ground_sense = self._picker(optional=True)
+        self.output_ground = self._picker(optional=True)
         # Multi-phase: the output, input and ground pickers show the selected phase.
         self.n_phases = QSpinBox()
         self.n_phases.setRange(1, 32)
@@ -483,6 +484,11 @@ class VrmEditor(_Editor):
         f.addRow("Output pins", self.output)
         f.addRow("Input pins", self.input)
         f.addRow("Ground pins", self.ground)
+        f.addRow("Output ground pins", self.output_ground)
+        tip(f, self.output_ground, "An isolated converter: its output side's return pins, on "
+                                   "a ground isolated from its input's. That ground is held "
+                                   "at 0 V there, and Ground pins carry only the input's "
+                                   "return. Empty for any other regulator.")
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
         # Drawings under the tooltips (#116), the field's part picked out.
@@ -668,6 +674,7 @@ class VrmEditor(_Editor):
         self.acc_row.set_values(v.acc_min, v.acc_max, v.acc_pct, v.acc_dv)
         self.sense.set_value(v.sense)
         self.ground_sense.set_value(v.ground_sense)
+        self.output_ground.set_value(v.output_ground)
         self._kind_rows()
 
     def _save(self, v: Vrm):
@@ -692,6 +699,7 @@ class VrmEditor(_Editor):
         v.bandwidth_khz = self.bandwidth.value() or None
         v.sense = self.sense.value()
         v.ground_sense = self.ground_sense.value()
+        v.output_ground = self.output_ground.value()
         phases = v.all_phases()
         ph = phases[min(self._phase, len(phases) - 1)]
         old = ph.output
