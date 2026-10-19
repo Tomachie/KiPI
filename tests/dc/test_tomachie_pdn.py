@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Importing a Tomachie power-tree file onto a board."""
 
 import copy
@@ -359,12 +360,12 @@ def test_current_not_known_marks_its_rail_incomplete():
     assert any("marked not known" in n for n in notes)
 
 
-def test_off_board_load_puts_no_heat_into_the_board():
+def test_off_board_load_is_imported_at_0_A_not_known():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["offboard_pins"] = ["U2_1"]
     setup, _ = run(pdn)
     off = by_name(setup.loads, "U2_1 (off-board)")
-    assert (off.dissipation_w, off.current_known) == (0.0, False)
+    assert (off.current, off.current_known) == (0.0, False)
 
 
 @pytest.mark.parametrize("basis", ["signal_pin_only", "not_a_supply"])
