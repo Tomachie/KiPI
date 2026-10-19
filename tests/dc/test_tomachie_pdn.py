@@ -367,12 +367,14 @@ def test_off_board_load_puts_no_heat_into_the_board():
     assert (off.dissipation_w, off.current_known) == (0.0, False)
 
 
-def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load():
-    """A part on the rail only by a detect, enable or reference pin (basis not_a_supply,
-    0 A) is left out of the loads and named once in the notes."""
+@pytest.mark.parametrize("basis", ["signal_pin_only", "not_a_supply"])
+def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load(basis):
+    """A part on the rail only by a detect, enable or reference pin (basis signal_pin_only,
+    not_a_supply in older files; 0 A) is left out of the loads and named once in the
+    notes."""
     pdn = copy.deepcopy(PDN)
     detect = copy.deepcopy(pdn["rails"][1]["loads"][0])
-    detect.update(refdes="U9", current={"amps": 0.0, "basis": "not_a_supply"})
+    detect.update(refdes="U9", current={"amps": 0.0, "basis": basis})
     pdn["rails"][1]["loads"].append(detect)
     setup, notes = run(pdn)
     assert "U9" not in [l.name for l in setup.loads]
