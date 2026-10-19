@@ -91,6 +91,8 @@ jobs:
           steps.ruff.outcome == 'failure' || steps.pytest.outcome == 'failure'
         env:
           GH_TOKEN: ${{ github.token }}
+          # This fork's own issues: with drewsum/KiPI added as a remote, gh would pick it.
+          GH_REPO: ${{ github.repository }}
           STATUS: ${{ steps.merge.outputs.status }}
           UP: ${{ steps.merge.outputs.upstream }}
           RUFF: ${{ steps.ruff.outcome }}
