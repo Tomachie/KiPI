@@ -496,8 +496,27 @@ class TomachiePdnImporter:
         self._series_parts()
         self._loads()
         self._drop_unpowered()
+        self._unreferenced_grounds()
         self._range_notes()
         return self.setup, self.notes
+
+    def _unreferenced_grounds(self):
+        """A ground net carries return current only from a source VRM's ground pins (its
+        reference). An isolated converter's output ground (a CAN or RS-485 transceiver's
+        own ground) has none in a DC tree, so the loads and converters returning there go
+        to an ideal ground instead, named once."""
+        groups = net_groups(self.setup)
+        referenced = {groups[v.ground.net] for v in self.setup.vrms
+                      if v.kind == "source" and v.ground}
+        ideal = set()
+        for x in [*self.setup.vrms, *self.setup.loads]:
+            if x.ground and groups[x.ground.net] not in referenced:
+                ideal.add(x.ground.net)
+                x.ground = None
+        if ideal:
+            self.notes.append("No supply returns through " + ", ".join(sorted(ideal))
+                              + " (an isolated converter's output side), so what returns "
+                              "there goes to an ideal ground")
 
     def _range_notes(self):
         """What a single value per item left out, one note each, for the loads kept."""

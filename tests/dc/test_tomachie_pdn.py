@@ -387,3 +387,21 @@ def test_loads_and_regulators_return_through_their_ground_pads():
     setup, _ = run(PDN)
     grounds = {x.name: x.ground for x in [*setup.vrms, *setup.loads]}
     assert all(g is not None and g.net == "GND" for g in grounds.values()), grounds
+
+
+def test_a_ground_with_no_source_returns_to_an_ideal_ground():
+    """A load returning on a ground net no source VRM references (an isolated converter's
+    output ground) goes to an ideal ground, named once, so the setup still solves."""
+    from kipi.dc.pi.model import validate
+    pdn = copy.deepcopy(PDN)
+    pdn["ground_nets"] = ["GND_ISO", "GND"]          # U2's own pads are on GND only
+    setup, notes = run(pdn)
+    assert by_name(setup.loads, "U2").ground.net == "GND"
+    snap = board()
+    for p in snap.pads:
+        if p.footprint == "U2" and p.net == "GND":
+            p.net = "GND_ISO"
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), snap).run()
+    assert by_name(setup.loads, "U2").ground is None
+    assert any(n.startswith("No supply returns through GND_ISO") for n in notes)
+    assert not validate(setup)
