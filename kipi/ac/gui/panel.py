@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The AC setup panel, shown in place of the DC power-tree panel in AC mode.
 
 It edits the same :class:`~kipi.dc.pi.model.PISetup` as the DC panel. The VRMs and series
@@ -29,8 +30,8 @@ from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel, Probe
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
 from kipi.dc.gui.pi_panel import (
-    ItemList, LinkEditor, PartSelection, PIPanel, VrmEditor, _Editor, _spin, _unique,
-    make_searchable, new_link, new_vrm, parts_on_net, tip,
+    OPTIONAL, REQUIRED, ItemList, LinkEditor, PartSelection, PIPanel, VrmEditor, _Editor,
+    _spin, _unique, make_searchable, new_link, new_vrm, parts_on_net, tip,
 )
 from kipi.dc.pi.autofill import guess_ground_pins, part_nets
 from kipi.dc.pi.load_model import apply_to_probe, new_items
@@ -97,6 +98,10 @@ class CapEditor(_Editor):
         self.mfg_tol = _spin(0, 100, 0, 1, " %", 1)
         self.mfg_tol.setSpecialValueText("not set")
         f.addRow("Manufacturing tolerance", self.mfg_tol)
+        self._legend()
+        self._mark({self.name: REQUIRED, self.cap: REQUIRED, self.esl: REQUIRED,
+                    self.esr: REQUIRED, self.rated: OPTIONAL, self.kept: OPTIONAL,
+                    self.dielectric: OPTIONAL, self.aging: OPTIONAL, self.mfg_tol: OPTIONAL})
         # Drawings under the tooltips (#116): the series model and its impedance curve with
         # the field's element picked out, the DC bias curve and aging.
         art = {self.cap: ("cap_model", "c"), self.esl: ("cap_model", "l"),
@@ -410,6 +415,10 @@ class ProbeEditor(_Editor):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
         f.addRow(hint)
+        self._legend()
+        self._mark({self.name: REQUIRED, self.rail: REQUIRED, self.ground: REQUIRED,
+                    self.target_kind: OPTIONAL, self.target: OPTIONAL,
+                    self.target_f: OPTIONAL})
         # Drawings under the tooltips (#116): the flat and custom targets on the |Z| plot.
         art = {self.target_kind: ("target_types", "flat", "custom"),
                self.target: ("target_types", "flat"), self.target_f: ("target_types", "tf")}
@@ -543,7 +552,6 @@ class ProbeEditor(_Editor):
 
 class ACPanel(QWidget, PartSelection):
     solve_requested = Signal(object, str, str)     # PISetup, VRM name, ground net
-    save_requested = Signal()
     result_selected = Signal(object)               # ACResult shown in the plot; None clears it
     setup_changed = Signal()                       # any edit to the setup
     results_saved = Signal(str)                    # path of a saved results file
@@ -563,17 +571,6 @@ class ACPanel(QWidget, PartSelection):
         self.dc_result = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-
-        row = QHBoxLayout()
-        self.lbl_file = QLabel("No board", self)
-        self.lbl_file.setStyleSheet("color: #999;")
-        self.lbl_file.setWordWrap(True)
-        b_save = QPushButton("Save", self)
-        b_save.setToolTip("Save the setup next to the board (DC and AC share one file)")
-        b_save.clicked.connect(self.save_requested.emit)
-        row.addWidget(self.lbl_file, 1)
-        row.addWidget(b_save)
-        lay.addLayout(row)
 
         self.tabs = QTabWidget(self)
         self.vrm_list = ItemList(lambda: self.setup.vrms, VrmEditor(self, mode="ac"),
@@ -911,18 +908,14 @@ class ACPanel(QWidget, PartSelection):
         """The power-tree result the target calculator reads its DC drops from, or None."""
         self.dc_result = tree
 
-    def set_board(self, snap: BoardSnapshot, setup: PISetup, file_label: str):
+    def set_board(self, snap: BoardSnapshot, setup: PISetup):
         self.snapshot = snap
         self.setup = setup
         self.dc_result = None
-        self.lbl_file.setText(file_label)
         self._load_ac_settings()
         self.clear_results()
         self.setEnabled(True)
         self.reload()
-
-    def set_label(self, text: str):
-        self.lbl_file.setText(text)
 
     def set_nets(self, nets: List[str]):
         """Nets offered in the pin pickers (the ones ticked in the Board panel)."""

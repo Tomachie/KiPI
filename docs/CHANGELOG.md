@@ -4,7 +4,167 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.0 (in development)
+## 0.9.1 (in development)
+
+### Added
+- **Harmonics drawn as stems.** Coupled Noise's spectrum view draws each harmonic as a
+  line up from the axis with a dot at its amplitude, as a spectrum analyser does, instead
+  of joining the harmonics into a jagged curve: a periodic waveform has nothing between
+  them.
+- **Ringing damping per aggressor.** **Least ringing damping** and **Soft edge damping**
+  moved from Coupled Noise's Settings tab to each aggressor, next to its edges, so two
+  switchers can be damped differently. Setups saved before keep their values: every
+  aggressor takes the old solve-wide ones.
+- **Mesh remote sense** (#93). A VRM's new **Mesh sense** tickbox (DC, off by default)
+  takes any number of sense points, each with its own sense and optional ground sense
+  pins, picked one at a time like a multi-phase VRM's phases. Every point's sense pins
+  are held at the set voltage, less the load line, above that point's ground sense pins:
+  the VRM's current enters at the points, and its output pins only measure.
+- **A 20 MHz bandwidth limit for the noise waveforms.** A **20 MHz limit** tickbox in the
+  waveform viewer plots every view (the switch node, the currents, the ripple, the victim
+  noise and its high and low states, and their spectra) as an oscilloscope with its
+  20 MHz bandwidth limit on shows it: through a single pole, 3 dB down at 20 MHz. The
+  titles, the results table and the notes keep the full bandwidth's figures.
+- **Show or hide each waveform.** In Coupled Noise mode's waveform viewer, every view with
+  several curves (all except the victim's, which has its own) has a tickbox for each curve
+  beside the plot, in the curve's colour. Untick one to hide it, in the time plot and the
+  spectrum; it stays hidden across views and solves.
+- **Estimate a series link's ESL** (#159). Two buttons under the link's ESL:
+  - **From package** reads the size of the part on side A from its footprint's name
+    (`R_0603_1608Metric`, `RESC2012X65N`, `0805`). If the name gives no size, it uses
+    how far apart the part's two pads are. The ESL is 0.1 nH + 0.3 nH for each mm between
+    the terminals, a line through Vishay's measured 0402 and 0603 chip resistors
+    (0.4 and 0.6 nH). That gives 0.7 nH for an 0805, 1.1 nH for a 1206 and 2 nH for a
+    2512. A wide-terminal part (0612) counts its short side.
+  - **Ferrite bead…** works out a bead's inductance from its impedance at one frequency,
+    read off its datasheet's curve: L = √(|Z|² − DCR²) / 2πf. The dialog asks for a point
+    well below the peak, where the bead is still an inductor.
+- **The ripple at AC probes** (#157). An aggressor can tick any of the AC setup's probes
+  under **Ripple at AC probes**. The board model then also gives the voltage between each
+  probe's rail and ground pins: the ripple at the load, through the plane and the
+  capacitors near it, not only at the converter. A new **Ripple at AC probes** waveform
+  view plots it. The results notes and the report give each probe's peak-to-peak and RMS
+  ripple. A probe has to be on the aggressor's input or output rail, or on a net a series
+  link joins to one, and the board model must be on.
+- **Drawings under the Coupled Noise tooltips** (#160). Nine new drawings explain the
+  fields that had text alone:
+  - buck against boost, with their input voltage and output current;
+  - the switching period, the duty cycle and the phases' interleaving;
+  - the harmonics under the edges' envelope, cut at the highest frequency;
+  - JESD8 levels and the noise margin;
+  - the scan radius and the worst nets solved in full;
+  - the board model: the current shared among the capacitors, the ripple at a probe, and
+    the ground voltage between a victim's ends;
+  - the field solves per decade and the response interpolated between them;
+  - the 20 MHz limit;
+  - the three coupling mechanisms, for the waveform plot's curve tickboxes and the 3D
+    coupling view.
+
+  The low-side Rds(on) and the victim's net now point at their parts of the existing
+  drawings.
+
+### Fixed
+- **The Coupled Noise PDF report's plots fit the page.** Qt's PDF layout ignores the
+  report's max-width, so each waveform plot kept its own width, wider than the page, and
+  its right side was cut off. In a PDF the plots are now sized to the page's width.
+- **A soft edge the inductor current cannot carry within the dead time is hard.** At
+  light load, with the valley current just below zero, the turn-on was taken as zero-
+  voltage switching however small the current: 0.08 A took a buck's rising edge 30 ns
+  through 200 pF, at the soft edge's damping. The controller turns the next switch on
+  after its dead time, so a soft edge slower than a new **Dead time** (Settings, default
+  20 ns) is now finished hard by that switch, at the entered edge time and the least
+  ringing damping. The notes say how much of the swing the current carried.
+- **The hot-loop capacitors carry the switch node's ringing** (#151). The ringing on the
+  switch node is its capacitance trading charge with the hot loop's inductance, so the
+  same ringing current, C_sw·dv/dt (about V/Z0 at its peak), now flows through a buck's
+  input capacitors and a boost's output capacitors, and into the inductive coupling and
+  the board model. Before, the switch node rang but the capacitor currents feeding the
+  hot loop did not. On the coupled_noise example the input capacitor rings at 179 MHz,
+  about ±3 A on each edge.
+- **A KiCad file's vias now match what the KiCad API reads** (#139, from Tomachie). A via
+  with no `(filling)` in a KiCad 9 file is unfilled, as KiCad 9 reports it; only a KiCad 10
+  file leaves the fill to the design rules. A via set to remove unused layers keeps its
+  pad on every layer that a connected via of its net spans, as KiCad does. On a 12-layer
+  board with overlapping via pairs, the vias that differed from KiCad 10's own read went
+  from 52 of 4374 to 0.
+- **ODB++ jobs from KiCad, Altium, OrCAD and Valor read correctly** (#138, from Tomachie).
+  The board step is read rather than the panel that places it (the note says what the
+  panel places). Feature files compressed with Unix `compress` (`.Z`) are read, a job
+  zipped inside a zip is opened, and a `.tgz` is read in one pass. A via's pad size is
+  read on each layer, and a layer with no pad is left out. Copper with no net takes the
+  net of the copper it touches, so a drawing's outline stroke is no longer dropped. An
+  Altium export's copper thickness comes from the layer's copper weight when the
+  thickness given is the neighbouring dielectric's. A pin exported as several pads, one of
+  them with no shape, no longer stops a solve on "pad has no meshed copper". A surface's
+  holes are cut in one step per island: an 18-layer job reads in 13 s instead of 200 s.
+
+### Changed
+- **The switch node's falling edge no longer rings like its rising edge; the rising edge
+  includes reverse recovery.** In a real buck the high side's turn-on is a hard edge: it
+  takes the inductor current from the low side's conducting body diode and must sweep out
+  its reverse-recovery charge, and the diode's snap-off rings the node. The turn-off is
+  soft: the inductor current itself carries the node down into the body diode's clamp,
+  which takes the ringing's energy (TI SLPA010). A boost is the other way round. Each edge
+  now rings with its own damping:
+  - The hard edge keeps the least ringing damping (ζ = 0.05).
+  - The soft edge is damped at least **Soft edge damping** (Settings, default ζ = 0.5:
+    one overshoot, then settled), and is no faster than C_sw·V/I.
+  - A phase has a new optional **Qrr**, the body diode's reverse-recovery charge (default
+    5 nC, 0 for a Schottky or GaN switch). It flows through the hot loop as a recovery
+    current, up to Irr from Qrr = ½·Irr·(Irr/(di/dt) + t), and its snap-off rings the
+    hard edge about Irr·Z0 higher.
+  - A valley current below zero makes the turn-on soft too (zero-voltage switching).
+
+  The notes say which edge is which, and the report gives each phase's Qrr. On the
+  coupled_noise example the rising edge peaks at 22 V on the 12 V input, and the falling
+  edge undershoots to −1.6 V instead of ringing to −8.2 V.
+- **The main window fits the screen; the setup file is written only by Save** (#142, from
+  Tomachie). The board and setup docks scroll, so the window opens above the taskbar on a
+  short laptop screen, and the Log always shows a few lines. One bar above the setup pages
+  holds the setup name, **Import…** and **Save** in every mode. Importing a pdn.json and
+  running a DC, AC or Coupled Noise solve no longer overwrite the setup file. While there
+  are unsaved changes, Save is outlined in orange, and closing the window or opening a board
+  asks Save / Discard / Cancel. The mode switch, Import and Save are greyed out while a task
+  runs. A pdn.json import asks before replacing a power tree, and the Log's last line says
+  what it read and how that differs from the tree it replaced.
+- **The victim noise plot shows the superposition, with each mechanism behind a tick
+  box** (#154). By default the plot shows the receiver's noise from every mechanism added
+  up, and the driver end's. Tick Capacitive, Inductive or Common ground to add that
+  mechanism's own curve, or untick Superposition or Driver end to hide those curves.
+- **Coupled noise is shown with the victim held high and held low** (#156). A new plot
+  view, **Victim held high and low**, draws the receiver's line at the logic family's VOH
+  with VIH below it, and at VOL with VIL above it, with the noise on each. Each state's
+  title gives how far the noise goes toward that threshold and what share of the margin
+  it uses. A victim has a new **Driving low** resistance: the open-drain type sets it to
+  20 Ω, the switch's on-resistance, while the 4.7 kΩ pull-up holds the line high. Where
+  the two differ, the solve runs once per state. The pass/fail verdict is unchanged: the
+  largest noise in either state against the smaller margin.
+- **The 3D view shows where a victim's noise couples in** (#152). After a Coupled Noise
+  solve, pick **Coupling in 3D** under the results: Superposition, Capacitive, Inductive or
+  Common ground. The selected victim's traces are colored by each piece's share of the
+  receiver's peak noise: red adds to the peak, blue takes from it. The common-ground share
+  is a dot at the driver, and the capacitor loops that induce the inductive noise are drawn
+  in magenta. The shares come from one extra solve per frequency (reciprocity), so they add
+  up exactly to the peak. The line under the menu says how much of the peak each mechanism
+  gives.
+- **The setup editors show which fields a solve needs** (#136). In the VRM, load, series
+  link, capacitor model and probe editors, a field's label is bold if a solve cannot run
+  without it, and gray if it is optional. Fields that only the other analysis uses (DC or
+  AC) are gray italic, and they stay editable. A line at the top of each editor says what
+  the styles mean. A VRM's input pins turn bold when it is an LDO or switcher, since they
+  tie it into the power tree.
+- **A High impedance (undriven) victim type, the scan's default** (#158). The new type
+  holds the line with nothing but its inputs' leakage (1 MΩ at each end, 5 pF), as on a
+  tri-stated or floating net, so the coupled charge divides between the coupling and the
+  net's own capacitance. The scan now solves the nets it finds as this type unless
+  **Scan: victim type** in Settings says otherwise; a net that is a victim already keeps
+  its own type, and **Custom driver** keeps the old driver-resistance setting. The scan's
+  quick capacitive estimate now allows for the net's own capacitance, ΔV·Cm/(Cm + Cg) on
+  an undriven net, rather than Cm·R·dV/dt alone, which grew without bound with R. On the
+  coupled_noise example, SIG_SW scanned undriven picks up 132 mV by capacitance, against
+  14 mV behind a 33 Ω CMOS driver.
+
+## 0.9.0
 
 ### Added
 - **Victim markers in the 3D view** (#69). In Coupled Noise mode, PI Models marks each

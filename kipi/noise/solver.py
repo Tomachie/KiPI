@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional
 
+import numpy as np
+
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import ProgressReporter
 from kipi.dc.pi.model import PISetup
@@ -27,7 +29,7 @@ def _unique(branches: List[CapBranch]) -> List[CapBranch]:
 def _victims(snap, setup, agg, wf, layouts, result, progress):
     """The victims this solve covers: the setup's (all, one or none, by the settings) and
     the worst nets the scan finds."""
-    from kipi.noise.model import Victim
+    from kipi.noise.model import scan_victim
     s = setup.noise
     if s.victims == "all":
         chosen = list(setup.victims)
@@ -52,12 +54,22 @@ def _victims(snap, setup, agg, wf, layouts, result, progress):
         if drv is None or rcv is None:
             continue
         row.solved = True
-        chosen.append(Victim(row.net, driver=drv, receiver=rcv, driver_ohm=s.scan_driver_ohm,
-                             logic_v=s.scan_logic_v))
+        chosen.append(scan_victim(s, row.net, drv, rcv))
     result.scan = rows
     progress.info(f"Scan: {len(rows)} net(s) within {s.scan_radius_mm:g} mm, the worst "
                   f"{sum(r.solved for r in rows)} solved in full")
     return chosen
+
+
+def _ripple_probes(setup, agg, result, progress):
+    """The AC probes the aggressor's ripple is wanted at (#157)."""
+    by_name = {p.name: p for p in setup.probes}
+    for name in agg.ripple_probes:
+        if name not in by_name:
+            msg = f"No AC probe named {name}: no ripple shown there"
+            result.warnings.append(msg)
+            progress.warn(msg)
+    return [by_name[n] for n in agg.ripple_probes if n in by_name]
 
 
 def _board_model(snap, setup, agg, op, wf, result, progress, victims=None):
@@ -80,7 +92,8 @@ def _board_model(snap, setup, agg, op, wf, result, progress, victims=None):
     progress.stage("Board model")
     try:
         with progress.timed("board model"):
-            bm = solve_board(snap, setup, agg, op, wf, grounds, progress)
+            bm = solve_board(snap, setup, agg, op, wf, grounds, progress,
+                             _ripple_probes(setup, agg, result, progress))
     except (ACError, MeshError, SolveError) as e:
         msg = f"Board model left out ({e}); the capacitors share the current by their own " \
               "impedance and there is no shared-ground coupling"
@@ -93,6 +106,7 @@ def _board_model(snap, setup, agg, op, wf, result, progress, victims=None):
                       if bm.cap_rail[r] == "out"}
     wf.input_ripple = Spectrum("Vin ripple", "V", 0.0, bm.input_ripple)
     wf.output_ripple = Spectrum("Vout ripple", "V", 0.0, bm.output_ripple)
+    wf.probe_ripple = {n: Spectrum(f"V({n})", "V", 0.0, c) for n, c in bm.probe_ripple.items()}
     result.board_note = (f"Board model: {len(bm.cap_currents)} capacitor(s) on the rails, "
                          f"{bm.unknowns} unknowns, {len(bm.field_freqs)} field solves, plane "
                          f"capacitance {bm.plane_capacitance_f * 1e9:.3g} nF")
@@ -130,7 +144,7 @@ def solve_noise(snap: BoardSnapshot, setup: PISetup, aggressor: str,
             ground = gnd or (ph.low_side.net if ph.low_side else "")
             layouts.append(phase_layout(snap, setup, ph, i, op.topology, op.vin, op.vout,
                                         vin_net, vout_net, ground,
-                                        setup.noise.min_ring_zeta))
+                                        agg.min_ring_zeta))
     reports = [lay.report for lay in layouts]
 
     progress.stage("Waveforms")
@@ -138,7 +152,9 @@ def solve_noise(snap: BoardSnapshot, setup: PISetup, aggressor: str,
     k, f_max, capped = harmonic_count(agg.fsw_hz, agg.rise_s, agg.fall_s,
                                       max(rings) if rings else None,
                                       setup.noise.f_max_hz, setup.noise.max_harmonics)
-    parts = [PhaseParts(ph.inductance_h, r.f_ring_hz, r.zeta)
+    parts = [PhaseParts(ph.inductance_h, r.f_ring_hz, r.zeta, r.c_sw_f,
+                        agg.soft_edge_zeta, r.qrr_c,
+                        setup.noise.dead_time_ns * 1e-9)
              for ph, r in zip(agg.phases, reports)]
     wf = synthesize(op.topology, op.vin, op.vout, op.iout, op.iin, op.duty, agg.fsw_hz,
                     agg.rise_s, agg.fall_s, parts, k,
@@ -159,12 +175,21 @@ def solve_noise(snap: BoardSnapshot, setup: PISetup, aggressor: str,
     progress.partial(result)
 
     victims = _victims(snap, setup, agg, wf, layouts, result, progress)
+    result.loop_paths = {f"{ref} (phase {i})": np.array([[sg.a, sg.b] for sg in segs])
+                         for i, lay in enumerate(layouts, 1) for ref, segs in lay.loops.items()
+                         if segs}
 
     board = None
     if setup.noise.board_model:
         board = _board_model(snap, setup, agg, op, wf, result, progress, victims)
         if board is not None:
+            for line in result.probe_lines():
+                progress.info(line)
             progress.partial(result)
+    elif agg.ripple_probes:
+        msg = "The ripple at AC probes needs the board model (Settings tab): not shown"
+        result.warnings.append(msg)
+        progress.warn(msg)
 
     if victims:
         from kipi.noise.extract.xsection import Cache

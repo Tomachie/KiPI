@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The Coupled Noise report, the victims a solve covers, and the scan's controls (#69)."""
 
 import os
@@ -32,6 +33,26 @@ def test_the_report_has_every_section(board, tmp_path):
     assert report_name("cn", "U1 / buck").startswith("cn_U1_buck_noise_report_")
 
 
+def test_the_pdf_plots_fit_the_page(board, tmp_path, monkeypatch):
+    """Qt's rich text takes no max-width: without a width, a plot is wider than the page
+    and cut off on the right."""
+    import re
+
+    from qtpy.QtWidgets import QApplication
+
+    from kipi.core import pdf
+    QApplication.instance() or QApplication([])
+    got = []
+    real = pdf.write_pdf
+    monkeypatch.setattr(pdf, "write_pdf", lambda html, path, title="", **kw: (
+        got.append(html), real(html, path, title, **kw))[1])
+    snap, setup, r = board
+    path = write_noise_report(tmp_path / "r.pdf", r, snap, setup)
+    assert path.stat().st_size > 0
+    imgs = re.findall(r"<img src='data:image/png[^>]*>", got[0])
+    assert imgs and all("width='680'" in m for m in imgs)
+
+
 @pytest.fixture
 def panel():
     from qtpy.QtWidgets import QApplication
@@ -39,7 +60,7 @@ def panel():
     from kipi.noise.gui.panel import NoisePanel
     snap, setup = open_board("coupled_noise")
     p = NoisePanel()
-    p.set_board(snap, setup, "test")
+    p.set_board(snap, setup)
     yield p
     p.close()
 

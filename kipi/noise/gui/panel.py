@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The Coupled Noise setup panel (#69), shown in place of the DC panel in Coupled Noise
 mode.
 
@@ -33,12 +34,13 @@ from kipi.dc.gui.pi_panel import (
 )
 from kipi.dc.pi.model import PISetup
 from kipi.gui.report_option import ReportOption
+from kipi.gui.tooltip_art import art_tip
 from kipi.gui.sortable import make_sortable, reset_sort, set_row
 from kipi.noise.checks import (
     NoiseError, guess_ends, operating_point, seed_phases, smps_vrms, validate_noise,
 )
 from kipi.noise.model import (
-    CUSTOM, DEFAULT_COSS_F, DEFAULT_RDS_ON_OHM, LOGIC_LEVELS, VICTIM_PRESETS, Aggressor,
+    CUSTOM, DEFAULT_COSS_F, DEFAULT_QRR_C, DEFAULT_RDS_ON_OHM, LOGIC_LEVELS, VICTIM_PRESETS, Aggressor,
     AggressorPhase, Victim,
 )
 
@@ -75,6 +77,8 @@ class AggressorEditor(_Editor):
         self.fall = _spin(0.01, 1e4, 2, 2, " ns", 0.5)
         self.duty = _optional_spin(0.1, 99.9, 2, " %", 0.5)
         self.duty.setSpecialValueText("computed")
+        self.zeta = _spin(0, 1, 0.05, 3, "", 0.01)
+        self.soft_zeta = _spin(0, 5, 0.5, 2, "", 0.05)
         f.addRow("Name", self.name)
         f.addRow("VRM", self.vrm)
         f.addRow("Topology", self.topology)
@@ -85,21 +89,31 @@ class AggressorEditor(_Editor):
         f.addRow("Rise time", self.rise)
         f.addRow("Fall time", self.fall)
         f.addRow("Duty cycle", self.duty)
+        f.addRow("Least ringing damping", self.zeta)
+        f.addRow("Soft edge damping", self.soft_zeta)
+        # AC probes to show the ripple at (#157).
+        self.probes = QListWidget()
+        self.probes.setMinimumHeight(50)
+        self.probes.setMaximumHeight(100)
+        self.probes.itemChanged.connect(self._store)
+        f.addRow("Ripple at AC probes", self.probes)
         for w, text, art in (
                 (self.name, "A name for this aggressor", None),
                 (self.vrm, "The switching regulator (a VRM of type Switcher, set up in DC or "
                            "AC mode) this aggressor is. Its input rail and set voltage give "
-                           "the input and output voltages.", None),
+                           "the input and output voltages.", ("converter",)),
                 (self.topology, "Buck or boost. Auto takes it from the VRM's voltages: an "
-                                "input above the output is a buck, below it a boost.", None),
+                                "input above the output is a buck, below it a boost.",
+                 ("converter", "buck", "boost")),
                 (self.vin, "The input voltage. Blank uses the VRM's: the middle of its input "
                            "range if it has one, else the set voltage of the VRM feeding its "
-                           "input rail.", None),
+                           "input rail.", ("converter", "vin")),
                 (self.load_a, "The total output current, all phases. Blank uses the DC "
                               "setup's loads on the VRM's output rail, plus the input current "
-                              "of every regulator it feeds.", None),
+                              "of every regulator it feeds.", ("converter", "iout")),
                 (self.fsw, "Switching frequency of each phase. Phases are interleaved "
-                           "evenly: N phases are 360°/N apart.", None),
+                           "evenly: N phases are 360°/N apart.",
+                 ("sw_period", "period", "phase")),
                 (self.rise, "The switch node's rising edge, 0 to 100 %. Faster edges reach "
                             "higher harmonics: the spectrum falls at 40 dB/decade above "
                             "1/(π·rise time).", ("sw_ringing", "edge")),
@@ -108,10 +122,36 @@ class AggressorEditor(_Editor):
                 (self.duty, "The high side's (buck) or low side's (boost) on-time, as % of "
                             "the period. Blank computes it from the voltages, raised by the "
                             "inductor DCR and on-resistances entered for a buck, and by the "
-                            "VRM's efficiency for a boost.", None)):
+                            "VRM's efficiency for a boost.", ("sw_period", "duty")),
+                (self.zeta, "The least damping ratio ζ of the switch node's ringing. The "
+                            "hot loop's resistance (on-resistance, capacitor ESR, copper) "
+                            "alone damps it far less than a real switch node: the "
+                            "switches' output capacitance, reverse recovery and radiation "
+                            "take energy too, and measured ringing usually dies within "
+                            "five to ten cycles (ζ about 0.05 to 0.1). 0 uses the loop's "
+                            "resistance alone.",
+                 ("sw_ringing", "ring")),
+                (self.soft_zeta, "The least damping ratio ζ of the soft edge: the one "
+                                 "the inductor current carries across into the other "
+                                 "switch's conducting body diode (a buck's falling "
+                                 "edge, a boost's rising one). The diode's clamp takes "
+                                 "the ringing's energy, so it overshoots once and "
+                                 "settles: ζ about 0.5. The hard edge, where the "
+                                 "control switch turns on against a conducting diode, "
+                                 "keeps the least ringing damping. Set it to "
+                                 "that to ring both edges alike.",
+                 ("sw_edges", "soft")),
+                (self.probes, "The AC mode's probes to show this aggressor's ripple at: "
+                              "the voltage between each probe's rail and ground pins, "
+                              "from the board model (Settings tab), which carries the "
+                              "inductor's and the switch's currents through the rails' "
+                              "copper and capacitors. A probe must be on the aggressor's "
+                              "input or output rail, or a net a series link joins to one. "
+                              "Shown in the Ripple at AC probes plot.",
+                 ("board_model", "probe"))):
             tip(f, w, text, art)
         self._watch(self.name, self.vrm, self.topology, self.vin, self.load_a, self.fsw,
-                    self.rise, self.fall, self.duty)
+                    self.rise, self.fall, self.duty, self.zeta, self.soft_zeta)
 
         # Phases: one shown at a time, chosen above its fields.
         row = QHBoxLayout()
@@ -148,6 +188,8 @@ class AggressorEditor(_Editor):
         self.output_caps = self._cap_list()
         self.coss = _optional_spin(0, 1e6, 1, " pF", 10)
         self.coss.setSpecialValueText(f"not set ({DEFAULT_COSS_F * 1e12:g} pF)")
+        self.qrr = _optional_spin(0, 1e4, 1, " nC", 1)
+        self.qrr.setSpecialValueText(f"not set ({DEFAULT_QRR_C * 1e9:g} nC)")
         self.rds_hs = _optional_spin(0, 1e5, 3, " mΩ", 0.5)
         self.rds_hs.setSpecialValueText(f"not set ({DEFAULT_RDS_ON_OHM * 1e3:g} mΩ)")
         self.rds_ls = _optional_spin(0, 1e5, 3, " mΩ", 0.5)
@@ -162,6 +204,7 @@ class AggressorEditor(_Editor):
         pf.addRow("Input capacitors", self.input_caps)
         pf.addRow("Output capacitors", self.output_caps)
         pf.addRow("Coss", self.coss)
+        pf.addRow("Qrr", self.qrr)
         pf.addRow("High-side Rds(on)", self.rds_hs)
         pf.addRow("Low-side Rds(on)", self.rds_ls)
         pf.addRow("Package inductance", self.package_l)
@@ -195,15 +238,23 @@ class AggressorEditor(_Editor):
                             "the hot loop's inductance it sets the ringing on the switch "
                             "node's edges. Not set: a typical value, and the ringing is "
                             "approximate.", ("sw_ringing", "ring")),
+                (self.qrr, "The reverse-recovery charge of the body diode the hard edge "
+                           "switches off (a buck's low-side FET, a boost's rectifier), from "
+                           "its datasheet. The control switch's turn-on must sweep it out "
+                           "before the node can move, and the diode's snap-off rings the "
+                           "node higher. 0 for a Schottky or GaN switch, which has none. "
+                           f"Not set: {DEFAULT_QRR_C * 1e9:g} nC, a low-voltage MOSFET's "
+                           "after a short dead time.", ("sw_edges", "hard")),
                 (self.rds_hs, "The high-side switch's on-resistance; it damps the ringing "
                               "and raises a buck's duty cycle", ("sw_ringing", "ring")),
                 (self.rds_ls, "The low-side switch's on-resistance; it raises a buck's duty "
-                              "cycle", None),
+                              "cycle", ("hot_loop", "ls")),
                 (self.package_l, "Loop inductance inside the switching device's package, "
                                  "from its datasheet (0 if not given); added to the loop "
                                  "simulated on the board", ("hot_loop", "loop"))):
             tip(pf, w, text, art)
-        self._watch(self.inductance, self.dcr, self.switch_net, self.coss, self.rds_hs,
+        self._watch(self.inductance, self.dcr, self.switch_net, self.coss, self.qrr,
+                    self.rds_hs,
                     self.rds_ls, self.package_l)
         self.inductor.currentIndexChanged.connect(self._inductor_changed)
         f.addRow(g)
@@ -266,6 +317,26 @@ class AggressorEditor(_Editor):
             lst.addItem(it)
         lst.blockSignals(False)
 
+    def _fill_probes(self, chosen: List[str]):
+        """The AC setup's probes, those ``chosen`` ticked."""
+        lst = self.probes
+        lst.blockSignals(True)
+        lst.clear()
+        names = [p.name for p in self.panel.setup.probes]
+        rows = [(n, "") for n in names] + [(n, " (no such probe)") for n in chosen
+                                          if n not in names]
+        for name, note in rows:
+            it = QListWidgetItem(name + note)
+            it.setData(Qt.UserRole, name)
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            it.setCheckState(Qt.Checked if name in chosen else Qt.Unchecked)
+            lst.addItem(it)
+        if not rows:
+            it = QListWidgetItem("No AC probes: add them in AC mode")
+            it.setFlags(Qt.NoItemFlags)
+            lst.addItem(it)
+        lst.blockSignals(False)
+
     @staticmethod
     def _ticked(lst: QListWidget) -> List[str]:
         return [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
@@ -293,6 +364,9 @@ class AggressorEditor(_Editor):
         self.rise.setValue(a.rise_s * 1e9)
         self.fall.setValue(a.fall_s * 1e9)
         _set_optional(self.duty, a.duty * 100 if a.duty is not None else None)
+        self.zeta.setValue(a.min_ring_zeta)
+        self.soft_zeta.setValue(a.soft_edge_zeta)
+        self._fill_probes(a.ripple_probes)
         self.phase = min(self.phase, max(len(a.phases) - 1, 0))
         self._fill_phase_combo()
         self._load_phase()
@@ -334,6 +408,7 @@ class AggressorEditor(_Editor):
             self._fill_caps(self.input_caps, vin_net, ph.input_caps)
             self._fill_caps(self.output_caps, vout_net, ph.output_caps)
             _set_optional(self.coss, ph.coss_f * 1e12 if ph.coss_f is not None else None)
+            _set_optional(self.qrr, ph.qrr_c * 1e9 if ph.qrr_c is not None else None)
             _set_optional(self.rds_hs, ph.rds_on_hs_ohm * 1e3
                           if ph.rds_on_hs_ohm is not None else None)
             _set_optional(self.rds_ls, ph.rds_on_ls_ohm * 1e3
@@ -344,7 +419,8 @@ class AggressorEditor(_Editor):
 
     def _phase_widgets(self):
         return (self.inductor, self.inductance, self.dcr, self.switch_net, self.high_side,
-                self.low_side, self.input_caps, self.output_caps, self.coss, self.rds_hs,
+                self.low_side, self.input_caps, self.output_caps, self.coss, self.qrr,
+                self.rds_hs,
                 self.rds_ls, self.package_l)
 
     def _save(self, a: Aggressor):
@@ -359,6 +435,9 @@ class AggressorEditor(_Editor):
         a.fall_s = self.fall.value() * 1e-9
         duty = _get_optional(self.duty)
         a.duty = duty / 100 if duty is not None else None
+        a.min_ring_zeta = self.zeta.value()
+        a.soft_edge_zeta = self.soft_zeta.value()
+        a.ripple_probes = self._ticked(self.probes)
         if a.phases and 0 <= self.phase < len(a.phases):
             ph = a.phases[self.phase]
             ph.inductor = self.inductor.currentData() or ""
@@ -371,6 +450,8 @@ class AggressorEditor(_Editor):
             ph.output_caps = self._ticked(self.output_caps)
             coss = _get_optional(self.coss)
             ph.coss_f = coss * 1e-12 if coss is not None else None
+            qrr = _get_optional(self.qrr)
+            ph.qrr_c = qrr * 1e-9 if qrr is not None else None
             hs, ls = _get_optional(self.rds_hs), _get_optional(self.rds_ls)
             ph.rds_on_hs_ohm = hs * 1e-3 if hs is not None else None
             ph.rds_on_ls_ohm = ls * 1e-3 if ls is not None else None
@@ -473,6 +554,8 @@ class VictimEditor(_Editor):
         self.driver = self._picker(optional=True)
         self.receiver = self._picker(optional=True)
         self.driver_ohm = _spin(0.01, 1e9, 33, 2, " Ω", 1)
+        self.driver_low_ohm = _optional_spin(0.1, 1e9, 2, " Ω", 1)
+        self.driver_low_ohm.setSpecialValueText("as driving high")
         self.receiver_ohm = _spin(1, 1e12, 1e6, 0, " Ω", 1000)
         self.receiver_pf = _spin(0, 1e5, 3, 2, " pF", 0.5)
         self.termination = _optional_spin(1, 1e6, 1, " Ω", 1)
@@ -483,12 +566,14 @@ class VictimEditor(_Editor):
         self.margin = _optional_spin(0, 100, 1, " mV", 1)
         self.lbl_margin = QLabel()
         self.lbl_margin.setStyleSheet("color: #aaa;")
+        self.lbl_margin.setWordWrap(True)
         f.addRow("Net", self.net)
         f.addRow("Name", self.name)
         f.addRow("Type", self.preset)
         f.addRow("Driver pins", self.driver)
         f.addRow("Receiver pins", self.receiver)
         f.addRow("Driver resistance", self.driver_ohm)
+        f.addRow("Driving low", self.driver_low_ohm)
         f.addRow("Receiver resistance", self.receiver_ohm)
         f.addRow("Receiver capacitance", self.receiver_pf)
         f.addRow("Termination", self.termination)
@@ -496,7 +581,8 @@ class VictimEditor(_Editor):
         f.addRow("Noise margin", self.margin)
         f.addRow(self.lbl_margin)
         for w, text, art in (
-                (self.net, "The signal net the noise couples onto (type to search)", None),
+                (self.net, "The signal net the noise couples onto (type to search)",
+                 ("victim_terms", "trace")),
                 (self.name, "A name for this victim; blank is the net's name", None),
                 (self.preset, "What drives and loads the net. Picking a type fills in the "
                               "resistances, capacitance and termination below (all still "
@@ -508,9 +594,15 @@ class VictimEditor(_Editor):
                 (self.receiver, "The receiver's pin: where the coupled noise is judged "
                                 "against the noise margin. Blank: the other end of the net.",
                  ("victim_terms", "rcv")),
-                (self.driver_ohm, "The driver's output impedance (or a pull-up's resistance "
-                                  "for an open-drain line released high). Lower holds the "
-                                  "line harder against capacitive coupling.",
+                (self.driver_ohm, "The driver's output impedance while it holds the line "
+                                  "high (or a pull-up's resistance for an open-drain line "
+                                  "released high). Lower holds the line harder against "
+                                  "capacitive coupling.",
+                 ("victim_terms", "drv")),
+                (self.driver_low_ohm, "The driver's output impedance while it pulls the line "
+                                      "low, where it differs from driving high: an open "
+                                      "drain's switch on-resistance. The noise is solved for "
+                                      "the line held high and held low.",
                  ("victim_terms", "drv")),
                 (self.receiver_ohm, "The receiver's input resistance to ground",
                  ("victim_terms", "rcv")),
@@ -518,16 +610,18 @@ class VictimEditor(_Editor):
                 (self.termination, "A parallel termination at the receiver, if any",
                  ("victim_terms", "term")),
                 (self.logic, "The logic family's supply: its JESD8 input and output levels "
-                             "give the noise margin, min(VIL − VOL, VOH − VIH)", None),
+                             "give the noise margin, min(VIL − VOL, VOH − VIH)",
+                 ("noise_margin", "levels")),
                 (self.margin, "The noise the receiver tolerates; blank takes it from the "
                               "logic level (or the type). A victim fails when its peak "
-                              "coupled noise exceeds it.", None)):
+                              "coupled noise exceeds it.", ("noise_margin", "margin"))):
             tip(f, w, text, art)
-        self._watch(self.name, self.driver_ohm, self.receiver_ohm, self.receiver_pf,
-                    self.termination, self.logic, self.margin)
+        self._watch(self.name, self.driver_ohm, self.driver_low_ohm, self.receiver_ohm,
+                    self.receiver_pf, self.termination, self.logic, self.margin)
         self.net.currentIndexChanged.connect(self._net_changed)
         self.preset.currentIndexChanged.connect(self._preset_changed)
-        for w in (self.driver_ohm, self.receiver_ohm, self.receiver_pf, self.termination):
+        for w in (self.driver_ohm, self.driver_low_ohm, self.receiver_ohm, self.receiver_pf,
+                  self.termination):
             w.valueChanged.connect(self._custom)
 
     def refresh_choices(self):
@@ -556,6 +650,7 @@ class VictimEditor(_Editor):
         self.driver.set_value(v.driver)
         self.receiver.set_value(v.receiver)
         self.driver_ohm.setValue(v.driver_ohm)
+        _set_optional(self.driver_low_ohm, v.driver_low_ohm)
         self.receiver_ohm.setValue(v.receiver_ohm)
         self.receiver_pf.setValue(v.receiver_pf)
         _set_optional(self.termination, v.termination_ohm)
@@ -575,6 +670,7 @@ class VictimEditor(_Editor):
         v.driver = self.driver.value()
         v.receiver = self.receiver.value()
         v.driver_ohm = self.driver_ohm.value()
+        v.driver_low_ohm = _get_optional(self.driver_low_ohm)
         v.receiver_ohm = self.receiver_ohm.value()
         v.receiver_pf = self.receiver_pf.value()
         v.termination_ohm = _get_optional(self.termination)
@@ -584,7 +680,10 @@ class VictimEditor(_Editor):
         self._show_margin(v)
 
     def _show_margin(self, v: Victim):
-        self.lbl_margin.setText(f"Margin used: {v.margin() * 1e3:.4g} mV")
+        hi, lo = v.states()
+        self.lbl_margin.setText(f"Margin used: {v.margin() * 1e3:.4g} mV (high: "
+                                f"{hi.level_v:.3g} V against {hi.threshold_v:.3g} V; low: "
+                                f"{lo.level_v:.3g} V against {lo.threshold_v:.3g} V)")
 
     def _net_changed(self, _i):
         """Another net: its pins are guessed afresh."""
@@ -615,9 +714,11 @@ class VictimEditor(_Editor):
         if self._loading or self.obj is None:
             return
         p = VICTIM_PRESETS.get(self.preset.currentData() or "")
-        if p is not None and (self.driver_ohm.value(), self.receiver_ohm.value(),
-                              self.receiver_pf.value(), _get_optional(self.termination)) \
-                != (p.driver_ohm, p.receiver_ohm, p.receiver_pf, p.termination_ohm):
+        if p is not None and (self.driver_ohm.value(), _get_optional(self.driver_low_ohm),
+                              self.receiver_ohm.value(), self.receiver_pf.value(),
+                              _get_optional(self.termination)) \
+                != (p.driver_ohm, p.driver_low_ohm, p.receiver_ohm, p.receiver_pf,
+                    p.termination_ohm):
             self.preset.blockSignals(True)
             self.preset.setCurrentIndex(self.preset.findData(CUSTOM))
             self.preset.blockSignals(False)
@@ -649,9 +750,9 @@ def describe_aggressor(setup: PISetup):
 
 class NoisePanel(QWidget, PartSelection):
     solve_requested = Signal(object, str)          # PISetup, aggressor name
-    save_requested = Signal()
     result_selected = Signal(object)               # NoiseResult shown in the plot; None clears
     victim_selected = Signal(str)                  # the victim picked in the results table
+    coupling_changed = Signal()                    # the 3D coupling overlay to draw changed
     setup_changed = Signal()
     results_saved = Signal(str)
     part_selected = Signal(str, str, bool)         # see ACPanel.part_selected
@@ -663,19 +764,9 @@ class NoisePanel(QWidget, PartSelection):
         self._nets: List[str] = []
         self.result = None
         self._results: Dict[str, object] = {}     # the last NoiseResult of each aggressor
+        self._victim = ""                         # the victim selected in the results
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
-
-        row = QHBoxLayout()
-        self.lbl_file = QLabel("No board", self)
-        self.lbl_file.setStyleSheet("color: #999;")
-        self.lbl_file.setWordWrap(True)
-        b_save = QPushButton("Save", self)
-        b_save.setToolTip("Save the setup next to the board (every mode shares one file)")
-        b_save.clicked.connect(self.save_requested.emit)
-        row.addWidget(self.lbl_file, 1)
-        row.addWidget(b_save)
-        lay.addLayout(row)
 
         self.tabs = QTabWidget(self)
         self.agg_list = ItemList(lambda: self.setup.aggressors, AggressorEditor(self),
@@ -724,7 +815,9 @@ class NoisePanel(QWidget, PartSelection):
                                   "its parameters and the board's hot loop. Problems that "
                                   "stop the solve are listed above in red.")
         self.btn_solve.clicked.connect(self._solve)
-        row.addWidget(QLabel("Aggressor"))
+        lbl = QLabel("Aggressor")
+        lbl.setToolTip(self.cmb_agg.toolTip())
+        row.addWidget(lbl)
         row.addWidget(self.cmb_agg, 2)
         lay.addLayout(row)
         row = QHBoxLayout()
@@ -733,12 +826,14 @@ class NoisePanel(QWidget, PartSelection):
                                     "aggressor's waveforms only)")
         self.cmb_victims.currentIndexChanged.connect(self._victims_changed)
         self.chk_scan = QCheckBox("Scan nearby nets", self)
-        self.chk_scan.setToolTip("Also look for victims: estimate the noise on every signal "
-                                 "net with a trace near the aggressor and solve the worst in "
-                                 "full, with the scan's default driver and logic level (see "
-                                 "Settings)")
+        self.chk_scan.setToolTip(art_tip(
+            "Also look for victims: estimate the noise on every signal net with a trace near "
+            "the aggressor and solve the worst in full, with the scan's default driver and "
+            "logic level (see Settings)", "scan_radius", "radius", "top"))
         self.chk_scan.toggled.connect(self._scan_toggled)
-        row.addWidget(QLabel("Victims"))
+        lbl = QLabel("Victims")
+        lbl.setToolTip(self.cmb_victims.toolTip())
+        row.addWidget(lbl)
         row.addWidget(self.cmb_victims, 2)
         row.addWidget(self.chk_scan)
         lay.addLayout(row)
@@ -771,6 +866,33 @@ class NoisePanel(QWidget, PartSelection):
         make_sortable(self.tbl_victims)
         self.tbl_victims.setVisible(False)
         lr.addWidget(self.tbl_victims)
+        from kipi.noise.viz import VIEWS as COUPLING_VIEWS
+        self.coupling_row = QWidget(g_res)
+        row = QHBoxLayout(self.coupling_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.cmb_coupling = QComboBox(self.coupling_row)
+        for key, text in COUPLING_VIEWS:
+            self.cmb_coupling.addItem(text, key)
+        tip_3d = ("Show in the 3D view where the selected victim's peak noise couples in: "
+                  "each piece of its traces colored by its part of the receiver's peak (red "
+                  "adds to it, blue takes from it), by one mechanism or all of them. The "
+                  "common-ground part is a dot at the driver; the capacitor loops that "
+                  "induce the inductive part are drawn in magenta. Tick the switch node's net "
+                  "in the Board panel to see the capacitive source.")
+        tip_3d = art_tip(tip_3d, "coupling", "cap", "ind", "gnd")
+        self.cmb_coupling.setToolTip(tip_3d)
+        self.cmb_coupling.currentIndexChanged.connect(self._coupling_view_changed)
+        lbl = QLabel("Coupling in 3D", self.coupling_row)
+        lbl.setToolTip(tip_3d)
+        row.addWidget(lbl)
+        row.addWidget(self.cmb_coupling, 1)
+        self.lbl_coupling = QLabel(g_res)
+        self.lbl_coupling.setWordWrap(True)
+        self.lbl_coupling.setStyleSheet("color: #aaa;")
+        self.coupling_row.setVisible(False)
+        self.lbl_coupling.setVisible(False)
+        lr.addWidget(self.coupling_row)
+        lr.addWidget(self.lbl_coupling)
         self.txt_notes = QLabel(g_res)
         self.txt_notes.setWordWrap(True)
         self.txt_notes.setTextFormat(Qt.RichText)
@@ -809,7 +931,7 @@ class NoisePanel(QWidget, PartSelection):
         self.spin_periods = QSpinBox()
         self.spin_periods.setRange(1, 20)
         self.spin_periods.setValue(s.periods_shown)
-        self.spin_zeta = _spin(0, 1, s.min_ring_zeta, 3, "", 0.01)
+        self.spin_dead = _spin(0, 1000, s.dead_time_ns, 1, " ns", 5)
         self.spin_segment = _spin(0.05, 10, s.segment_mm, 2, " mm", 0.1)
         self.spin_window = _spin(0.2, 50, s.window_mm, 1, " mm", 0.5)
         self.chk_board = QCheckBox("Board model")
@@ -819,7 +941,7 @@ class NoisePanel(QWidget, PartSelection):
         self.spin_fpd.setValue(s.field_per_decade)
         f.addRow("Highest frequency", self.spin_fmax)
         f.addRow("Harmonic limit", self.spin_harm)
-        f.addRow("Least ringing damping", self.spin_zeta)
+        f.addRow("Dead time", self.spin_dead)
         f.addRow("Periods shown", self.spin_periods)
         f.addRow("Victim segment", self.spin_segment)
         f.addRow("Coupling window", self.spin_window)
@@ -829,39 +951,57 @@ class NoisePanel(QWidget, PartSelection):
         self.spin_top = QSpinBox()
         self.spin_top.setRange(1, 1000)
         self.spin_top.setValue(s.scan_top_n)
+        self.cmb_scan_type = QComboBox()
+        for key, p in VICTIM_PRESETS.items():
+            self.cmb_scan_type.addItem(p.label, key)
+        self.cmb_scan_type.addItem("Custom driver", CUSTOM)
+        self.cmb_scan_type.setCurrentIndex(max(self.cmb_scan_type.findData(s.scan_preset), 0))
         self.spin_scan_drv = _spin(0.01, 1e9, s.scan_driver_ohm, 2, " Ω", 1)
+        self.spin_scan_drv.setEnabled(s.scan_preset == CUSTOM)
         self.cmb_scan_logic = QComboBox()
         for v in LOGIC_LEVELS:
             self.cmb_scan_logic.addItem(f"{v:g} V", v)
         self.cmb_scan_logic.setCurrentIndex(max(self.cmb_scan_logic.findData(s.scan_logic_v), 0))
         f.addRow("Scan radius", self.spin_radius)
         f.addRow("Scan: solve in full", self.spin_top)
+        f.addRow("Scan: victim type", self.cmb_scan_type)
         f.addRow("Scan: driver resistance", self.spin_scan_drv)
         f.addRow("Scan: logic level", self.cmb_scan_logic)
         tip(f, self.spin_radius, "The scan looks at signal nets with a trace this close to the "
-                                 "aggressor's parts")
+                                 "aggressor's parts", ("scan_radius", "radius"))
         tip(f, self.spin_top, "How many of the scanned nets with the highest estimates are "
-                              "solved in full (every mechanism)")
-        tip(f, self.spin_scan_drv, "The driver resistance a scanned net is solved with: its "
-                                   "real driver is not known", ("victim_terms", "drv"))
-        tip(f, self.cmb_scan_logic, "The logic level a scanned net is judged against")
+                              "solved in full (every mechanism)", ("scan_radius", "top"))
+        tip(f, self.cmb_scan_type, "The type a scanned net is solved as: its real driver "
+                                   "is not known. High impedance (undriven), the default, is "
+                                   "the worst case for capacitive coupling: nothing holds "
+                                   "the line, so the coupled charge divides between the "
+                                   "coupling and the net's own capacitance. (Inductive noise "
+                                   "reaches a receiver whole only through a low-impedance "
+                                   "driver.) A net that is a victim already keeps its own "
+                                   "type.", ("victim_terms", "drv", "rcv"))
+        tip(f, self.spin_scan_drv, "The driver resistance a scanned net is solved with, for "
+                                   "a custom driver", ("victim_terms", "drv"))
+        self.cmb_scan_type.currentIndexChanged.connect(self._settings_changed)
+        tip(f, self.cmb_scan_logic, "The logic level a scanned net is judged against",
+            ("noise_margin", "levels", "margin"))
         for wdg in (self.spin_radius, self.spin_top, self.spin_scan_drv):
             wdg.valueChanged.connect(self._settings_changed)
         self.cmb_scan_logic.currentIndexChanged.connect(self._settings_changed)
         tip(f, self.spin_fmax, "The highest harmonic frequency the waveforms keep. From the "
                                "edges: ten times the faster edge's corner frequency "
                                "(1/(π·rise time)) or three times the ringing frequency, "
-                               "whichever is higher, at most 3 GHz.")
+                               "whichever is higher, at most 3 GHz.", ("spectrum", "fmax"))
         tip(f, self.spin_harm, "The most harmonics of the switching frequency kept; a slow "
-                               "switcher with fast edges needs many")
-        tip(f, self.spin_zeta, "The least damping ratio ζ of the switch node's ringing. The "
-                               "hot loop's resistance (on-resistance, capacitor ESR, copper) "
-                               "alone damps it far less than a real switch node: the "
-                               "switches' output capacitance, reverse recovery and radiation "
-                               "take energy too, and measured ringing usually dies within "
-                               "five to ten cycles (ζ about 0.05 to 0.1). 0 uses the loop's "
-                               "resistance alone.", ("sw_ringing", "ring"))
-        tip(f, self.spin_periods, "Switching periods shown in the waveform plot")
+                               "switcher with fast edges needs many", ("spectrum", "harm"))
+        tip(f, self.spin_dead, "The controller's dead time: how long the inductor current "
+                               "has to carry a soft edge across, C_sw·V/I, before the next "
+                               "switch turns on. At light load, or a valley current just "
+                               "below zero, it cannot: the switch turns on part way and "
+                               "finishes the edge hard, at the entered edge time and the "
+                               "least ringing damping. 0 lets the current take as long as "
+                               "it needs.", ("sw_edges", "soft"))
+        tip(f, self.spin_periods, "Switching periods shown in the waveform plot",
+            ("sw_period", "period"))
         tip(f, self.spin_segment, "Victim traces are cut into pieces this long; each is a "
                                   "short transmission line with its own cross-section. "
                                   "Shorter follows the copper beside it more closely.",
@@ -877,12 +1017,14 @@ class NoisePanel(QWidget, PartSelection):
                                "ground noise between each victim's driver and receiver is "
                                "its shared-ground (common-impedance) coupling. Untick for a "
                                "quick solve: the capacitors then share the current by their "
-                               "own impedance and there is no shared-ground coupling.")
+                               "own impedance and there is no shared-ground coupling.",
+            ("board_model", "split", "gnd"))
         tip(f, self.spin_fpd, "Copper (field) solves per decade of the harmonics; the board's "
-                              "response in between is interpolated, as in AC mode's sweep")
+                              "response in between is interpolated, as in AC mode's sweep",
+            ("interp", "solve"))
         self.chk_board.toggled.connect(self._settings_changed)
         self.chk_board.toggled.connect(self.spin_fpd.setEnabled)
-        for wdg in (self.spin_fmax, self.spin_harm, self.spin_periods, self.spin_zeta,
+        for wdg in (self.spin_fmax, self.spin_harm, self.spin_periods, self.spin_dead,
                     self.spin_segment, self.spin_window, self.spin_fpd):
             wdg.valueChanged.connect(self._settings_changed)
         return w
@@ -893,13 +1035,15 @@ class NoisePanel(QWidget, PartSelection):
         s.f_max_hz = fmax * 1e6 if fmax is not None else None
         s.max_harmonics = self.spin_harm.value()
         s.periods_shown = self.spin_periods.value()
-        s.min_ring_zeta = self.spin_zeta.value()
+        s.dead_time_ns = self.spin_dead.value()
         s.segment_mm = self.spin_segment.value()
         s.window_mm = self.spin_window.value()
         s.board_model = self.chk_board.isChecked()
         s.field_per_decade = self.spin_fpd.value()
         s.scan_radius_mm = self.spin_radius.value()
         s.scan_top_n = self.spin_top.value()
+        s.scan_preset = self.cmb_scan_type.currentData() or s.scan_preset
+        self.spin_scan_drv.setEnabled(s.scan_preset == CUSTOM)
         s.scan_driver_ohm = self.spin_scan_drv.value()
         s.scan_logic_v = self.cmb_scan_logic.currentData() or s.scan_logic_v
         self._on_changed()
@@ -907,7 +1051,8 @@ class NoisePanel(QWidget, PartSelection):
     def _load_settings(self):
         s = self.setup.noise
         for wdg, v in ((self.spin_harm, s.max_harmonics), (self.spin_periods, s.periods_shown),
-                       (self.spin_zeta, s.min_ring_zeta), (self.spin_segment, s.segment_mm),
+                       (self.spin_dead, s.dead_time_ns),
+                       (self.spin_segment, s.segment_mm),
                        (self.spin_window, s.window_mm), (self.spin_fpd, s.field_per_decade),
                        (self.spin_radius, s.scan_radius_mm), (self.spin_top, s.scan_top_n),
                        (self.spin_scan_drv, s.scan_driver_ohm)):
@@ -928,23 +1073,23 @@ class NoisePanel(QWidget, PartSelection):
         self.cmb_scan_logic.blockSignals(True)
         self.cmb_scan_logic.setCurrentIndex(max(self.cmb_scan_logic.findData(s.scan_logic_v), 0))
         self.cmb_scan_logic.blockSignals(False)
+        self.cmb_scan_type.blockSignals(True)
+        self.cmb_scan_type.setCurrentIndex(max(self.cmb_scan_type.findData(s.scan_preset), 0))
+        self.cmb_scan_type.blockSignals(False)
+        self.spin_scan_drv.setEnabled(s.scan_preset == CUSTOM)
         self.report_option.set_value(s.html_report, s.report_format)
 
     # ------------------------------------------------------------------ data
     def nets(self) -> List[str]:
         return list(self._nets)
 
-    def set_board(self, snap: BoardSnapshot, setup: PISetup, file_label: str):
+    def set_board(self, snap: BoardSnapshot, setup: PISetup):
         self.snapshot = snap
         self.setup = setup
-        self.lbl_file.setText(file_label)
         self._load_settings()
         self.clear_results()
         self.setEnabled(True)
         self.reload()
-
-    def set_label(self, text: str):
-        self.lbl_file.setText(text)
 
     def set_nets(self, nets: List[str]):
         """Nets offered in the pin pickers (the ones ticked in the Board panel)."""
@@ -1105,6 +1250,8 @@ class NoisePanel(QWidget, PartSelection):
         self.txt_notes.clear()
         reset_sort(self.tbl_victims)
         self.tbl_victims.setRowCount(0)
+        self.coupling_row.setVisible(False)
+        self._set_victim("")
 
     def show_error(self, message: str):
         self.txt_notes.setText(f'<span style="color:#ff7070"><b>Cannot solve:</b><br>'
@@ -1167,15 +1314,36 @@ class NoisePanel(QWidget, PartSelection):
             t.item(r, 5).setForeground(QColor("#60d060" if v.passed else "#ff6060"))
         t.blockSignals(False)
         t.setVisible(bool(victims))
+        self.coupling_row.setVisible(bool(victims))
         if victims:
             worst = max(range(len(victims)), key=lambda i: victims[i].ratio)
             t.selectRow(worst)
+        else:
+            self._set_victim("")
 
     def _victim_row(self):
         rows = self.tbl_victims.selectionModel().selectedRows()
         if rows:
             item = self.tbl_victims.item(rows[0].row(), 0)
-            self.victim_selected.emit(item.text().removesuffix(" (scan)"))
+            name = item.text().removesuffix(" (scan)")
+            self._set_victim(name)
+            self.victim_selected.emit(name)
+
+    def _set_victim(self, name: str):
+        self._victim = name
+        self._coupling_view_changed()
+
+    def _coupling_view_changed(self, *_):
+        ov = self.coupling_overlay()
+        self.lbl_coupling.setText(ov.note if ov is not None else "")
+        self.lbl_coupling.setVisible(ov is not None)
+        self.coupling_changed.emit()
+
+    def coupling_overlay(self):
+        """The selected victim's coupling for the 3D view (#152), or None."""
+        from kipi.noise.viz import coupling_overlay
+        return coupling_overlay(self.result, self._victim,
+                                self.cmb_coupling.currentData() or "off")
 
     def _save_results(self):
         if not self._results or self.snapshot is None:
