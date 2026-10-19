@@ -44,6 +44,10 @@ from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
 )
 
+# A part on a rail by a signal pin only (detect, enable, reference): 0 A, not a load.
+# "signal_pin_only" since Tomachie 7710456a; "not_a_supply" in files written before.
+NOT_A_LOAD = ("signal_pin_only", "not_a_supply")
+
 SCHEMA = "tomachie-pdn"
 SCHEMA_VERSION = 1
 SOURCE_ROLES = ("board_input", "battery", "generator")
@@ -420,7 +424,7 @@ class TomachiePdnImporter:
             if l["role"] == "regulator":
                 continue                   # the regulator's VRM input carries this current
             current = l.get("current")
-            if isinstance(current, dict) and current.get("basis") == "not_a_supply":
+            if isinstance(current, dict) and current.get("basis") in NOT_A_LOAD:
                 # On the rail by a detect, enable or reference pin only: it draws nothing.
                 self.not_supplied.append(f"{l['refdes']} ({name})")
                 continue
