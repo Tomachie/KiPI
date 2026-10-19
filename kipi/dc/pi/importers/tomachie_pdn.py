@@ -456,11 +456,11 @@ class TomachiePdnImporter:
             if supply is not None:
                 label = self._unique(f"{pin} (off-board)")
                 self.unknown_current.append(label)
-                # Power leaving the board at a connector is spent off the board: no heat.
+                # Its current is not in the file: 0 A, not known (so it heats nothing).
                 self.setup.loads.append(Load(label, supply, 0.0,
                                              **self._tolerance(rail, {"refdes": pin}),
                                              ground=self._ground(supply.ref),
-                                             dissipation_w=0.0, current_known=False))
+                                             current_known=False))
 
     def _loads(self):
         for name, r in self.rails.items():
