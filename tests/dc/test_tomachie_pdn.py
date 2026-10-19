@@ -405,3 +405,16 @@ def test_a_ground_with_no_source_returns_to_an_ideal_ground():
     assert by_name(setup.loads, "U2").ground is None
     assert any(n.startswith("No supply returns through GND_ISO") for n in notes)
     assert not validate(setup)
+
+
+def test_a_regulator_standing_in_as_a_source_is_not_a_ground_reference():
+    """A regulator of unknown type is modeled as an ideal source; its ground pins would
+    pin the ground copper to 0 V there as well as at the board input, hiding the ground
+    drop between them, so it gets none - the board input stays the one reference."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0]["type"] = "unknown"
+    setup, notes = run(pdn)
+    u1 = by_name(setup.vrms, "U1 +3V3")
+    assert (u1.kind, u1.ground) == ("source", None)
+    assert by_name(setup.vrms, "J1 VIN").ground.net == "GND"
+    assert by_name(setup.loads, "U2").ground.net == "GND"
