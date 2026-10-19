@@ -367,12 +367,14 @@ def test_off_board_load_puts_no_heat_into_the_board():
     assert (off.dissipation_w, off.current_known) == (0.0, False)
 
 
-def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load():
-    """A part on the rail only by a detect, enable or reference pin (basis not_a_supply,
-    0 A) is left out of the loads and named once in the notes."""
+@pytest.mark.parametrize("basis", ["signal_pin_only", "not_a_supply"])
+def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load(basis):
+    """A part on the rail only by a detect, enable or reference pin (basis signal_pin_only,
+    not_a_supply in older files; 0 A) is left out of the loads and named once in the
+    notes."""
     pdn = copy.deepcopy(PDN)
     detect = copy.deepcopy(pdn["rails"][1]["loads"][0])
-    detect.update(refdes="U9", current={"amps": 0.0, "basis": "not_a_supply"})
+    detect.update(refdes="U9", current={"amps": 0.0, "basis": basis})
     pdn["rails"][1]["loads"].append(detect)
     setup, notes = run(pdn)
     assert "U9" not in [l.name for l in setup.loads]
@@ -385,3 +387,21 @@ def test_loads_and_regulators_return_through_their_ground_pads():
     setup, _ = run(PDN)
     grounds = {x.name: x.ground for x in [*setup.vrms, *setup.loads]}
     assert all(g is not None and g.net == "GND" for g in grounds.values()), grounds
+
+
+def test_a_ground_with_no_source_returns_to_an_ideal_ground():
+    """A load returning on a ground net no source VRM references (an isolated converter's
+    output ground) goes to an ideal ground, named once, so the setup still solves."""
+    from kipi.dc.pi.model import validate
+    pdn = copy.deepcopy(PDN)
+    pdn["ground_nets"] = ["GND_ISO", "GND"]          # U2's own pads are on GND only
+    setup, notes = run(pdn)
+    assert by_name(setup.loads, "U2").ground.net == "GND"
+    snap = board()
+    for p in snap.pads:
+        if p.footprint == "U2" and p.net == "GND":
+            p.net = "GND_ISO"
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), snap).run()
+    assert by_name(setup.loads, "U2").ground is None
+    assert any(n.startswith("No supply returns through GND_ISO") for n in notes)
+    assert not validate(setup)
