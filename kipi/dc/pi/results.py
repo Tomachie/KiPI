@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Results of a power-tree solve: per net group, per load, per VRM."""
 
 from __future__ import annotations

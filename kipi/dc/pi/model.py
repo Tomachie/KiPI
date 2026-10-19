@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The user's power-integrity setup: VRMs, loads and series links, plus the AC setup.
 
 Everything here is entered by the user. The editors pre-fill some fields with guesses

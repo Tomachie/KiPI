@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Self-contained HTML report for a solved power tree.
 
 One ``.html`` file with:

@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Read a KiCad board file (``.kicad_pcb``, KiCad 7 to 10) into a
 :class:`~kipi.core.model.board.BoardSnapshot`, without KiCad.
 

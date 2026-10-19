@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Tomachie LLC.
 """The DC solve at its typical or its worst case.
 
 A setup can hold, besides each value KiPI solves with, a maximum: each load's current
