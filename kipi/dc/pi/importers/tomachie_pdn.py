@@ -247,10 +247,14 @@ class TomachiePdnImporter:
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max"))))
-            self._output_path(reg["refdes"], src, name)
+            if vin is not None:
+                self._input_filter(reg)
+            self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
 
-    def _output_path(self, ref: str, src: dict, rail: str):
-        """The parts between a regulator's output pins and its rail, as DC connections."""
+    def _output_path(self, ref: str, src: dict, rail: str, in_loop: bool = False):
+        """The parts between a regulator's output pins and its rail, as DC connections.
+        A switcher regulates its rail AFTER them (its feedback divider sits on the rail),
+        so with ``in_loop`` they lower nothing: shorts, their loss in the efficiency."""
         parts = src.get("output_path", [])
         path = path_to_rail(parts, src.get("output_net", ""), rail)
         off = sorted({e["refdes"] for e in parts} - {e["refdes"] for e in path})
@@ -258,6 +262,12 @@ class TomachiePdnImporter:
             self.notes.append(f"{ref} ({rail}): {', '.join(off)} listed on its "
                               "output path but not between its output and the rail; left out")
         for e in path:
+            self._link(e, loop_of=ref if in_loop else None)
+
+    def _input_filter(self, reg: dict):
+        """The parts between a regulator's input rail and its input pins (a ferrite or an
+        inductor ahead of it), as DC connections: a real drop, before any regulation."""
+        for e in (self._regulator_entry(reg) or {}).get("input_filter") or []:
             self._link(e)
 
     def _regulator_entry(self, reg: dict) -> Optional[dict]:
@@ -290,15 +300,14 @@ class TomachiePdnImporter:
         self._add_link(ref, vin, out, typ, mx, fig_notes, "on-resistance")
         self.notes.append(f"{ref} ({rail}): load switch, imported as a DC connection from "
                           f"{vin.net} to {out.net}, not a regulator")
-        for e in (self._regulator_entry(reg) or {}).get("input_filter") or []:
-            self._link(e)
+        self._input_filter(reg)
         self._output_path(ref, src, rail)
         iq = amps(reg.get("quiescent_current"))
         if iq is not None:
             self.setup.loads.append(Load(self._unique(f"{ref} quiescent"), vin, iq))
 
     # ------------------------------------------------------------ series parts
-    def _link(self, e: dict):
+    def _link(self, e: dict, loop_of: Optional[str] = None):
         ref = e["refdes"]
         if ref in self.linked:
             return
@@ -317,6 +326,11 @@ class TomachiePdnImporter:
             self.notes.append(f"{ref}: a diode in series; its forward voltage is not part of "
                               "a resistive DC solve, so it is modeled as a short")
             typ, mx = 0.0, None
+        if loop_of:
+            self.notes.append(f"{ref}: inside {loop_of}'s regulation loop, so its DC "
+                              "resistance lowers nothing (its loss is in the efficiency); "
+                              "modeled as a short")
+            typ, mx, fig_notes = 0.0, None, []
         self._add_link(ref, a, b, typ, mx, fig_notes)
 
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],

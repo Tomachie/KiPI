@@ -242,6 +242,27 @@ def test_load_switch_behind_an_input_filter_with_a_part_on_its_output():
     assert by_name(solve_tree(filtered_board(), setup).loads, "U2").passed is True
 
 
+def test_a_switchers_output_inductor_is_inside_its_regulation_loop():
+    """A switcher regulates its rail after its output inductor (the feedback divider is on
+    the rail), so the inductor's DCR lowers nothing: a short, said once. The same part
+    after a load switch, which regulates nothing, is a real drop (test above)."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="switching", efficiency=0.9)
+    pdn["rails"][0]["loads"][0].update(
+        input_net="VIN_F", input_filter=[{"refdes": "FB1", "class": "ferrite",
+                                          "net_in": "VIN", "net_out": "VIN_F",
+                                          "resistance_ohm": 0.08, "datasheet_figures": []}])
+    pdn["rails"][1]["source"].update(output_net="SWOUT", output_path=[
+        {"refdes": "FB2", "class": "inductor", "net_in": "SWOUT", "net_out": "+3V3",
+         "resistance_ohm": "unknown",
+         "datasheet_figures": [{"spec": "dcr", "typ": "27", "max": "35", "unit": "mOhm"}]}])
+    setup, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    fb2 = by_name(setup.links, "FB2")
+    assert fb2.resistance == 0.0
+    assert any(n.startswith("FB2: inside U1's regulation loop") for n in notes)
+    assert by_name(setup.links, "FB1").resistance == pytest.approx(0.08)   # before U1: a drop
+
+
 def test_datasheet_minimum_supply_tightens_the_rail_minimum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_min"]["volts"] = 3.2      # above the rail's 3.135 V
