@@ -40,7 +40,7 @@ from typing import Dict, List, Optional, Set, Tuple
 
 from kipi.core.model.board import BoardSnapshot
 from kipi.dc.pi.importers.pad_index import PadIndex
-from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, number
+from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, forward_drop, number
 from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
 )
@@ -347,9 +347,16 @@ class TomachiePdnImporter:
             return
         typ, mx, fig_notes = dc_resistance(e)
         if e.get("class") == "diode":
-            self.notes.append(f"{ref}: a diode in series; its forward voltage is not part of "
-                              "a resistive DC solve, so it is modeled as a short")
-            typ, mx = 0.0, None
+            vf, vf_max, slope, vf_notes = forward_drop(e)
+            if vf is None:
+                self.notes.append(f"{ref}: a diode in series with no forward voltage in the "
+                                  "file; modeled as a short, so the rail after it reads high")
+                typ, mx = 0.0, None
+            else:
+                # Anode on the side the power comes from (net_in).
+                self.notes.extend(f"{ref}: diode, {n}" for n in vf_notes)
+                self._add_link(ref, a, b, slope, None, [], forward_v=vf, forward_v_max=vf_max)
+                return
         if loop_of:
             self.notes.append(f"{ref}: inside {loop_of}'s regulation loop, so its DC "
                               "resistance lowers nothing (its loss is in the efficiency); "
@@ -358,7 +365,8 @@ class TomachiePdnImporter:
         self._add_link(ref, a, b, typ, mx, fig_notes)
 
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],
-                  fig_notes: List[str], what: str = "DC resistance"):
+                  fig_notes: List[str], what: str = "DC resistance",
+                  forward_v: Optional[float] = None, forward_v_max: Optional[float] = None):
         self.notes.extend(f"{ref}: {n}" for n in fig_notes)
         if typ is None and mx is None:
             self.notes.append(f"{ref}: {what} not known; modeled as a short")
@@ -370,7 +378,8 @@ class TomachiePdnImporter:
             self.max_resistance.append(f"{ref} {_ohms(mx)}")
         self.setup.links.append(DcLink(self._unique(ref), a, b, typ,
                                        resistance_max=mx if mx is not None and mx != typ
-                                       else None))
+                                       else None,
+                                       forward_v=forward_v, forward_v_max=forward_v_max))
 
     def _series_parts(self):
         for r in self.rails.values():

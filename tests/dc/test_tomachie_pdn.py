@@ -419,3 +419,24 @@ def test_a_regulator_standing_in_as_a_source_is_not_a_ground_reference():
     assert (u1.kind, u1.ground) == ("source", None)
     assert by_name(setup.vrms, "J1 VIN").ground.net == "GND"
     assert by_name(setup.loads, "U2").ground.net == "GND"
+
+
+def test_a_series_diode_is_imported_with_its_forward_drop():
+    """A diode ahead of a regulator (an input filter here) is a DC connection with its
+    datasheet forward voltage, not a short; with none printed it stays a short, said."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="switching", efficiency=0.9)
+    diode = {"refdes": "FB1", "class": "diode", "net_in": "VIN", "net_out": "VIN_F",
+             "resistance_ohm": "unknown",
+             "datasheet_figures": [{"spec": "v_forward", "max": "0.85", "unit": "V",
+                                    "if": "5A", "page": 2}]}
+    pdn["rails"][0]["loads"][0].update(input_net="VIN_F", input_filter=[diode])
+    pdn["rails"][1]["source"].update(output_net="SWOUT", output_path=[])
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
+    fb1 = by_name(setup.links, "FB1")
+    assert (fb1.forward_v, fb1.side_a.net, fb1.side_b.net) == (0.85, "VIN", "VIN_F")
+    assert any(n.startswith("FB1: diode, forward drop 0.85 V") for n in notes)
+    diode["datasheet_figures"] = []
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
+    assert by_name(setup.links, "FB1").forward_v is None
+    assert any("no forward voltage in the file" in n for n in notes)
