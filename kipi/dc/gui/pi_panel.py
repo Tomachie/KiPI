@@ -969,6 +969,8 @@ class LinkEditor(_Editor):
         self.r.setSpecialValueText("0 (short)")
         self.esl = _spin(0, 1e6, 0, 3, " nH", 0.1)
         self.r_max = _optional_spin(0, 1e9, 3, " mΩ", 1)
+        self.vf = _optional_spin(0, 10, 3, " V", 0.01)
+        self.vf_max = _optional_spin(0, 10, 3, " V", 0.01)
         self.esl.setSpecialValueText("none")
         f.addRow("Name", self.name)
         f.addRow("Side A pins", self.a)
@@ -977,6 +979,13 @@ class LinkEditor(_Editor):
         f.addRow("Max resistance", self.r_max)
         tip(f, self.r_max, "The part's maximum DC resistance, solved instead of Resistance "
                            "when the solve is set to Worst case (max) beside Solve all")
+        f.addRow("Forward voltage", self.vf)
+        tip(f, self.vf, "A diode: its forward drop from side A (anode) to side B when it "
+                        "conducts. It is solved as this drop plus the current times "
+                        "Resistance (the diode's slope). Empty: not a diode.")
+        f.addRow("Max forward voltage", self.vf_max)
+        tip(f, self.vf_max, "The diode's maximum forward drop, solved instead of Forward "
+                            "voltage when the solve is set to Worst case (max)")
         f.addRow("ESL", self.esl)
         # Drawings under the tooltips (#116): the part as a DCR and an ESL in series.
         art = {self.a: ("series_link", "a"), self.b: ("series_link", "b"),
@@ -995,7 +1004,7 @@ class LinkEditor(_Editor):
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
         f.addRow(hint)
-        self._watch(self.name, self.r, self.r_max, self.esl)
+        self._watch(self.name, self.r, self.r_max, self.vf, self.vf_max, self.esl)
         _gray((self.esl,), mode == "ac", "Used by the AC analysis only")
 
     def _load(self, k: DcLink):
@@ -1004,6 +1013,8 @@ class LinkEditor(_Editor):
         self.b.set_value(k.side_b)
         self.r.setValue(k.resistance * 1e3)
         _set_optional(self.r_max, None if k.resistance_max is None else k.resistance_max * 1e3)
+        _set_optional(self.vf, k.forward_v)
+        _set_optional(self.vf_max, k.forward_v_max)
         self.esl.setValue((k.esl_h or 0.0) * 1e9)
 
     def _save(self, k: DcLink):
@@ -1027,6 +1038,8 @@ class LinkEditor(_Editor):
         k.resistance = self.r.value() / 1e3
         r_max = _get_optional(self.r_max)
         k.resistance_max = None if r_max is None else r_max / 1e3
+        k.forward_v = _get_optional(self.vf)
+        k.forward_v_max = _get_optional(self.vf_max)
         k.esl_h = self.esl.value() * 1e-9 or None
         # Both sides just became the same resistor: take its resistance from its value.
         if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
@@ -2030,6 +2043,9 @@ class PIPanel(QWidget, PartSelection):
     @staticmethod
     def _describe_link(k: DcLink) -> str:
         r = "short" if k.resistance <= 0 else f"{k.resistance * 1e3:g} mΩ"
+        if k.forward_v is not None:                     # a diode, anode on side A
+            r = f"diode {k.forward_v:g} V + {k.resistance * 1e3:g} mΩ"
+            return f"{k.name}: {k.side_a.net} → {k.side_b.net} ({r})"
         return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r})"
 
     # ------------------------------------------------------------------ results

@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Derived quantities from a :class:`~kipi.dc.solver.fem.Solution`.
 
 Units: volts, amps, watts, millimeters. Current density is reported per unit
@@ -171,7 +172,8 @@ def compute_fields(sol: Solution, v_ref: Optional[float] = None) -> Fields:
         link = prob.series[e.link]
         va, vb = float(sol.v_merged[e.node_a]), float(sol.v_merged[e.node_b])
         i = sol.series_current.get(e.name, float("nan"))
-        pw = 0.0 if e.g is None else e.g * (va - vb) ** 2
+        # I x (V_A - V_B): g (V_A - V_B)^2 for a resistor, and a diode's drop included.
+        pw = 0.0 if e.g is None else i * (va - vb)
         series_power += pw
         series.append(SeriesResult(e.name, 0.0 if e.g is None else link.resistance, i, va, vb,
                                    pw, list(link.pads_a), list(link.pads_b)))

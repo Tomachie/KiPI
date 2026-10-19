@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """2.5D DC conduction: P1 finite elements on each copper sheet, plated barrels between
 layers, voltage sources and current loads on pads.
 
@@ -29,7 +30,9 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.solver.spd import SpdSolver
 from kipi.core.temperature import at as temperature_at
-from kipi.dc.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem, SolveSettings
+from kipi.dc.solver.setup import (
+    DIODE_MIN_OHMS, REF_TEMP_C, SHORT_OHMS, NetProblem, SolveSettings,
+)
 from kipi.dc.solver.via_barrel import barrel_copper_area, rule_for
 
 class SolveError(RuntimeError):
@@ -53,6 +56,7 @@ class SeriesElement:
     node_a: int        # merged unknowns of side A and side B
     node_b: int
     g: Optional[float]  # siemens; None when the part is a short (sides merged)
+    forward_v: float = 0.0   # a diode's drop from A to B: I = g (V_A - V_B - forward_v)
 
 
 @dataclass
@@ -164,7 +168,7 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         return np.concatenate([pad_groups[p] for p in pads])
     for link in problem.series:
         a, b = side_nodes(link.pads_a), side_nodes(link.pads_b)
-        if link.resistance <= SHORT_OHMS:
+        if link.resistance <= SHORT_OHMS and not link.forward_v:
             groups.append(np.concatenate([a, b]))
         else:
             groups.extend([a, b])
@@ -220,11 +224,12 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     for i, link in enumerate(problem.series):
         na = int(merged_of[pad_groups[link.pads_a[0]][0]])
         nb = int(merged_of[pad_groups[link.pads_b[0]][0]])
-        if link.resistance <= SHORT_OHMS or na == nb:
+        r = max(link.resistance, DIODE_MIN_OHMS) if link.forward_v else link.resistance
+        if r <= SHORT_OHMS or na == nb:
             series.append(SeriesElement(i, link.name, na, nb, None))
             continue
-        g = 1.0 / link.resistance
-        series.append(SeriesElement(i, link.name, na, nb, g))
+        g = 1.0 / r
+        series.append(SeriesElement(i, link.name, na, nb, g, link.forward_v))
         rows = np.concatenate([rows, [na, nb, na, nb]])
         cols = np.concatenate([cols, [na, nb, nb, na]])
         data = np.concatenate([data, [g, g, -g, -g]])
@@ -346,6 +351,13 @@ class LinearSystem:
             for pid in pads:
                 f[self.pad_unknown[pid]] -= share
 
+        # A conducting diode: I = g (V_A - V_B - forward_v), so g x forward_v enters at A
+        # and leaves at B on the right-hand side.
+        for e in self.series:
+            if e.g is not None and e.forward_v:
+                f[e.node_a] += e.g * e.forward_v
+                f[e.node_b] -= e.g * e.forward_v
+
         # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail
         # voltage, so with absolute volts the source term would dominate the right-hand
         # side and a relative residual tolerance would say little about the drop.
@@ -377,7 +389,8 @@ class LinearSystem:
             if e.g is None:
                 series_current[e.name] = float("nan")   # a short: current not resolved
             else:
-                series_current[e.name] = float(e.g * (u_all[e.node_a] - u_all[e.node_b]))
+                series_current[e.name] = float(e.g * (u_all[e.node_a] - u_all[e.node_b]
+                                                      - e.forward_v))
         stats = dict(self.stats)
         stats["solve_s"] = self.setup_s + time.perf_counter() - t0
         return Solution(problem=prob, mesh=self.mesh, node_v=v[self.merged_of],

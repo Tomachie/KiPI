@@ -256,6 +256,10 @@ class DcLink:
     resistance: float                       # ohms; 0 = short (DC and AC)
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
     resistance_max: Optional[float] = None  # worst-case solve; None = the typical
+    # A diode: its forward drop from side A (anode) to side B when it conducts, volts;
+    # None = not a diode. Solved as forward_v + I x resistance (resistance: the slope).
+    forward_v: Optional[float] = None
+    forward_v_max: Optional[float] = None   # worst-case solve; None = the typical
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -362,7 +366,8 @@ class PISetup:
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"),
-                          resistance_max=k.get("resistance_max"))
+                          resistance_max=k.get("resistance_max"),
+                          forward_v=k.get("forward_v"), forward_v_max=k.get("forward_v_max"))
                    for k in d.get("links", [])],
             corner=d.get("corner", "typ"),
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),

@@ -49,6 +49,10 @@ def corner_errors(setup) -> List[str]:
         if k.resistance_max is not None and k.resistance_max < k.resistance:
             errors.append(f"DC connection {k.name}: the maximum resistance is below its "
                           "typical resistance")
+        if (k.forward_v is not None and k.forward_v_max is not None
+                and k.forward_v_max < k.forward_v):
+            errors.append(f"DC connection {k.name}: the maximum forward voltage is below "
+                          "its typical forward voltage")
     return errors
 
 
@@ -82,6 +86,10 @@ def resolve(setup):
                                                   info)
         l.current_max = None
     for k in out.links:
+        if k.forward_v is not None:
+            k.forward_v, _ = _pick(worst, f"DC connection {k.name} forward voltage",
+                                   k.forward_v, k.forward_v_max, info)
+            k.forward_v_max = None
         if worst and k.resistance_max is None and k.resistance == 0:
             continue                    # a short stays a short: nothing to warn about
         k.resistance, _ = _pick(worst, f"DC connection {k.name}", k.resistance,

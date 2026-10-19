@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """What to solve: sources, loads, series parts and numerical settings.
 
 A problem covers one *extended net*: one or more nets joined by series parts (sense
@@ -43,9 +44,15 @@ class SeriesLink:
     pads_a: List[str]
     pads_b: List[str]
     resistance: float       # ohms; at or below SHORT_OHMS the two sides are merged
+    # A diode's forward drop from side A to side B, volts (0: not a diode). It is solved
+    # conducting, as forward_v + I x resistance; the sides are never merged.
+    forward_v: float = 0.0
 
 
 SHORT_OHMS = 1e-9
+# The slope a diode with no stated slope resistance is solved with: small against any
+# rail's copper, large enough to keep the system well conditioned.
+DIODE_MIN_OHMS = 1e-3
 
 
 @dataclass
