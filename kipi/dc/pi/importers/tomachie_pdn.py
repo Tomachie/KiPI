@@ -261,7 +261,12 @@ class TomachiePdnImporter:
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max")),
-                                       ground=self._ground(reg["refdes"])))
+                                       # A source VRM's ground pins are a 0 V reference;
+                                       # a regulator only standing in as one is not the
+                                       # board's reference, so its ground floats with
+                                       # the copper (one reference, at the board input).
+                                       ground=None if kind == "source"
+                                       else self._ground(reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
