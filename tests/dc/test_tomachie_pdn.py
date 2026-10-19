@@ -377,3 +377,11 @@ def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load():
     setup, notes = run(pdn)
     assert "U9" not in [l.name for l in setup.loads]
     assert any(n.startswith("On a rail by a detect") and "U9" in n for n in notes)
+
+
+def test_loads_and_regulators_return_through_their_ground_pads():
+    """Each load and VRM gets its pads on the file's ground net as its ground pins, so the
+    return current flows in the ground copper rather than an ideal ground."""
+    setup, _ = run(PDN)
+    grounds = {x.name: x.ground for x in [*setup.vrms, *setup.loads]}
+    assert all(g is not None and g.net == "GND" for g in grounds.values()), grounds
