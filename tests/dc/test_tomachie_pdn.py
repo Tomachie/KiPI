@@ -242,6 +242,27 @@ def test_load_switch_behind_an_input_filter_with_a_part_on_its_output():
     assert by_name(solve_tree(filtered_board(), setup).loads, "U2").passed is True
 
 
+def test_a_switchers_output_inductor_is_inside_its_regulation_loop():
+    """A switcher regulates its rail after its output inductor (the feedback divider is on
+    the rail), so the inductor's DCR lowers nothing: a short, said once. The same part
+    after a load switch, which regulates nothing, is a real drop (test above)."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="switching", efficiency=0.9)
+    pdn["rails"][0]["loads"][0].update(
+        input_net="VIN_F", input_filter=[{"refdes": "FB1", "class": "ferrite",
+                                          "net_in": "VIN", "net_out": "VIN_F",
+                                          "resistance_ohm": 0.08, "datasheet_figures": []}])
+    pdn["rails"][1]["source"].update(output_net="SWOUT", output_path=[
+        {"refdes": "FB2", "class": "inductor", "net_in": "SWOUT", "net_out": "+3V3",
+         "resistance_ohm": "unknown",
+         "datasheet_figures": [{"spec": "dcr", "typ": "27", "max": "35", "unit": "mOhm"}]}])
+    setup, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    fb2 = by_name(setup.links, "FB2")
+    assert (fb2.resistance, fb2.resistance_max) == (0.0, None)
+    assert any(n.startswith("FB2: inside U1's regulation loop") for n in notes)
+    assert by_name(setup.links, "FB1").resistance == pytest.approx(0.08)   # before U1: a drop
+
+
 def test_datasheet_minimum_supply_tightens_the_rail_minimum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_min"]["volts"] = 3.2      # above the rail's 3.135 V
@@ -284,8 +305,8 @@ def test_isolated_converter_is_a_switcher():
 
 
 def test_source_pin_on_another_net_leaves_the_rail_out():
-    """A file naming one regulator pin as the source of two rails (one board: U14_8 for
-    1V8 and 0V9_DDR) is wrong about one of them: that rail is left out and said, and the
+    """A file naming one regulator pin as the source of two rails (one LDO pin for
+    both its 1V8 output and a 0V9 rail) is wrong about one of them: that rail is left out and said, and the
     rest still solves."""
     pdn = copy.deepcopy(PDN)
     rail = copy.deepcopy(pdn["rails"][1])
@@ -356,3 +377,11 @@ def test_a_part_on_a_rail_by_no_supply_pin_is_not_a_load():
     setup, notes = run(pdn)
     assert "U9" not in [l.name for l in setup.loads]
     assert any(n.startswith("On a rail by a detect") and "U9" in n for n in notes)
+
+
+def test_loads_and_regulators_return_through_their_ground_pads():
+    """Each load and VRM gets its pads on the file's ground net as its ground pins, so the
+    return current flows in the ground copper rather than an ideal ground."""
+    setup, _ = run(PDN)
+    grounds = {x.name: x.ground for x in [*setup.vrms, *setup.loads]}
+    assert all(g is not None and g.net == "GND" for g in grounds.values()), grounds
