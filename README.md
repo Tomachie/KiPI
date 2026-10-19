@@ -18,9 +18,22 @@
 > - **ODB++**: the board step is read, not the panel (a panel's most-placed board, never
 >   a flattened panel); Unix-compressed (`.Z`) jobs; a job zipped inside a zip; per-layer
 >   via pads; large jobs read many times faster.
-> - **KiCad 9 files**: a via with no filling setting is unfilled, as KiCad reports it.
+> - **KiCad 9 files**: a via with no filling setting is unfilled, as KiCad reports it; a
+>   via keeps its pad on every layer a connected via of its net spans, as KiCad does.
+> - **Tomachie import, solved as the board works**: a switcher's output inductor is inside
+>   its regulation loop (no rail drop); a regulator behind an input ferrite is powered;
+>   loads and regulators return through their ground pads; a part on a rail by a signal
+>   pin only is not a load.
+> - **ODB++ from Altium**: copper thickness from the copper weight (Altium writes the
+>   next dielectric's thickness where KiCad writes the copper's).
+> - **Window and setup file**: the window fits the screen; one Import / Save bar for DC
+>   and AC; the setup file is written only by Save, which is outlined while there are
+>   changes not saved; controls that cannot be used during a solve are greyed out.
 >
-> The ODB++ and KiCad file fixes are offered upstream as pull requests. The via plating
+> How KiPI's results compare with FYPA's on the same board, and why they differ where
+> they do: [docs/kipi-fypa-comparison.md](docs/kipi-fypa-comparison.md).
+>
+> The ODB++, KiCad file, import and window fixes are offered upstream as pull requests. The via plating
 > rules and the pdn.json import, first written here, are now part of KiPI 0.8.0. The rest
 > of this README is Drew's.
 
