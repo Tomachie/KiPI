@@ -117,7 +117,8 @@ def write_report_file(write, path, progress):
 
 class MainWindow(QMainWindow):
     def __init__(self, source: Optional[BoardSource] = None, tool: Optional[InstalledTool] = None,
-                 snapshot: Optional[BoardSnapshot] = None, host: Optional[Host] = None):
+                 snapshot: Optional[BoardSnapshot] = None, host: Optional[Host] = None,
+                 pdn_json: Optional[str] = None, background: bool = False):
         """``source`` is where Load reads the board from (None: no board yet, or only
         snapshots); ``tool`` the design tool on this computer that gives layer colors and
         part models (None: KiPI's own colors, no models); ``host`` how KiPI was started
@@ -208,6 +209,11 @@ class MainWindow(QMainWindow):
         self._source_changed()
         self.statusBar().showMessage("Ready")
 
+        # A Tomachie power tree to import once the board is loaded (--pdn-json).
+        self._pending_pdn = pdn_json
+        # Started in the background (--background): while still minimized, a failure is
+        # said in the Log, not in a dialog that would pop the window up.
+        self._background = background
         if snapshot is not None:
             QTimer.singleShot(0, lambda: self._set_snapshot(snapshot))
         elif source is not None:
@@ -844,6 +850,8 @@ class MainWindow(QMainWindow):
     def _on_task_failed(self, name: str, tb: str):
         log.error(tb)
         self.log(tb, logging.ERROR)
+        if self._quiet():
+            return
         QMessageBox.critical(self, "KiPI", f"{name} failed:\n\n{tb.strip().splitlines()[-1]}")
 
     def _cancel_task(self):
@@ -1035,6 +1043,20 @@ class MainWindow(QMainWindow):
         self.viewer.set_board(*board_body(snap))
         self.viewer.set_coatings(board_coatings(snap))
         self.sync_nets()
+        if self._pending_pdn:
+            path, self._pending_pdn = self._pending_pdn, None
+            self._import_when_idle(path)
+
+    def _import_when_idle(self, path: str):
+        """Import ``path`` once the task loading the board has finished."""
+        if self._busy():
+            QTimer.singleShot(200, lambda: self._import_when_idle(path))
+        else:
+            self.import_pdn_file(path, quiet=self._quiet())
+
+    def _quiet(self) -> bool:
+        """Started in the background and not opened yet: no dialogs."""
+        return self._background and self.isMinimized()
 
     def _load_layer_colors(self, snap: BoardSnapshot):
         """Color the copper layers like the PCB editor's color theme, read again on every
@@ -1457,14 +1479,23 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Import Tomachie power tree", start,
             "Tomachie power tree (*.pdn.json);;JSON (*.json)")
-        if not path:
-            return
+        if path:
+            self.import_pdn_file(path)
+
+    def import_pdn_file(self, path: str, quiet: bool = False):
+        """Replace the power tree with the one in the Tomachie file ``path``. ``quiet``
+        (a background start): a file that cannot be read is said in the Log, not in a
+        dialog that would take the focus."""
         from kipi.dc.pi.importers.tomachie_pdn import PdnImportError, import_tomachie_pdn
+        current = self.solve_panel.setup
         name = Path(path).name
         try:
             setup, notes = import_tomachie_pdn(path, self.snapshot, current)
         except (PdnImportError, ValueError, KeyError, TypeError, OSError) as e:
-            QMessageBox.critical(self, "KiPI", f"Could not import {name}:\n\n{e}")
+            if quiet:
+                self.log(f"Could not import Tomachie {name}: {e}", logging.ERROR)
+            else:
+                QMessageBox.critical(self, "KiPI", f"Could not import {name}:\n\n{e}")
             return
         from kipi.dc.pi.importers.import_summary import counts, group_notes, setup_changes
         notes = group_notes(notes)
@@ -1485,7 +1516,8 @@ class MainWindow(QMainWindow):
                  + (f"; {len(notes)} note(s) above" if notes else "")
                  + ". Not saved: Save keeps it, the setup file is as it was")
         self.log_dock.show()
-        self.log_dock.raise_()
+        if not quiet:
+            self.log_dock.raise_()
         self._show_unsaved()
 
     def _save_setup(self):

@@ -17,6 +17,8 @@ LOG_DIR = Path(tempfile.gettempdir()) / "kipi"
 LOG_PATH = LOG_DIR / "kipi.log"          # replaced per session by setup_logging()
 KEEP_SESSIONS = 15
 STARTED = time.monotonic()      # this module is the first of KiPI's an entry point loads
+# Windows ShowWindow: minimized, without activating (the window that had the focus keeps it).
+SW_SHOWMINNOACTIVE = 7
 
 log = logging.getLogger("kipi")
 _crash_file = None   # kept open for faulthandler for the life of the process
@@ -235,6 +237,26 @@ def _refocus(app, win) -> None:
         bring_to_front(win)
 
 
+def show_in_background(win) -> None:
+    """Show ``win`` minimized on the taskbar without activating it, so whatever the user
+    is typing in keeps the focus."""
+    from qtpy.QtCore import Qt
+    from kipi.gui.main_window import fit_to_screen
+    # Sized onto the screen now: done on the first show, the resize restores the window.
+    fit_to_screen(win)
+    win._fitted = True
+    win.setAttribute(Qt.WA_ShowWithoutActivating, True)
+    if sys.platform == "win32":
+        # Qt shows a window that does not activate as a normal one whatever its state;
+        # Windows minimizes it without activating it.
+        win.show()
+        import ctypes
+        ctypes.windll.user32.ShowWindow(int(win.winId()), SW_SHOWMINNOACTIVE)
+    else:
+        win.setWindowState(Qt.WindowMinimized)
+        win.show()
+
+
 def start_splash():
     """The QApplication, and the welcome screen shown on it (None if it cannot be), held
     open until :func:`run` has opened the main window. Shown before anything slow, so
@@ -310,13 +332,21 @@ def preload(splash=None, preload=_PRELOAD) -> None:
     log.info("Loaded KiPI's packages in %.1f s", time.perf_counter() - t0)
 
 
-def run(source=None, tool=None, snapshot=None, instance=None, splash=False) -> int:
+def run(source=None, tool=None, snapshot=None, instance=None, splash=False,
+        background: bool = False, pdn_json=None) -> int:
     """Show the main window until it is closed. ``source`` and ``tool`` are the window's
     :class:`~kipi.sources.base.BoardSource` and :class:`~kipi.sources.base.InstalledTool`;
     ``instance`` is this KiPI's :class:`~kipi.gui.single_instance.InstanceGuard`, through
     which a KiPI started later brings this window to the front. ``splash`` is the welcome
-    screen from :func:`start_splash` if one was shown already."""
-    if splash is False:
+    screen from :func:`start_splash` if one was shown already. ``background``: no welcome
+    screen, and the window opens minimized without taking the focus (a run started by a
+    script while the user works); ``pdn_json``: a Tomachie power tree imported once the
+    board is loaded."""
+    if background:
+        from kipi.gui.identity import make_app
+        app, splash = make_app(), None
+        app.setStyle("Fusion")
+    elif splash is False:
         app, splash = start_splash()
     else:
         from kipi.gui.identity import make_app
@@ -327,8 +357,12 @@ def run(source=None, tool=None, snapshot=None, instance=None, splash=False) -> i
     from kipi.gui.main_window import MainWindow
     from kipi.gui.single_instance import bring_to_front
 
-    win = MainWindow(source=source, tool=tool, snapshot=snapshot)
-    bring_to_front(win)     # shows it; it opens behind KiCad otherwise (#112)
+    win = MainWindow(source=source, tool=tool, snapshot=snapshot, pdn_json=pdn_json,
+                     background=background)
+    if background:
+        show_in_background(win)
+    else:
+        bring_to_front(win)     # shows it; it opens behind KiCad otherwise (#112)
     tag_window(win)
     log.info("Window open %.1f s after KiPI started", time.monotonic() - STARTED)
     if splash is not None and splash.isVisible():

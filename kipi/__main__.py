@@ -2,6 +2,9 @@
 
     python -m kipi                      # standalone: open board files from the window
     python -m kipi board.kipi.json.gz   # standalone, opening this board file
+    python -m kipi board.kicad_pcb --background --pdn-json board.pdn.json
+                                        # no splash, minimized without taking the focus,
+                                        # the board loaded and the power tree imported
     python -m kipi --dump out.json.gz   # extract from the running KiCad and save, no GUI
 
 Started from a terminal, KiPI runs standalone and needs no KiCad. To run the plugin
@@ -25,6 +28,11 @@ def main(argv=None) -> int:
     ap.add_argument("--dump", metavar="PATH", help="extract from KiCad, save snapshot, exit")
     ap.add_argument("--refill", action="store_true", help="refill zones before extracting")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--background", action="store_true",
+                    help="no splash screen; the window opens minimized without taking the "
+                         "focus from what you are typing in")
+    ap.add_argument("--pdn-json", metavar="PATH",
+                    help="import this Tomachie power tree once the board is loaded")
     args = ap.parse_args(argv)
     path = args.board or args.snapshot
     missing = missing_packages()
@@ -69,7 +77,8 @@ def main(argv=None) -> int:
         if host is Host.STANDALONE:
             from kipi.gui.app import run
             from kipi.sources.kicad_ipc.source import KiCadPartModels
-            return run(source=source, tool=KiCadPartModels(), instance=instance)
+            return run(source=source, tool=KiCadPartModels(), instance=instance,
+                       background=args.background, pdn_json=args.pdn_json)
         if path:
             from kipi.gui.app import run
             from kipi.core.model.snapshot_io import load
@@ -77,7 +86,8 @@ def main(argv=None) -> int:
             # Load from KiCad still works: it connects on first use.
             source = KiCadLiveSource()
             return run(source=source, tool=InstalledKiCad(source),
-                       snapshot=load(path), instance=instance)
+                       snapshot=load(path), instance=instance,
+                       background=args.background, pdn_json=args.pdn_json)
         return _run_live(instance)
     finally:
         instance.release()
