@@ -12,7 +12,7 @@ output delivers, and its input pins are a load on the group feeding it.
 * Remote sense: the VRM's output is corrected until the sense pins sit at the target voltage.
   With ground sense, the target voltage is held above the ground sense pins instead of 0 V;
   their voltage comes from the ground solve, so rails and grounds are iterated together.
-* Mesh remote sense (#93): every sense point's pins are a voltage boundary at the regulated
+* Mesh remote sense (#93): every sense point's pins are a voltage boundary at the target
   voltage (less the load line, above that point's ground sense pins); the VRM's current
   enters there, split evenly over its phases, and its output pins only measure.
 * Ground: groups used as ground are referenced to 0 V at the source VRM's ground pins.
@@ -172,8 +172,8 @@ class _Rail:
 
     def sources(self) -> List[VoltageSource]:
         if self.mesh:
-            return [VoltageSource(name, pp, self.vrm.regulated_v()) for name, pp, _ in self.points]
-        return [VoltageSource(self.vrm.name, self.phase_pads[0], self.vrm.regulated_v())]
+            return [VoltageSource(name, pp, self.vrm.voltage) for name, pp, _ in self.points]
+        return [VoltageSource(self.vrm.name, self.phase_pads[0], self.vrm.voltage)]
 
     def sense_pad_ids(self) -> List[str]:
         if self.mesh:
@@ -467,10 +467,10 @@ class _TreeSolver:
         voltage, input voltages, currents, iterations). A load line moves the target voltage
         down by R_LL times the output current."""
         vrm = rail.vrm
-        set_point = vrm.regulated_v() + self.v_gsense.get(vrm.name, 0.0)
+        set_point = vrm.voltage + self.v_gsense.get(vrm.name, 0.0)
         r_ll = vrm.load_line_mohm * 1e-3
         v_src = set_point
-        vin_est = {c.name: list(self.v_in.get(c.name, [vrm.regulated_v()] * (len(c.phases) + 1)))
+        vin_est = {c.name: list(self.v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
                    for c in rail.children}
         diodes = self._diodes(vrm)
         change = 0.0
@@ -513,12 +513,12 @@ class _TreeSolver:
 
     def _iterate_mesh(self, rail: _Rail, system, demand: float, label: str,
                       warnings: List[str]):
-        """The rail's fixed point with mesh sense: every sense point is held at the regulated
+        """The rail's fixed point with mesh sense: every sense point is held at the target
         voltage less the droop, above its own ground sense pins; only the VRM input currents
         downstream and the droop move. Returns as :meth:`_iterate_rail`."""
         vrm = rail.vrm
         r_ll = vrm.load_line_mohm * 1e-3
-        vin_est = {c.name: list(self.v_in.get(c.name, [vrm.regulated_v()] * (len(c.phases) + 1)))
+        vin_est = {c.name: list(self.v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
                    for c in rail.children}
         diodes = self._diodes(vrm)
         droop, change = 0.0, 0.0
@@ -526,7 +526,7 @@ class _TreeSolver:
             currents = self._child_currents(rail, vin_est)
             currents.update(self.zeroed)       # disconnected loads draw nothing (#88)
             currents.update({name: 0.0 for name in rail.phase_load})
-            volts = {name: vrm.regulated_v() + vg - droop
+            volts = {name: vrm.voltage + vg - droop
                      for (name, _, _), vg in zip(rail.points, self.v_gpoints[vrm.name])}
             sol = system.solve(volts, currents, progress=NULL, forward_v=diodes.forward_v)
             change = diodes.update(sol.series_current)
@@ -665,9 +665,9 @@ class _TreeSolver:
             self.progress.info(f"Ground sense: converged in {tree_pass} power-tree passes")
 
         not_converged_labels = {self.label_of(g) for g in self.not_converged}
-        set_point = {v.name: v.regulated_v() for v in self.setup.vrms}
+        set_point = {v.name: v.voltage for v in self.setup.vrms}
         for label, nets, kind, drv, mesh, sol, it in solved:
-            # Drop and boost on a rail are measured from what its VRM regulates to, not the
+            # Drop and boost on a rail are measured from its VRM's target voltage, not the
             # output pins (which remote sense moves); grounds from their 0 V reference.
             ref = set_point[drv] if kind == "rail" else 0.0
             out.groups[label] = GroupResult(label, nets, kind, drv,
@@ -726,13 +726,12 @@ class _TreeSolver:
                      incomplete_grounds: frozenset = frozenset()) -> LoadReport:
         g = self.groups[l.supply.net]
         sol = self.rail_solutions[g]
-        nominal = self.driver[g].regulated_v()
-        load_nominal = l.nominal_v if l.nominal_v is not None else self.driver[g].voltage
+        nominal = self.driver[g].voltage
         if l.name in self.disconnected:
             nan = math.nan
             return LoadReport(l.name, self.label_of(g), 0.0, nominal, nan, nan,
                               nan if l.ground else None, nan, nan, l.tolerance_label(), None, nan,
-                              [], None, None, status=DISCONNECTED, load_nominal=load_nominal)
+                              [], None, None, status=DISCONNECTED)
         sv = _connected(_pad_voltages(sol, self._supply_pads(l)))
         gv = None
         if l.ground:
@@ -742,16 +741,15 @@ class _TreeSolver:
         g_lo = 0.0 if gv is None else float(gv.min())
         g_hi = 0.0 if gv is None else float(gv.max())
         low, high = float(sv.min()) - g_hi, float(sv.max()) - g_lo
-        # Load tolerance and worst pin deviations use the device's nominal, independently
-        # of the VRM's regulated voltage used for the mean copper drop.
-        worst = low if load_nominal - low >= high - load_nominal else high
+        # The worst pin is the one furthest from nominal, below (drop) or above (boost).
+        worst = low if nominal - low >= high - nominal else high
         eff = float(sv.mean()) - g_mean
         rep = LoadReport(l.name, self.label_of(g), self.load_amps[l.name], nominal,
                          float(sv.mean()), float(sv.min()),
                          None if gv is None else g_mean, eff, nominal - eff,
                          l.tolerance_label(), None, worst, self._pin_group_rows(l, sol), low,
-                         high, load_nominal=load_nominal)
-        rep.limit_low, rep.limit_high = l.limits(load_nominal)
+                         high)
+        rep.limit_low, rep.limit_high = l.limits(nominal)
         rep.basis = self.corner.basis.get(l.name, "")
         rep.copper_margin = l.copper_margin_v
         if not self.tree_converged or g in self.not_converged:
@@ -790,7 +788,7 @@ class _TreeSolver:
         i_total = sum(self.i_out[v.name])
         limit = v.current_limit_a
         return VrmReport(
-            v.name, v.kind, self.label_of(self.groups[v.output.net]), v.regulated_v(),
+            v.name, v.kind, self.label_of(self.groups[v.output.net]), v.voltage,
             float(np.mean(self.v_out[v.name])), self.v_sense.get(v.name), i_total,
             float(np.mean(vis)) if has_in else None, sum(iis) if has_in else None,
             sum(ph.p_out for ph in phases),
