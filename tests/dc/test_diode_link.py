@@ -20,7 +20,7 @@ def _setup(forward_v=None, forward_v_max=None):
     s.vrms = [Vrm("J1", PinRef("J1", "VIN", ["1"]), 12.0, "source",
                   ground=PinRef("J1", "GND", ["2"]))]
     s.links = [DcLink("FB1", PinRef("FB1", "VIN", ["1"]), PinRef("FB1", "VIN_F", ["2"]), 0.05,
-                      forward_v=forward_v, forward_v_max=forward_v_max)]
+                      diode_vf=forward_v or 0.0, diode_vf_max=forward_v_max)]
     s.loads = [Load("U1", PinRef("U1", "VIN_F", ["1"]), 1.0,
                     ground=PinRef("U1", "GND", ["3"]))]
     return s
@@ -52,7 +52,7 @@ def test_worst_case_takes_the_maximum_forward_voltage():
 
 def test_a_diode_round_trips_through_the_setup_file():
     s = PISetup.from_dict(_setup(forward_v=0.45, forward_v_max=0.55).to_dict())
-    assert (s.links[0].forward_v, s.links[0].forward_v_max) == (0.45, 0.55)
+    assert (s.links[0].diode_vf, s.links[0].diode_vf_max) == (0.45, 0.55)
 
 
 # A Schottky's curve (SK510A-like, 25 C): far from a straight line over its range.

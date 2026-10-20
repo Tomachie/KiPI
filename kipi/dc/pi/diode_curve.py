@@ -36,8 +36,8 @@ class DiodeCurves:
     """The forward voltages of the diodes with a curve in one net group, per pass."""
 
     def __init__(self, links: List):
-        self.links = [k for k in links if k.forward_v is not None and k.vf_curve]
-        self.forward_v: Dict[str, float] = {k.name: k.forward_v for k in self.links}
+        self.links = [k for k in links if k.diode_vf and k.vf_curve]
+        self.forward_v: Dict[str, float] = {k.name: k.diode_vf for k in self.links}
 
     def __bool__(self) -> bool:
         return bool(self.links)

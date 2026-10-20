@@ -56,7 +56,7 @@ class SeriesElement:
     node_a: int        # merged unknowns of side A and side B
     node_b: int
     g: Optional[float]  # siemens; None when the part is a short (sides merged)
-    forward_v: float = 0.0   # a diode's drop from A to B: I = g (V_A - V_B - forward_v)
+    voltage_drop: float = 0.0  # a diode's drop from A to B: I = g (V_A - V_B - voltage_drop)
 
 
 @dataclass
@@ -168,7 +168,7 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
         return np.concatenate([pad_groups[p] for p in pads])
     for link in problem.series:
         a, b = side_nodes(link.pads_a), side_nodes(link.pads_b)
-        if link.resistance <= SHORT_OHMS and not link.forward_v:
+        if link.resistance <= SHORT_OHMS and not link.voltage_drop:
             groups.append(np.concatenate([a, b]))
         else:
             groups.extend([a, b])
@@ -224,12 +224,12 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
     for i, link in enumerate(problem.series):
         na = int(merged_of[pad_groups[link.pads_a[0]][0]])
         nb = int(merged_of[pad_groups[link.pads_b[0]][0]])
-        r = max(link.resistance, DIODE_MIN_OHMS) if link.forward_v else link.resistance
+        r = max(link.resistance, DIODE_MIN_OHMS) if link.voltage_drop else link.resistance
         if r <= SHORT_OHMS or na == nb:
             series.append(SeriesElement(i, link.name, na, nb, None))
             continue
         g = 1.0 / r
-        series.append(SeriesElement(i, link.name, na, nb, g, link.forward_v))
+        series.append(SeriesElement(i, link.name, na, nb, g, link.voltage_drop))
         rows = np.concatenate([rows, [na, nb, na, nb]])
         cols = np.concatenate([cols, [na, nb, nb, na]])
         data = np.concatenate([data, [g, g, -g, -g]])
@@ -336,7 +336,7 @@ class LinearSystem:
         """Solve with per-source voltages, per-load currents and per-diode forward
         voltages (defaults: the problem's). A forward voltage is on the right-hand side
         only, so changing it needs no new factorization."""
-        fwd = {e.name: e.forward_v for e in self.series}
+        fwd = {e.name: e.voltage_drop for e in self.series}
         fwd.update(forward_v or {})
         t0 = time.perf_counter()
         prob = self.problem

@@ -66,8 +66,8 @@ def corner_errors(setup) -> List[str]:
         if k.resistance_max is not None and k.resistance_max < k.resistance:
             errors.append(f"DC connection {k.name}: the maximum resistance is below its "
                           "typical resistance")
-        if (k.forward_v is not None and k.forward_v_max is not None
-                and k.forward_v_max < k.forward_v):
+        if (k.diode_vf and k.diode_vf_max is not None
+                and k.diode_vf_max < k.diode_vf):
             errors.append(f"DC connection {k.name}: the maximum forward voltage is below "
                           "its typical forward voltage")
     return errors
@@ -146,14 +146,14 @@ def resolve(setup):
                                                   info)
         l.current_max = None
     for k in out.links:
-        if k.forward_v is not None:
-            typical = k.forward_v
-            k.forward_v, _ = _pick(worst, f"DC connection {k.name} forward voltage",
-                                   k.forward_v, k.forward_v_max, info)
-            k.forward_v_max = None
-            if k.vf_curve and k.forward_v != typical:
+        if k.diode_vf:
+            typical = k.diode_vf
+            k.diode_vf, _ = _pick(worst, f"DC connection {k.name} forward voltage",
+                                   k.diode_vf, k.diode_vf_max, info)
+            k.diode_vf_max = None
+            if k.vf_curve and k.diode_vf != typical:
                 # The curve is typical: the worst case lifts it as much as the line.
-                k.vf_curve = [[i, v + k.forward_v - typical] for i, v in k.vf_curve]
+                k.vf_curve = [[i, v + k.diode_vf - typical] for i, v in k.vf_curve]
         if worst and k.resistance_max is None and k.resistance == 0:
             continue                    # a short stays a short: nothing to warn about
         k.resistance, _ = _pick(worst, f"DC connection {k.name}", k.resistance,

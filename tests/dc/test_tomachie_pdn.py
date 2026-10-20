@@ -441,11 +441,11 @@ def test_a_series_diode_is_imported_with_its_forward_drop():
     pdn["rails"][1]["source"].update(output_net="SWOUT", output_path=[])
     setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
     fb1 = by_name(setup.links, "FB1")
-    assert (fb1.forward_v, fb1.side_a.net, fb1.side_b.net) == (0.85, "VIN", "VIN_F")
+    assert (fb1.diode_vf, fb1.side_a.net, fb1.side_b.net) == (0.85, "VIN", "VIN_F")
     assert any(n.startswith("FB1: diode, forward drop 0.85 V") for n in notes)
     diode["datasheet_figures"] = []
     setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
-    assert by_name(setup.links, "FB1").forward_v is None
+    assert by_name(setup.links, "FB1").diode_vf == 0.0
     assert any("no forward voltage in the file" in n for n in notes)
 
 

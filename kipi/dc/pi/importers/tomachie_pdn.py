@@ -449,7 +449,7 @@ class TomachiePdnImporter:
         self.setup.links.append(DcLink(self._unique(ref), a, b, typ,
                                        resistance_max=mx if mx is not None and mx != typ
                                        else None,
-                                       forward_v=forward_v, forward_v_max=forward_v_max,
+                                       diode_vf=forward_v or 0.0, diode_vf_max=forward_v_max,
                                        esl_h=esl_h, vf_curve=vf_curve))
 
     def _ground_links(self):

@@ -283,13 +283,11 @@ class DcLink:
     side_b: PinRef
     resistance: float                       # ohms; 0 = short (DC and AC)
     esl_h: Optional[float] = None           # series inductance, henries (AC only)
+    diode_vf: float = 0.0                   # DC forward drop, side A (anode) -> side B
     resistance_max: Optional[float] = None  # worst-case solve; None = the typical
-    # A diode: its forward drop from side A (anode) to side B when it conducts, volts;
-    # None = not a diode. Solved as forward_v + I x resistance (resistance: the slope).
-    forward_v: Optional[float] = None
-    forward_v_max: Optional[float] = None   # worst-case solve; None = the typical
+    diode_vf_max: Optional[float] = None    # worst-case solve; None = the typical
     # The diode's datasheet forward-voltage curve, [[amps, volts], ...] (typical, 25 C):
-    # the solve moves forward_v so the line meets it at the current the diode carries
+    # the solve moves diode_vf so the line meets it at the current the diode carries
     # (kipi.dc.pi.diode_curve). None = solved on the line as entered.
     vf_curve: Optional[List[List[float]]] = None
 
@@ -404,8 +402,9 @@ class PISetup:
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"),
+                          diode_vf=k.get("diode_vf", k.get("forward_v")) or 0.0,
                           resistance_max=k.get("resistance_max"),
-                          forward_v=k.get("forward_v"), forward_v_max=k.get("forward_v_max"),
+                          diode_vf_max=k.get("diode_vf_max", k.get("forward_v_max")),
                           vf_curve=k.get("vf_curve"))
                    for k in d.get("links", [])],
             corner=d.get("corner", "typ"),

@@ -1218,8 +1218,8 @@ class LinkEditor(_Editor):
         self.b.set_value(k.side_b)
         self.r.setValue(k.resistance * 1e3)
         _set_optional(self.r_max, None if k.resistance_max is None else k.resistance_max * 1e3)
-        _set_optional(self.vf, k.forward_v)
-        _set_optional(self.vf_max, k.forward_v_max)
+        _set_optional(self.vf, k.diode_vf or None)
+        _set_optional(self.vf_max, k.diode_vf_max)
         self.esl.setValue((k.esl_h or 0.0) * 1e9)
 
     def _save(self, k: DcLink):
@@ -1243,8 +1243,8 @@ class LinkEditor(_Editor):
         k.resistance = self.r.value() / 1e3
         r_max = _get_optional(self.r_max)
         k.resistance_max = None if r_max is None else r_max / 1e3
-        k.forward_v = _get_optional(self.vf)
-        k.forward_v_max = _get_optional(self.vf_max)
+        k.diode_vf = _get_optional(self.vf) or 0.0
+        k.diode_vf_max = _get_optional(self.vf_max)
         k.esl_h = self.esl.value() * 1e-9 or None
         # Both sides just became the same resistor: take its resistance from its value.
         if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
@@ -2294,8 +2294,8 @@ class PIPanel(QWidget, PartSelection):
     @staticmethod
     def _describe_link(k: DcLink) -> str:
         r = "short" if k.resistance <= 0 else f"{k.resistance * 1e3:g} mΩ"
-        if k.forward_v is not None:                     # a diode, anode on side A
-            r = f"diode {k.forward_v:g} V + {k.resistance * 1e3:g} mΩ"
+        if k.diode_vf:                                  # a diode, anode on side A
+            r = f"diode {k.diode_vf:g} V + {k.resistance * 1e3:g} mΩ"
             return f"{k.name}: {k.side_a.net} → {k.side_b.net} ({r})"
         return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r})"
 

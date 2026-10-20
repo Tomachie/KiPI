@@ -44,9 +44,9 @@ class SeriesLink:
     pads_a: List[str]
     pads_b: List[str]
     resistance: float       # ohms; at or below SHORT_OHMS the two sides are merged
-    # A diode's forward drop from side A to side B, volts (0: not a diode). It is solved
-    # conducting, as forward_v + I x resistance; the sides are never merged.
-    forward_v: float = 0.0
+    # volts, oriented from side A to side B (diode model; 0: not a diode). It is solved
+    # conducting, as voltage_drop + I x resistance; the sides are never merged.
+    voltage_drop: float = 0.0
 
 
 SHORT_OHMS = 1e-9
