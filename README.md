@@ -5,37 +5,9 @@
 # KiPI — DC, AC and Coupled Noise Power Integrity Simulator (Standalone or KiCad Plugin)
 
 > **This is a fork of [drewsum/KiPI](https://github.com/drewsum/KiPI)**, written by Drew
-> Maatman, the original author. It follows his `main` and adds:
->
-> - **Typical / worst-case DC solve**: a maximum current per load and pin group and a
->   maximum resistance per DC connection, solved when the corner beside Solve all is
->   Worst case (max). A Tomachie pdn.json import fills in both.
-> - **Currents not known**: a load can be marked so; the results it touches are
->   INCOMPLETE, never PASS. The Tomachie import marks each current the file does not give.
-> - **Tomachie import**: isolated converters solved as switchers; a rail whose source pins
->   the file gets wrong left out and said; a new setup heats the board with its loads;
->   off-board loads put no heat into the board.
-> - **ODB++**: the board step is read, not the panel (a panel's most-placed board, never
->   a flattened panel); Unix-compressed (`.Z`) jobs; a job zipped inside a zip; per-layer
->   via pads; large jobs read many times faster.
-> - **KiCad 9 files**: a via with no filling setting is unfilled, as KiCad reports it; a
->   via keeps its pad on every layer a connected via of its net spans, as KiCad does.
-> - **Tomachie import, solved as the board works**: a switcher's output inductor is inside
->   its regulation loop (no rail drop); a regulator behind an input ferrite is powered;
->   loads and regulators return through their ground pads; a part on a rail by a signal
->   pin only is not a load.
-> - **ODB++ from Altium**: copper thickness from the copper weight (Altium writes the
->   next dielectric's thickness where KiCad writes the copper's).
-> - **Window and setup file**: the window fits the screen; one Import / Save bar for DC
->   and AC; the setup file is written only by Save, which is outlined while there are
->   changes not saved; controls that cannot be used during a solve are greyed out.
->
-> How KiPI's results compare with FYPA's on the same board, and why they differ where
-> they do: [docs/kipi-fypa-comparison.md](docs/kipi-fypa-comparison.md).
->
-> The ODB++, KiCad file, import and window fixes are offered upstream as pull requests. The via plating
-> rules and the pdn.json import, first written here, are now part of KiPI 0.8.0. The rest
-> of this README is Drew's.
+> Maatman, the original author, with changes by Tomachie LLC: an import of Tomachie
+> power-tree files (`<design>.pdn.json`), a worst-case solve, and fixes. It follows his
+> `main`; the rest of this README is Drew's.
 
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
@@ -131,9 +103,10 @@ KiPI runs two ways, from the same folder:
    ln -s "<path to this repo>" ~/.local/share/kicad/10.0/plugins/KiPI       # Linux
    ```
 
-   Or, without git, download `KiPI-<version>.zip` from the
-   [latest release](https://github.com/drewsum/KiPI/releases/latest) and unzip it into the
-   plugins folder, which gives `plugins/KiPI`.
+   Or, without git, download this fork's
+   [source zip](https://github.com/Tomachie/KiPI/archive/refs/heads/main.zip), unzip it
+   into the plugins folder and rename `KiPI-main` to `KiPI`, which gives `plugins/KiPI`.
+   (Drew's releases do not have this fork's changes.)
 
 3. Restart the PCB editor. KiCad builds the plugin venv in the background; the first time this
    downloads PySide6 and VTK, so give it a few minutes. The **KiPI** toolbar button appears
@@ -146,8 +119,8 @@ KiPI runs two ways, from the same folder:
    [python.org](https://www.python.org/downloads/), or your package manager). Python 3.14
    will not do yet: two of KiPI's packages have no prebuilt version for it. On Linux, add
    `python3-venv` (Debian, Ubuntu) and, for the setup window, `python3-tk`.
-2. Put the KiPI folder anywhere: clone this repo, or unzip `KiPI-<version>.zip` from the
-   [latest release](https://github.com/drewsum/KiPI/releases/latest).
+2. Put the KiPI folder anywhere: clone this repo, or unzip this fork's
+   [source zip](https://github.com/Tomachie/KiPI/archive/refs/heads/main.zip).
 3. Start KiPI with its launcher: double-click **`kipi_launcher.pyw`** (Windows), or run
 
    ```sh
