@@ -527,7 +527,7 @@ class VrmEditor(_Editor):
         self.bandwidth.setSpecialValueText("none")
         f.addRow("Name", self.name)
         f.addRow("Type", self.kind)
-        f.addRow("Set voltage", self.voltage)
+        f.addRow("Target voltage", self.voltage)
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
         f.addRow("Output current limit", self.i_limit)
@@ -2123,6 +2123,7 @@ class PIPanel(QWidget, PartSelection):
         self.btn_solve.setText(self._solve_label())
         if getattr(self, "_tree", None) is not None:
             self._fill_thermal()        # the limits grade the last solve straight away
+        self._on_changed()
 
     def _solve_tab(self) -> QWidget:
         w = QWidget()
