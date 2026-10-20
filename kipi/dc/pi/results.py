@@ -69,7 +69,7 @@ class LoadReport:
     limit_high: Optional[float] = None
     basis: str = ""                      # the current solved: typ, max, typ (no max)
     copper_margin: Optional[float] = None  # the load's pre-layout copper margin, volts
-    load_nominal: Optional[float] = None  # load's own nominal, or the VRM set point
+    load_nominal: Optional[float] = None  # load's own nominal, or the VRM's nominal output
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
