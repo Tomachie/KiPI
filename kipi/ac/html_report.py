@@ -24,7 +24,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from kipi import __version__
+from kipi import fork
 from kipi.ac.model import caps_dict
 from kipi.ac.solver.fem import dielectric_summary
 from kipi.core.model.board import BoardSnapshot
@@ -392,7 +392,7 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
 
     # ---------------- summary
     parts.append(f"<h1>KiPI AC impedance report: {_e(result.rail)}</h1>"
-                 f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {__version__} · "
+                 f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {fork.VERSION} · "
                  f"solved in {result.solve_s:.1f} s</div>")
     if not pdf:
         parts.append("<nav><a href='#probes'>Probes</a> <a href='#impedance'>Impedance</a> "

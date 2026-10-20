@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from kipi import __version__
+from kipi import fork
 from kipi.ac.gui.panel import ACPanel
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
@@ -860,7 +860,7 @@ class MainWindow(QMainWindow):
 
     # ===================================================== board loading
     def _set_title(self, text: str):
-        self.setWindowTitle(f"KiPI {__version__} — {text}"
+        self.setWindowTitle(f"KiPI {fork.VERSION} — {text}"
                             + (" (standalone)" if self.host is Host.STANDALONE else ""))
 
     def _source_changed(self):

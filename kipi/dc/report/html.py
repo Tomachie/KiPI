@@ -27,7 +27,7 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
-from kipi import __version__
+from kipi import fork
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.stackup import summary as stackup_summary
 from kipi.core.naming import timestamp
@@ -503,7 +503,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     # ---------------- summary
     from kipi.dc.pi.corner import LABELS
     corner = LABELS.get(getattr(tree, "corner", "typ"), "Typical")
-    meta = (f"{_e(snap.board_name)} · {now} · KiPI {__version__} · solved in "
+    meta = (f"{_e(snap.board_name)} · {now} · KiPI {fork.VERSION} · solved in "
             f"{tree.solve_s:.1f} s · {_e(corner)} currents and resistances")
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{meta}</div>")
     nav = ["<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",

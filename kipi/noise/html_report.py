@@ -15,7 +15,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from kipi import __version__
+from kipi import fork
 from kipi.core.naming import timestamp
 from kipi.dc.report.html import CSS, _e, _png, _table, _verdict, finish, notes_section
 
@@ -78,7 +78,7 @@ def write_noise_report(path, result, snap, setup, progress=None) -> Path:
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     parts: List[str] = [
         f"<h1>KiPI Coupled Noise report: {_e(result.aggressor)}</h1>"
-        f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {__version__}</div>"]
+        f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {fork.VERSION}</div>"]
     if not pdf:
         parts.append("<nav><a href='#victims'>Victims</a> <a href='#aggressor'>Aggressor</a> "
                      "<a href='#waveforms'>Waveforms</a> <a href='#noise'>Victim noise</a>"

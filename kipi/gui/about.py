@@ -22,7 +22,7 @@ from qtpy.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
-from kipi import __version__
+from kipi import __version__, fork
 from kipi.gui.help import solver_guide_url
 from kipi.host import Host, current as current_host
 
@@ -224,7 +224,7 @@ _fetched_this_session = False
 
 def info_text() -> str:
     """Plain-text summary for pasting into an issue."""
-    lines = [f"{NAME} {__version__}", REPO]
+    lines = [f"{NAME} {fork.VERSION}", REPO, f"Fork: {fork.REPO}"]
     lines += [f"{k}: {v}" for k, v in versions()]
     return "\n".join(lines)
 
@@ -251,12 +251,14 @@ class AboutDialog(QDialog):
         text.setWordWrap(True)
         text.setText(
             f"<h2 style='margin-bottom:0'>{NAME}</h2>"
-            f"<p style='margin-top:2px'>Version {__version__}</p>"
+            f"<p style='margin-top:2px'>Version {fork.VERSION}</p>"
             f"<p style='margin-top:4px; margin-bottom:4px;'>{html.escape(DESCRIPTION)}<br><br>"
             f"<a href='{html.escape(solver_guide_url())}'>Solver Guide</a>: what power "
             f"integrity analysis is and how the solvers work</p>"
             f"<p>Author: {AUTHOR} (<a href='mailto:{EMAIL}'>{EMAIL}</a>)<br>"
             f"Source: <a href='{REPO}'>{REPO}</a><br>"
+            f"Fork with changes by {fork.BY}: "
+            f"<a href='{fork.REPO}'>{fork.REPO}</a><br>"
             f"Report a bug: <a href='{ISSUES}'>{ISSUES}</a><br>"
             f"License: {LICENSE}</p>"
             f"<p><b>Running on</b></p><table>{dep_rows}</table>")

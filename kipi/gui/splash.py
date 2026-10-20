@@ -18,7 +18,7 @@ from qtpy.QtCore import QSize, Qt, QTimer, Signal
 from qtpy.QtGui import QCursor, QGuiApplication, QMovie, QPalette, QPixmap
 from qtpy.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
-from kipi import __version__
+from kipi import fork
 from kipi.gui import about
 from kipi.gui.identity import APP_ID
 from kipi.host import Host, current as current_host
@@ -37,7 +37,7 @@ class Splash(QWidget):
     def __init__(self, show_ms: int = SHOW_MS):
         super().__init__(None, Qt.SplashScreen | Qt.FramelessWindowHint
                          | Qt.WindowStaysOnTopHint)
-        self.setWindowTitle(f"{about.NAME} {__version__}")
+        self.setWindowTitle(f"{about.NAME} {fork.VERSION}")
 
         frame = QFrame(self)
         frame.setObjectName("splash")
@@ -55,7 +55,7 @@ class Splash(QWidget):
                 LOGO_SIZE, LOGO_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
         host = current_host()
-        rows = [("Version", __version__), ("Mode", host.label)]
+        rows = [("Version", fork.VERSION), ("Mode", host.label)]
         if host is Host.PLUGIN:
             rows.append(("Plugin", APP_ID))
         rows.append(("License", about.LICENSE))
