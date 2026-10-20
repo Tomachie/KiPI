@@ -44,7 +44,7 @@ def test_import_says_what_it_read_and_what_changed(app, no_3d, tmp_path, monkeyp
         w._setup_path = setup_file
         w.import_pdn()
         last = w.log_view.toPlainText().splitlines()[-1]
-        assert last.startswith("== Read board.pdn.json: ") and "a new power tree" in last
+        assert last.startswith("== Read Tomachie board.pdn.json: ") and "a new power tree" in last
         w.import_pdn()                                   # the same file again
         assert "the same as before" in w.log_view.toPlainText().splitlines()[-1]
         assert w.log_view.minimumHeight() > 0

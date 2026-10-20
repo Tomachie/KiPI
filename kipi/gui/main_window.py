@@ -1469,19 +1469,19 @@ class MainWindow(QMainWindow):
         from kipi.dc.pi.importers.import_summary import counts, group_notes, setup_changes
         notes = group_notes(notes)
         if notes:
-            self.log(f"Notes on {name}:")
+            self.log(f"Notes on Tomachie {name}:")
         for note in notes:
             self.log(f"  {note}", logging.WARNING)
         used = setup.pin_nets()
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole) in used)
-        label = f"Imported from {name}"
+        label = f"Imported from Tomachie {name}"
         for panel in self._panels().values():
             panel.set_board(self.snapshot, setup)
         self._refresh_power_tree()
         self.setup_bar.set_label(f"{label} - not saved")
         # Last in the Log, under the notes, so it is the line in view.
-        self.log(f"== Read {name}: {counts(setup)} - {setup_changes(current, setup)}"
+        self.log(f"== Read Tomachie {name}: {counts(setup)} - {setup_changes(current, setup)}"
                  + (f"; {len(notes)} note(s) above" if notes else "")
                  + ". Not saved: Save keeps it, the setup file is as it was")
         self.log_dock.show()
