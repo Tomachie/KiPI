@@ -596,7 +596,8 @@ class VrmEditor(_Editor):
                                     "is known."),
                 (self.acc_row, "Optional DC accuracy of the target voltage (also called DC "
                                "error or DC tolerance), from the datasheet, or from the DC "
-                               "Accuracy Calculator. It comes from the regulator's reference accuracy, the feedback resistor "
+                               "Accuracy Calculator. It comes from the regulator's reference "
+                               "accuracy, the feedback resistor "
                                "tolerances, leakage into the FB pin, and line and load "
                                "regulation. The target calculator can take it off the AC "
                                "voltage tolerance."),
