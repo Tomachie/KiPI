@@ -16,6 +16,8 @@ from typing import List, Optional, Tuple
 
 DC_RESISTANCE_SPECS = ("dcr", "dc_resistance", "resistance", "rds_on", "jumper_resistance",
                        "cold_resistance", "r_dc", "rdc", "on_resistance")
+# A 0 ohm jumper's own figure: the most it may measure.
+JUMPER_SPECS = ("jumper_resistance",)
 OHMS_PER_UNIT = {"ohm": 1.0, "ohms": 1.0, "Ω": 1.0, "mohm": 1e-3, "mΩ": 1e-3,
                  "kohm": 1e3, "kΩ": 1e3, "uohm": 1e-6, "µΩ": 1e-6}
 _NUMBER = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
@@ -44,21 +46,55 @@ def _ohms(fig: dict, column: str) -> Optional[float]:
     return None if value is None or scale is None else abs(value) * scale
 
 
+def _prefix(spec, names=DC_RESISTANCE_SPECS) -> Optional[str]:
+    """"" when a figure's spec is one of ``names``; the prefix when it is one after a
+    prefix ("BLM18PG121SH1_dc_resistance": a series datasheet's figure for one part of
+    it), never the bare "resistance" after one ("insulation_resistance"); else None."""
+    spec = str(spec or "").lower()
+    if spec in names:
+        return ""
+    for s in names:
+        if s != "resistance" and spec.endswith("_" + s):
+            return spec[:-len(s) - 1]
+    return None
+
+
+def _is_dc_resistance(spec, names=DC_RESISTANCE_SPECS) -> bool:
+    return _prefix(spec, names) is not None
+
+
+def _own_figures(element: dict) -> List[dict]:
+    """The DC-resistance figures for this part: a series datasheet's figures named after
+    another part of the series are left out when one is named after this part."""
+    figs = [(f, _prefix(f.get("spec"))) for f in element.get("datasheet_figures", [])]
+    figs = [(f, p) for f, p in figs if p is not None]
+    pn = str(element.get("part_number") or "").lower()
+    if len({p for _, p in figs if p}) > 1 and pn:
+        own = [(f, p) for f, p in figs if not p or p in pn or pn in p]
+        figs = own if any(p for _, p in own) else figs
+    return [f for f, _ in figs]
+
+
 def dc_resistance(element: dict) -> Tuple[Optional[float], Optional[float], List[str]]:
     """(typical, maximum, notes) of a series part's DC resistance in ohms.
 
-    A resistor's own value is its resistance. Otherwise the DC-resistance figures of its
+    A resistor's own value is its resistance; a 0 ohm one's maximum is its datasheet's
+    jumper resistance, where printed. Otherwise the DC-resistance figures of its
     datasheet: where several are printed (different conditions) the highest is used and
     said so."""
     own = number(element.get("resistance_ohm"))
     if own is not None:
-        return own, None, []
-    figs = [f for f in element.get("datasheet_figures", [])
-            if str(f.get("spec", "")).lower() in DC_RESISTANCE_SPECS]
+        if own != 0:
+            return own, None, []
+        jumper = [v for v in (_ohms(f, c) for f in element.get("datasheet_figures", [])
+                              if _is_dc_resistance(f.get("spec"), JUMPER_SPECS)
+                              for c in ("max", "typ")) if v is not None]
+        return 0.0, (max(jumper) if jumper else None), []
+    figs = _own_figures(element)
     typs = [v for v in (_ohms(f, "typ") for f in figs) if v is not None]
     maxs = [v for v in (_ohms(f, "max") for f in figs) if v is not None]
     notes = []
-    if len(typs) > 1 or len(maxs) > 1:
+    if len(set(typs)) > 1 or len(set(maxs)) > 1:
         notes.append("several DC-resistance figures printed; the highest of each is used")
     return (max(typs) if typs else None), (max(maxs) if maxs else None), notes
 

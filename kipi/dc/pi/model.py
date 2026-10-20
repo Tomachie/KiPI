@@ -185,6 +185,10 @@ class Load:
     # False: the current is not known and is solved as entered (0 A from an import). Every
     # load whose result depends on it is INCOMPLETE rather than PASS (kipi.dc.pi.tree).
     current_known: bool = True
+    # Volts the copper may take before the load is out of its tolerance, worked out before
+    # layout from the datasheets (an import's figure, supply copper and ground return
+    # together); shown beside the solved margin. None = not given.
+    copper_margin_v: Optional[float] = None
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
@@ -391,7 +395,8 @@ class PISetup:
                                          g.get("current_max"))
                                 for g in l.get("groups", [])],
                         current_max=l.get("current_max"),
-                        current_known=bool(l.get("current_known", True)))
+                        current_known=bool(l.get("current_known", True)),
+                        copper_margin_v=l.get("copper_margin_v"))
                    for l in d.get("loads", [])],
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"),

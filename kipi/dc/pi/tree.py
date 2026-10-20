@@ -741,6 +741,7 @@ class _TreeSolver:
                          high)
         rep.limit_low, rep.limit_high = l.limits(nominal)
         rep.basis = self.corner.basis.get(l.name, "")
+        rep.copper_margin = l.copper_margin_v
         if not self.tree_converged or g in self.not_converged:
             rep.status = NOT_CONVERGED
         elif g in out_of_reg:

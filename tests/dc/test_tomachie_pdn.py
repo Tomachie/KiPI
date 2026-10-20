@@ -90,11 +90,18 @@ def test_unknown_current_and_off_board_pin_are_not_known():
 
 
 def test_load_that_draws_what_it_drives_is_not_known():
+    """Its own current is solved (the least it draws), and it stays not known."""
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0].update(load_dependent=True, load_dependent_reason="LED driver")
     setup, notes = run(pdn)
-    assert by_name(setup.loads, "U2").current == 0.0
+    u2 = by_name(setup.loads, "U2")
+    assert (u2.current, u2.current_known) == (1.0, False)
     assert any("LED driver" in n for n in notes)
+    assert any(n.startswith("Draw what they drive") for n in notes)
+    pdn["rails"][1]["loads"][0].update(current="unknown")
+    del pdn["rails"][1]["loads"][0]["current_max"]
+    setup, notes = run(pdn)
+    assert by_name(setup.loads, "U2").current == 0.0
     assert any(n.startswith("Current not known") for n in notes)
 
 

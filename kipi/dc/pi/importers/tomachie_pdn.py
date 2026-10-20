@@ -17,8 +17,15 @@ current. What maps where:
   output and regulates nothing) -> a DC connection from its input pins to its output
   pins with its on-resistance, and its quiescent current a load on its input pins;
 * a load -> a load with its typical current, and a tolerance from its rail's stated
-  minimum and maximum, tightened to the datasheet's minimum supply voltage when that is
-  higher.
+  minimum and maximum, tightened to the datasheet's minimum and maximum supply voltage
+  where those are stricter; its pre-layout copper margin (``copper_margin``) is kept
+  beside it;
+* a regulator's output band (``regulator_band``: its datasheet accuracy with its
+  feedback divider's tolerance, at the board's temperature grade where given) -> the
+  VRM's DC accuracy, in volts; a worst-case solve runs the VRM at its low end;
+* a series part's ESL -> its DC connection's ESL; each capacitor's part number, value
+  and ESL -> one capacitor model per part number (AC), filling only what a model of
+  that name does not already hold.
 
 KiPI solves one value per item, so where the file gives a range only one end is used:
 the typical current of a load and the typical resistance of a series part (the maximum
@@ -39,7 +46,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from kipi.core.model.board import BoardSnapshot
-from kipi.core.model.parts import parse_resistance
+from kipi.ac.model import CapModel
+from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, forward_drop, number
 from kipi.dc.pi.model import (
@@ -115,11 +123,14 @@ class TomachiePdnImporter:
         self.max_current: Dict[str, float] = {}
         self.max_resistance: List[str] = []
         self.unknown_current: List[str] = []
+        self.static_current: Dict[str, float] = {}   # solved at a static figure, more not known
         self.not_supplied: List[str] = []    # on a rail by no supply pin: not a load
         self.rails: Dict[str, dict] = {r["name"]: r for r in pdn.get("rails", [])}
         self.regulators: Dict[str, dict] = {g["refdes"]: g for g in pdn.get("regulators", [])}
         self.skipped_rails: Set[str] = set()
         self.linked: Set[str] = set()
+        self.accuracies: List[str] = []          # VRM output bands taken from the file
+        self.out_before_copper: List[Tuple[str, str]] = []   # (load, by how much)
 
     # ------------------------------------------------------------ helpers
     def _unique(self, name: str) -> str:
@@ -276,10 +287,34 @@ class TomachiePdnImporter:
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max")),
-                                       ground=ground, output_ground=out_ground))
+                                       ground=ground, output_ground=out_ground,
+                                       **self._accuracy(r, reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
+
+    def _accuracy(self, rail: dict, ref: str) -> dict:
+        """The VRM's DC accuracy in volts from the rail's ``regulator_band``: the band at
+        the board's temperature grade, else at 25 C. Nothing when the file gives none."""
+        band = rail.get("regulator_band")
+        if not isinstance(band, dict):
+            return {}
+        for key in ("at_grade", "at_25c"):
+            b = band.get(key)
+            if not isinstance(b, dict):
+                continue
+            lo, hi = number(b.get("min_v")), number(b.get("max_v"))
+            if lo is None and hi is None:
+                continue
+            grade = number(band.get("grade_c"))
+            where = f"at {grade:g} C" if key == "at_grade" and grade is not None else "at 25 C"
+            self.accuracies.append(f"{ref} {rail['name']} {_volts_range(lo, hi)} {where}")
+            return {"acc_min": lo, "acc_max": hi, "acc_pct": False, "acc_dv": False}
+        why = band.get("not_known_because")
+        if why:
+            self.notes.append(f"{ref} ({rail['name']}): output accuracy not known: "
+                              + "; ".join(map(str, why)))
+        return {}
 
     def _regulator_grounds(self, reg: dict, rail: dict, kind: str):
         """(ground, output ground) pins of a regulator. A source VRM's ground pins are a 0 V
@@ -376,6 +411,7 @@ class TomachiePdnImporter:
                               f"{e.get('net_out')} not found on the board")
             return
         typ, mx, fig_notes = dc_resistance(e)
+        esl = _henries(e.get("esl"))
         if e.get("class") == "diode":
             vf, vf_max, slope, vf_notes = forward_drop(e)
             if vf is None:
@@ -385,18 +421,20 @@ class TomachiePdnImporter:
             else:
                 # Anode on the side the power comes from (net_in).
                 self.notes.extend(f"{ref}: diode, {n}" for n in vf_notes)
-                self._add_link(ref, a, b, slope, None, [], forward_v=vf, forward_v_max=vf_max)
+                self._add_link(ref, a, b, slope, None, [], forward_v=vf, forward_v_max=vf_max,
+                               esl_h=esl)
                 return
         if loop_of:
             self.notes.append(f"{ref}: inside {loop_of}'s regulation loop, so its DC "
                               "resistance lowers nothing (its loss is in the efficiency); "
                               "modeled as a short")
             typ, mx, fig_notes = 0.0, None, []
-        self._add_link(ref, a, b, typ, mx, fig_notes)
+        self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl)
 
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],
                   fig_notes: List[str], what: str = "DC resistance",
-                  forward_v: Optional[float] = None, forward_v_max: Optional[float] = None):
+                  forward_v: Optional[float] = None, forward_v_max: Optional[float] = None,
+                  esl_h: Optional[float] = None):
         self.notes.extend(f"{ref}: {n}" for n in fig_notes)
         if typ is None and mx is None:
             self.notes.append(f"{ref}: {what} not known; modeled as a short")
@@ -409,7 +447,8 @@ class TomachiePdnImporter:
         self.setup.links.append(DcLink(self._unique(ref), a, b, typ,
                                        resistance_max=mx if mx is not None and mx != typ
                                        else None,
-                                       forward_v=forward_v, forward_v_max=forward_v_max))
+                                       forward_v=forward_v, forward_v_max=forward_v_max,
+                                       esl_h=esl_h))
 
     def _ground_links(self):
         """The parts joining one ground net to another (a common-mode choke's return
@@ -442,17 +481,19 @@ class TomachiePdnImporter:
         is higher than the rail's minimum and takes its place."""
         v = rail.get("voltage", {})
         nom, lo, hi = number(v.get("nominal")), number(v.get("min")), number(v.get("max"))
-        sm = l.get("supply_min")
-        smin = number(sm.get("volts")) if isinstance(sm, dict) else None
+        smin, smax = (number(x.get("volts")) if isinstance(x, dict) else None
+                      for x in (l.get("supply_min"), l.get("supply_max")))
         if not nom:
             return {}
-        if smin is not None:
-            if nom < 0 or smin < 0:
-                self.notes.append(f"{l['refdes']} on {rail['name']}: minimum supply "
-                                  f"{smin:g} V not applied on a negative rail; set its "
-                                  "tolerance by hand")
-            elif lo is None or smin > lo:
-                return {"tol_min": smin, "tol_max": hi, "tol_pct": False}
+        if smin is not None or smax is not None:
+            low = smin if smin is not None and (lo is None or smin > lo) else lo
+            high = smax if smax is not None and (hi is None or smax < hi) else hi
+            if nom < 0 or (smin or 0) < 0 or (smax or 0) < 0:
+                self.notes.append(f"{l['refdes']} on {rail['name']}: supply range "
+                                  f"{_volts_range(smin, smax)} not applied on a negative "
+                                  "rail; set its tolerance by hand")
+            elif (low, high) != (lo, hi):
+                return {"tol_min": low, "tol_max": high, "tol_pct": False}
         if lo is None and hi is None:
             return {}
         tmin, tmax = volts_to_pct(nom, lo, hi)
@@ -470,9 +511,16 @@ class TomachiePdnImporter:
             mx = None if mx is None or rin_max is None else mx + rin_max
             mn = None if mn is None or rin_min is None else mn + rin_min
         if l.get("load_dependent"):
+            # What the datasheet gives is the part's own (static) current: the least it
+            # draws, with what it drives on top. That is solved, never 0 A.
             self.notes.append(f"{l['refdes']} on {rail}: draws what it drives "
                               f"({l.get('load_dependent_reason', 'no reason given')})")
-            typ = mx = mn = None
+            static = typ if typ is not None else mx
+            if static is None:
+                self.unknown_current.append(label)
+                return 0.0
+            self.static_current[label] = static
+            return static
         if typ is None and mx is not None:
             self.notes.append(f"{label}: only a maximum current is known; {_amps(mx)} is "
                               "used")
@@ -508,7 +556,9 @@ class TomachiePdnImporter:
             self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
                                          ground=self._ground(returns, rail.get("ground")),
                                          current_max=self.max_current.get(label),
-                                         current_known=label not in self.unknown_current))
+                                         current_known=label not in self.unknown_current
+                                         and label not in self.static_current,
+                                         copper_margin_v=self._copper_margin(l, label)))
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
@@ -521,10 +571,71 @@ class TomachiePdnImporter:
                                                                  rail.get("ground")),
                                              current_known=False))
 
+    def _copper_margin(self, l: dict, label: str) -> Optional[float]:
+        """The load's pre-layout copper margin, volts: what its supply copper and ground
+        return may drop together before it is below its minimum supply, from its rail's
+        lowest output less the series parts. Below 0 it is out before any copper; so is
+        a load whose maximum supply its rail's highest output is above."""
+        cm = l.get("copper_margin")
+        if not isinstance(cm, dict):
+            return None
+        v, high = number(cm.get("v")), number(cm.get("high_room_v"))
+        if v is not None and v < 0:
+            self.out_before_copper.append((label, f"{-v * 1e3:.4g} mV below its minimum"))
+        if high is not None and high < 0:
+            self.out_before_copper.append((label, f"{-high * 1e3:.4g} mV above its maximum "
+                                                  "at its rail's highest output"))
+        return v
+
     def _loads(self):
         for name, r in self.rails.items():
             if name not in self.skipped_rails:
                 self._rail_loads(r)
+
+    # ------------------------------------------------------------ capacitors (AC)
+    def _file_caps(self) -> List[dict]:
+        out = []
+        for r in self.rails.values():
+            out += r.get("decoupling") or []
+            for l in r.get("loads", []):
+                out += l.get("local_caps") or []
+        return out
+
+    def _caps(self):
+        """One capacitor model per part number, from the capacitors' values and ESL. A
+        model of that name already in the setup keeps what it holds and only gets what it
+        lacks; a capacitor already in another model stays there."""
+        by_pn: Dict[str, List[dict]] = {}
+        seen = set()
+        for c in self._file_caps():
+            ref = c.get("refdes")
+            if ref and ref not in seen and c.get("part_number") and ref in self.idx.by_part:
+                seen.add(ref)
+                by_pn.setdefault(str(c["part_number"]), []).append(c)
+        if not by_pn:
+            return
+        models = {m.name: m for m in self.setup.caps}
+        assigned = {ref for m in self.setup.caps for ref in m.refs}
+        added = filled = 0
+        for pn, caps in sorted(by_pn.items()):
+            farads = next((f for f in (parse_capacitance(str(c.get("value", "")).split("/")[0])
+                                       for c in caps) if f), 0.0)
+            esl = next((h for h in (_henries(c.get("esl")) for c in caps) if h), 0.0)
+            m = models.get(pn)
+            if m is None:
+                m = models[pn] = CapModel(pn, farads, esl, 0.0)
+                self.setup.caps.append(m)
+                added += 1
+            else:
+                before = (m.capacitance_f, m.esl_h)
+                m.capacitance_f, m.esl_h = m.capacitance_f or farads, m.esl_h or esl
+                filled += before != (m.capacitance_f, m.esl_h)
+            m.refs += [c["refdes"] for c in caps if c["refdes"] not in assigned]
+            assigned.update(m.refs)
+        no_esr = sum(1 for pn in by_pn if not models[pn].esr_ohm)
+        self.notes.append(f"Capacitor models (AC): {added} added and {filled} filled in by "
+                          f"part number, with their ESL; {no_esr} have no ESR in the file, "
+                          "to be entered before an AC sweep")
 
     # ------------------------------------------------------------ what nothing powers
     def _drop_unpowered(self):
@@ -563,6 +674,7 @@ class TomachiePdnImporter:
         self._loads()
         self._drop_unpowered()
         self._unreferenced_grounds()
+        self._caps()
         self._range_notes()
         return self.setup, self.notes
 
@@ -591,6 +703,11 @@ class TomachiePdnImporter:
         if self.not_supplied:
             self.notes.append("On a rail by a detect, enable or reference pin, not a supply "
                               "pin, so not a load: " + ", ".join(self.not_supplied))
+        static = [f"{n} ({_amps(a)})" for n, a in self.static_current.items() if n in kept]
+        if static:
+            self.notes.append("Draw what they drive: their own (static) current from the "
+                              "datasheet is solved, what they drive is on top and not known, "
+                              "so the results they touch are INCOMPLETE: " + ", ".join(static))
         unknown = [n for n in self.unknown_current if n in kept]
         if unknown:
             self.notes.append("Current not known, imported as 0 A and marked not known (the "
@@ -600,6 +717,13 @@ class TomachiePdnImporter:
         if unused:
             self.notes.append("The typical current is solved; these minimum currents are "
                               "not used: " + "; ".join(unused))
+        if self.accuracies:
+            self.notes.append("Output accuracy from the datasheets (a worst-case solve runs "
+                              "each VRM at its low end): " + "; ".join(self.accuracies))
+        out = [f"{n} ({why})" for n, why in self.out_before_copper if n in kept]
+        if out:
+            self.notes.append("Out of their supply range before any copper (the regulator's "
+                              "output band against the part's datasheet): " + "; ".join(out))
         maxed = [f"{n} ({_amps(a)})" for n, a in self.max_current.items() if n in kept]
         if maxed or self.max_resistance:
             self.notes.append("Maximum currents and resistances are kept for a worst-case "
@@ -608,7 +732,18 @@ class TomachiePdnImporter:
 
 
 def _amps(a: float) -> str:
+    if abs(a) < 1e-3:
+        return f"{a * 1e6:.4g} µA"
     return f"{a * 1e3:.4g} mA" if abs(a) < 1 else f"{a:.4g} A"
+
+
+def _volts_range(lo: Optional[float], hi: Optional[float]) -> str:
+    return " to ".join("?" if x is None else f"{x:.4g}" for x in (lo, hi)) + " V"
+
+
+def _henries(esl) -> Optional[float]:
+    """An ``esl`` field's henries; None for "unknown" or none."""
+    return number(esl.get("h")) if isinstance(esl, dict) else None
 
 
 def _ohms(r: float) -> str:

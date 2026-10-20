@@ -54,6 +54,11 @@ def _num(x, fmt=".4g") -> str:
     return format(x, fmt)
 
 
+def _mv(volts: Optional[float]) -> str:
+    """Volts as millivolts for a table cell, empty when not known."""
+    return _num(None if volts is None else volts * 1e3, ".4g")
+
+
 def _table(headers: List[str], rows: List[List[str]], cls: str = "") -> str:
     head = "".join(f"<th title='Click to sort'>{_e(h)}</th>" for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
@@ -529,17 +534,21 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append("<h2 id='loads'>Loads</h2>")
     parts.append(_table(
         ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop / boost (mV)", "%",
-         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance", "Result"],
+         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance", "Margin (mV)",
+         "Pre-layout margin (mV)", "Result"],
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
           _num(l.v_effective, ".6f"), fmt_drop(l.drop, unit=""), _num(abs(l.drop_pct), ".3f"),
           _num(l.v_worst, ".6f"), fmt_drop(l.drop_worst, unit=""),
           _num(abs(l.drop_worst_pct), ".3f"),
-          _e(l.tolerance),
+          _e(l.tolerance), _mv(l.margin_low), _mv(getattr(l, "copper_margin", None)),
           _verdict(l.passed, l.status)]
          for l in tree.loads]))
     parts.append("<p class='note'>Drop: below the VRM set point. Boost: above it, e.g. near a "
                  "remote-sensed VRM's output pins. The worst pin is the one furthest from the "
-                 "set point either way. A load passes when every pin is within its tolerance.</p>")
+                 "set point either way. A load passes when every pin is within its tolerance. "
+                 "Margin: the lowest pin above the tolerance's low end. Pre-layout margin: "
+                 "what the copper could take, worked out from the datasheets before layout "
+                 "(imported).</p>")
     pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f"), _num(vmax, ".6f")]
           for l in tree.loads for n, a, vm, vmin, vmax in l.pin_groups]
     if pg:

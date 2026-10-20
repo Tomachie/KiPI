@@ -68,6 +68,7 @@ class LoadReport:
     limit_low: Optional[float] = None    # the tolerance in volts, either end None if not set
     limit_high: Optional[float] = None
     basis: str = ""                      # the current solved: typ, max, typ (no max)
+    copper_margin: Optional[float] = None  # the load's pre-layout copper margin, volts
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
@@ -78,7 +79,8 @@ class LoadReport:
             state.update(tolerance=f"±{t:g} %", limit_low=nom - abs(nom) * t / 100,
                          limit_high=nom + abs(nom) * t / 100)
         state = {"v_low": state.get("v_worst"), "v_high": None, "status": "",
-                 "tolerance": "", "limit_low": None, "limit_high": None, **state}
+                 "tolerance": "", "limit_low": None, "limit_high": None,
+                 "copper_margin": None, **state}
         state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
                                for g in state.get("pin_groups", [])]
         self.__dict__.update(state)
@@ -95,6 +97,14 @@ class LoadReport:
     @property
     def drop_worst_pct(self) -> float:
         return 100.0 * self.drop_worst / abs(self.nominal) if self.nominal else 0.0
+
+    @property
+    def margin_low(self) -> Optional[float]:
+        """Volts the lowest pin is above the tolerance's low end (negative: below it);
+        None without a low end."""
+        if self.limit_low is None or self.v_low is None or self.v_low != self.v_low:
+            return None
+        return self.v_low - self.limit_low
 
     @property
     def verdict(self) -> str:

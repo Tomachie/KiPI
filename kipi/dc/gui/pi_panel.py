@@ -161,6 +161,11 @@ def _set_optional(s: QDoubleSpinBox, value: Optional[float]):
     s.setValue(s.minimum() if value is None else value)
 
 
+def _mv_cell(volts: Optional[float]):
+    """Volts as a millivolt table cell that sorts by value; empty when not known."""
+    return ("", None) if volts is None else (f"{volts * 1e3:.4g}", volts * 1e3)
+
+
 def tip(form: QFormLayout, field: QWidget, text: str, art: Optional[tuple] = None):
     """Give a form row's field and its label the tooltip ``text``, with the drawing
     ``art`` (a name and the parts to pick out, #116) under it if given."""
@@ -1564,7 +1569,8 @@ class PIPanel(QWidget, PartSelection):
             self.cmb_corner.addItem(LABELS[c], c)
         self.cmb_corner.setToolTip("Typical: each load's current and each DC connection's "
                                    "resistance as entered. Worst case: their maximum where one "
-                                   "is given; the Notes tab names those solved without one.")
+                                   "is given, and each VRM at the low end of its DC accuracy; the "
+                                   "Notes tab names those solved without one.")
         self.cmb_corner.currentIndexChanged.connect(
             lambda *_: setattr(self.setup, "corner", self.cmb_corner.currentData()))
         self.report_option = ReportOption("3D view, per-layer maps and tables",
@@ -1624,7 +1630,8 @@ class PIPanel(QWidget, PartSelection):
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance", "", "Current"], sortable=True)
+                                      "Tolerance", "", "Current", "Margin (mV)",
+                                      "Pre-layout margin (mV)"], sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM set point. Boost: above it, e.g. near "
                                   "a remote-sensed VRM's output pins. The worst pin is the one "
                                   "furthest from the set point either way.")
@@ -2335,7 +2342,8 @@ class PIPanel(QWidget, PartSelection):
                            (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
                            ("" if math.isnan(l.drop_worst_pct)
                             else f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
-                           l.tolerance, status, getattr(l, "basis", "")])
+                           l.tolerance, status, getattr(l, "basis", ""),
+                           _mv_cell(l.margin_low), _mv_cell(getattr(l, "copper_margin", None))])
             color = (("#ffb040" if l.status else None) if l.passed is None
                      else ("#60d060" if l.passed else "#ff6060"))
             if color:
