@@ -49,7 +49,9 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.ac.model import CapModel
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
-from kipi.dc.pi.importers.pdn_figures import amps, dc_resistance, forward_drop, number
+from kipi.dc.pi.importers.pdn_figures import (
+    amps, curve_points, dc_resistance, forward_drop, number,
+)
 from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
 )
@@ -422,7 +424,7 @@ class TomachiePdnImporter:
                 # Anode on the side the power comes from (net_in).
                 self.notes.extend(f"{ref}: diode, {n}" for n in vf_notes)
                 self._add_link(ref, a, b, slope, None, [], forward_v=vf, forward_v_max=vf_max,
-                               esl_h=esl)
+                               esl_h=esl, vf_curve=curve_points(e))
                 return
         if loop_of:
             self.notes.append(f"{ref}: inside {loop_of}'s regulation loop, so its DC "
@@ -434,7 +436,7 @@ class TomachiePdnImporter:
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],
                   fig_notes: List[str], what: str = "DC resistance",
                   forward_v: Optional[float] = None, forward_v_max: Optional[float] = None,
-                  esl_h: Optional[float] = None):
+                  esl_h: Optional[float] = None, vf_curve: Optional[list] = None):
         self.notes.extend(f"{ref}: {n}" for n in fig_notes)
         if typ is None and mx is None:
             self.notes.append(f"{ref}: {what} not known; modeled as a short")
@@ -448,7 +450,7 @@ class TomachiePdnImporter:
                                        resistance_max=mx if mx is not None and mx != typ
                                        else None,
                                        forward_v=forward_v, forward_v_max=forward_v_max,
-                                       esl_h=esl_h))
+                                       esl_h=esl_h, vf_curve=vf_curve))
 
     def _ground_links(self):
         """The parts joining one ground net to another (a common-mode choke's return

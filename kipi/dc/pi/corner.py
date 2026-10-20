@@ -147,9 +147,13 @@ def resolve(setup):
         l.current_max = None
     for k in out.links:
         if k.forward_v is not None:
+            typical = k.forward_v
             k.forward_v, _ = _pick(worst, f"DC connection {k.name} forward voltage",
                                    k.forward_v, k.forward_v_max, info)
             k.forward_v_max = None
+            if k.vf_curve and k.forward_v != typical:
+                # The curve is typical: the worst case lifts it as much as the line.
+                k.vf_curve = [[i, v + k.forward_v - typical] for i, v in k.vf_curve]
         if worst and k.resistance_max is None and k.resistance == 0:
             continue                    # a short stays a short: nothing to warn about
         k.resistance, _ = _pick(worst, f"DC connection {k.name}", k.resistance,

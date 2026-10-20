@@ -54,6 +54,7 @@ import numpy as np
 from kipi.core.mesh.mesher import mesh_nets
 from kipi.core.model.board import BoardSnapshot
 from kipi.dc.pi.corner import corner_errors, resolve
+from kipi.dc.pi.diode_curve import DiodeCurves
 from kipi.dc.pi.model import (
     Load, PISetup, PinRef, Vrm, active_setup, net_groups, validate, vin_range,
 )
@@ -471,6 +472,7 @@ class _TreeSolver:
         v_src = set_point
         vin_est = {c.name: list(self.v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
                    for c in rail.children}
+        diodes = self._diodes(vrm)
         change = 0.0
         for it in range(1, MAX_TREE_ITERATIONS + 1):  # noqa: B007 - reported after
             currents = self._child_currents(rail, vin_est)
@@ -478,8 +480,9 @@ class _TreeSolver:
             currents.update(self.zeroed)       # disconnected loads draw nothing (#88)
             for name in rail.phase_load:
                 currents[name] = -total / rail.n_phases
-            sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
-            change = 0.0
+            sol = system.solve({vrm.name: v_src}, currents, progress=NULL,
+                               forward_v=diodes.forward_v)
+            change = diodes.update(sol.series_current)
             for c in rail.children:
                 for k, pp in enumerate(rail.child_pads[c.name]):
                     new = _mean_v(sol, pp)
@@ -498,9 +501,15 @@ class _TreeSolver:
             warnings.append(f"{label}: power-tree iteration did not converge "
                             f"(last change {change:.2e} V)")
             self.not_converged.add(self.groups[vrm.output.net])
-        if step:
-            sol = system.solve({vrm.name: v_src}, currents, progress=NULL)
+        if step or diodes:
+            sol = system.solve({vrm.name: v_src}, currents, progress=NULL,
+                               forward_v=diodes.forward_v)
         return sol, v_src, vin_est, currents, it
+
+    def _diodes(self, vrm: Vrm) -> DiodeCurves:
+        """The diodes with a forward-voltage curve on the rail ``vrm`` drives."""
+        g = self.groups[vrm.output.net]
+        return DiodeCurves([k for k in self.setup.links if k.side_a.net in g])
 
     def _iterate_mesh(self, rail: _Rail, system, demand: float, label: str,
                       warnings: List[str]):
@@ -511,6 +520,7 @@ class _TreeSolver:
         r_ll = vrm.load_line_mohm * 1e-3
         vin_est = {c.name: list(self.v_in.get(c.name, [vrm.voltage] * (len(c.phases) + 1)))
                    for c in rail.children}
+        diodes = self._diodes(vrm)
         droop, change = 0.0, 0.0
         for it in range(1, MAX_TREE_ITERATIONS + 1):  # noqa: B007 - reported after
             currents = self._child_currents(rail, vin_est)
@@ -518,8 +528,8 @@ class _TreeSolver:
             currents.update({name: 0.0 for name in rail.phase_load})
             volts = {name: vrm.voltage + vg - droop
                      for (name, _, _), vg in zip(rail.points, self.v_gpoints[vrm.name])}
-            sol = system.solve(volts, currents, progress=NULL)
-            change = 0.0
+            sol = system.solve(volts, currents, progress=NULL, forward_v=diodes.forward_v)
+            change = diodes.update(sol.series_current)
             for c in rail.children:
                 for k, pp in enumerate(rail.child_pads[c.name]):
                     new = _mean_v(sol, pp)

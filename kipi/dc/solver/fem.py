@@ -331,8 +331,13 @@ class LinearSystem:
 
     def solve(self, voltages: Optional[Dict[str, float]] = None,
               currents: Optional[Dict[str, float]] = None,
-              progress: ProgressReporter = NULL) -> Solution:
-        """Solve with per-source voltages and per-load currents (defaults: the problem's)."""
+              progress: ProgressReporter = NULL,
+              forward_v: Optional[Dict[str, float]] = None) -> Solution:
+        """Solve with per-source voltages, per-load currents and per-diode forward
+        voltages (defaults: the problem's). A forward voltage is on the right-hand side
+        only, so changing it needs no new factorization."""
+        fwd = {e.name: e.forward_v for e in self.series}
+        fwd.update(forward_v or {})
         t0 = time.perf_counter()
         prob = self.problem
         volts = {s.name: s.voltage for s in prob.sources}
@@ -354,9 +359,9 @@ class LinearSystem:
         # A conducting diode: I = g (V_A - V_B - forward_v), so g x forward_v enters at A
         # and leaves at B on the right-hand side.
         for e in self.series:
-            if e.g is not None and e.forward_v:
-                f[e.node_a] += e.g * e.forward_v
-                f[e.node_b] -= e.g * e.forward_v
+            if e.g is not None and fwd[e.name]:
+                f[e.node_a] += e.g * fwd[e.name]
+                f[e.node_b] -= e.g * fwd[e.name]
 
         # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail
         # voltage, so with absolute volts the source term would dominate the right-hand
@@ -390,7 +395,7 @@ class LinearSystem:
                 series_current[e.name] = float("nan")   # a short: current not resolved
             else:
                 series_current[e.name] = float(e.g * (u_all[e.node_a] - u_all[e.node_b]
-                                                      - e.forward_v))
+                                                      - fwd[e.name]))
         stats = dict(self.stats)
         stats["solve_s"] = self.setup_s + time.perf_counter() - t0
         return Solution(problem=prob, mesh=self.mesh, node_v=v[self.merged_of],

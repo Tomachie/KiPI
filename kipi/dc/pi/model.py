@@ -288,6 +288,10 @@ class DcLink:
     # None = not a diode. Solved as forward_v + I x resistance (resistance: the slope).
     forward_v: Optional[float] = None
     forward_v_max: Optional[float] = None   # worst-case solve; None = the typical
+    # The diode's datasheet forward-voltage curve, [[amps, volts], ...] (typical, 25 C):
+    # the solve moves forward_v so the line meets it at the current the diode carries
+    # (kipi.dc.pi.diode_curve). None = solved on the line as entered.
+    vf_curve: Optional[List[List[float]]] = None
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -401,7 +405,8 @@ class PISetup:
             links=[DcLink(name=k["name"], side_a=pin(k["side_a"]), side_b=pin(k["side_b"]),
                           resistance=k["resistance"], esl_h=k.get("esl_h"),
                           resistance_max=k.get("resistance_max"),
-                          forward_v=k.get("forward_v"), forward_v_max=k.get("forward_v_max"))
+                          forward_v=k.get("forward_v"), forward_v_max=k.get("forward_v_max"),
+                          vf_curve=k.get("vf_curve"))
                    for k in d.get("links", [])],
             corner=d.get("corner", "typ"),
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),
