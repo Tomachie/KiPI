@@ -1105,9 +1105,9 @@ class LinkEditor(_Editor):
         self.b = self._picker()
         self.r = _spin(0, 1e9, 0, 3, " mΩ", 1)
         self.r.setSpecialValueText("0 (short)")
+        self.diode_vf = _spin(0, 10, 0, 3, " V", 0.01)
         self.esl = _spin(0, 1e6, 0, 3, " nH", 0.1)
         self.r_max = _optional_spin(0, 1e9, 3, " mΩ", 1)
-        self.vf = _optional_spin(0, 10, 3, " V", 0.01)
         self.vf_max = _optional_spin(0, 10, 3, " V", 0.01)
         self.esl.setSpecialValueText("none")
         f.addRow("Name", self.name)
@@ -1117,13 +1117,10 @@ class LinkEditor(_Editor):
         f.addRow("Max resistance", self.r_max)
         tip(f, self.r_max, "The part's maximum DC resistance, solved instead of Resistance "
                            "when the solve is set to Worst case (max) beside Solve all")
-        f.addRow("Forward voltage", self.vf)
-        tip(f, self.vf, "A diode: its forward drop from side A (anode) to side B when it "
-                        "conducts. It is solved as this drop plus the current times "
-                        "Resistance (the diode's slope). Empty: not a diode.")
+        f.addRow("Diode forward drop (A → B)", self.diode_vf)
         f.addRow("Max forward voltage", self.vf_max)
-        tip(f, self.vf_max, "The diode's maximum forward drop, solved instead of Forward "
-                            "voltage when the solve is set to Worst case (max)")
+        tip(f, self.vf_max, "The diode's maximum forward drop, solved instead of Diode "
+                            "forward drop when the solve is set to Worst case (max)")
         f.addRow("ESL", self.esl)
         # Estimates of the ESL (#159): from the part's package, or a ferrite bead's
         # impedance.
@@ -1153,6 +1150,11 @@ class LinkEditor(_Editor):
                          "part with pins on just two nets (a resistor, ferrite, fuse...)."),
                 (self.r, "DC resistance (DCR), used by both analyses. For a resistor, it is "
                          "read from the part's value when both sides are on it."),
+                (self.diode_vf, "Constant forward voltage drop used by the DC model. Side A "
+                                "is the anode and side B the cathode. This is a linear "
+                                "forward model; reverse blocking is not modeled. Enter a "
+                                "nonzero DCR; "
+                                "the AC analysis uses DCR and ESL as its small-signal model."),
                 (self.esl, "Series inductance (ESL) of the part"),
                 (self.btn_esl_package,
                  "Estimate the ESL from the size of the part on side A: its footprint's "
@@ -1168,18 +1170,22 @@ class LinkEditor(_Editor):
                  "point well below the peak gives the inductance best.")):
             tip(f, w, text, art.get(w))
         hint = QLabel("A part in series between two nets (sense resistor, ferrite, fuse, "
-                      "load switch…). The nets it joins are simulated together.")
+                      "load switch or diode). For a diode, side A is the anode; enter its "
+                      "forward drop and nonzero series resistance.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
         f.addRow(hint)
-        self._watch(self.name, self.r, self.r_max, self.vf, self.vf_max, self.esl)
+        self._watch(self.name, self.r, self.r_max, self.diode_vf, self.vf_max, self.esl)
+        self.diode_vf.valueChanged.connect(lambda value: self.diode_vf.setEnabled(value > 0))
+        self.diode_vf.setEnabled(False)
         _gray((self.esl, self.btn_esl_package, self.btn_esl_bead), mode == "ac",
               "Used by the AC analysis only")
         self._legend(unused=mode == "dc")
         self._mark({self.name: REQUIRED, self.a: REQUIRED, self.b: REQUIRED, self.r: REQUIRED,
                     self.esl: OPTIONAL if mode == "ac" else UNUSED,
-                    **dict.fromkeys((self.r_max, self.vf, self.vf_max),
-                                    UNUSED if mode == "ac" else OPTIONAL)})
+                    **dict.fromkeys((self.r_max, self.vf_max),
+                                    UNUSED if mode == "ac" else OPTIONAL),
+                    self.diode_vf: OPTIONAL})
 
     def _esl_from_package(self):
         k = self.obj
@@ -1218,7 +1224,8 @@ class LinkEditor(_Editor):
         self.b.set_value(k.side_b)
         self.r.setValue(k.resistance * 1e3)
         _set_optional(self.r_max, None if k.resistance_max is None else k.resistance_max * 1e3)
-        _set_optional(self.vf, k.diode_vf or None)
+        self.diode_vf.setValue(k.diode_vf)
+        self.diode_vf.setEnabled(k.diode_vf > 0)
         _set_optional(self.vf_max, k.diode_vf_max)
         self.esl.setValue((k.esl_h or 0.0) * 1e9)
 
@@ -1243,7 +1250,7 @@ class LinkEditor(_Editor):
         k.resistance = self.r.value() / 1e3
         r_max = _get_optional(self.r_max)
         k.resistance_max = None if r_max is None else r_max / 1e3
-        k.diode_vf = _get_optional(self.vf) or 0.0
+        k.diode_vf = self.diode_vf.value()
         k.diode_vf_max = _get_optional(self.vf_max)
         k.esl_h = self.esl.value() * 1e-9 or None
         # Both sides just became the same resistor: take its resistance from its value.

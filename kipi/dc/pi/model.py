@@ -706,6 +706,10 @@ def validate(setup: PISetup) -> List[str]:
     for k in setup.links:
         if k.resistance < 0:
             errors.append(f"DC connection {k.name}: resistance cannot be negative")
+        if k.diode_vf < 0:
+            errors.append(f"Diode {k.name}: forward voltage cannot be negative")
+        if k.diode_vf and k.resistance == 0:
+            errors.append(f"Diode {k.name}: enter a nonzero series resistance")
     for g in ground_groups:
         if g in rail_groups:
             errors.append(f"{group_name(g)} is used both as a supply and as ground")

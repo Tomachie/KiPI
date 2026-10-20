@@ -49,6 +49,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.ac.model import CapModel
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
+from kipi.dc.solver.setup import DIODE_MIN_OHMS
 from kipi.dc.pi.importers.pdn_figures import (
     amps, curve_points, dc_resistance, forward_drop, number,
 )
@@ -423,7 +424,10 @@ class TomachiePdnImporter:
             else:
                 # Anode on the side the power comes from (net_in).
                 self.notes.extend(f"{ref}: diode, {n}" for n in vf_notes)
-                self._add_link(ref, a, b, slope, None, [], forward_v=vf, forward_v_max=vf_max,
+                # A diode needs a series resistance; the solver's floor when the file
+                # gives one figure (no slope).
+                self._add_link(ref, a, b, max(slope, DIODE_MIN_OHMS), None, [],
+                               forward_v=vf, forward_v_max=vf_max,
                                esl_h=esl, vf_curve=curve_points(e))
                 return
         if loop_of:
