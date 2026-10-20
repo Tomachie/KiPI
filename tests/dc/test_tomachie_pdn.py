@@ -484,3 +484,39 @@ def test_an_isolated_converter_holds_its_output_ground_at_its_own_pins():
     assert not any("ideal ground" in n for n in notes)
     u2 = by_name(solve_tree(snap, setup).loads, "U2")
     assert u2.v_ground > 0                        # the return drop in GND_ISO's copper
+
+
+def _behind_ferrite_pdn(load):
+    return {"schema": "tomachie-pdn", "schema_version": 1, "spec_revision": 7,
+            "ground_nets": ["GND"],
+            "rails": [{"name": "VIN", "voltage": {"nominal": 12.0, "min": 11.0, "max": 13.0,
+                                                  "basis": "user"},
+                       "source": {"role": "board_input", "refdes": "J1", "pins": ["J1_1"],
+                                  "output_net": "VIN", "output_path": []},
+                       "loads": [load], "offboard_pins": []}],
+            "regulators": []}
+
+
+def test_a_load_behind_a_ferrite_is_reached_through_it():
+    """U1's supply pin sits behind FB1 (input_net / input_filter): FB1 is a DC connection,
+    so U1 is powered from VIN through it rather than disconnected."""
+    fb1 = {"refdes": "FB1", "class": "ferrite", "net_in": "VIN", "net_out": "VIN_F",
+           "resistance_ohm": "unknown",
+           "datasheet_figures": [{"spec": "dcr", "max": "0.080", "unit": "ohm"}]}
+    pdn = _behind_ferrite_pdn({"role": "ic", "refdes": "U1", "pins": ["U1_1"],
+                               "current": {"amps": 0.2, "basis": "typ"},
+                               "input_net": "VIN_F", "input_filter": [fb1]})
+    setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert {k.name: (k.side_a.net, k.side_b.net) for k in setup.links} == \
+        {"FB1": ("VIN", "VIN_F")}
+    assert by_name(solve_tree(filtered_board(), setup).loads, "U1").passed is True
+
+
+def test_a_pull_resistor_returns_through_the_part_it_pulls():
+    """FB1 standing in for a pull resistor from VIN to U1_1: its return is U1's ground
+    pins, not the resistor's (it has none)."""
+    pdn = _behind_ferrite_pdn({"role": "pull_resistor", "refdes": "FB1", "pins": ["FB1_1"],
+                               "pull_to": "U1_1", "current": {"amps": 0.001, "basis": "v_over_r"}})
+    setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
+    load = by_name(setup.loads, "FB1")
+    assert load.ground is not None and (load.ground.ref, load.ground.net) == ("U1", "GND")

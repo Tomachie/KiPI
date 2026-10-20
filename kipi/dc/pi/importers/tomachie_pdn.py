@@ -69,6 +69,14 @@ GROUND_LINK_MAX_OHMS = 1e3
 VRM_KIND = {"linear": "ldo", "switching": "smps", "isolated": "smps"}
 
 
+
+def _return_part(load: dict) -> str:
+    """The part a load's current returns to ground through: a resistor / LED chain's
+    last part, the part a pull resistor pulls (pull_to, <refdes>_<pin>), else the load."""
+    if load.get("role") == "pull_resistor" and "_" in (load.get("pull_to") or ""):
+        return load["pull_to"].rsplit("_", 1)[0]
+    return (load.get("path_parts") or [load["refdes"]])[-1]
+
 class PdnImportError(ValueError):
     pass
 
@@ -557,8 +565,11 @@ class TomachiePdnImporter:
             label = self._unique(l["refdes"] if l["refdes"] not in taken
                                  else f"{l['refdes']} ({name})")
             current = self._current(l, name, label)
-            # A resistor / LED chain returns through the LAST part of its path.
-            returns = (l.get("path_parts") or [l["refdes"]])[-1]
+            # The parts between the rail and pins behind a ferrite (input_net): DC
+            # connections, so the load is reached through them.
+            for e in l.get("input_filter") or []:
+                self._link(e)
+            returns = _return_part(l)
             self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
                                          ground=self._ground(returns, rail.get("ground")),
                                          current_max=self.max_current.get(label),
