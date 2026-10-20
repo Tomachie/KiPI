@@ -15,7 +15,7 @@ import re
 from typing import List, Optional, Tuple
 
 DC_RESISTANCE_SPECS = ("dcr", "dc_resistance", "resistance", "rds_on", "jumper_resistance",
-                       "cold_resistance", "r_dc", "rdc", "on_resistance")
+                       "cold_resistance", "r_dc", "rdc", "on_resistance", "contact_resistance")
 # A 0 ohm jumper's own figure: the most it may measure.
 JUMPER_SPECS = ("jumper_resistance",)
 OHMS_PER_UNIT = {"ohm": 1.0, "ohms": 1.0, "Ω": 1.0, "mohm": 1e-3, "mΩ": 1e-3,
@@ -64,10 +64,14 @@ def _is_dc_resistance(spec, names=DC_RESISTANCE_SPECS) -> bool:
 
 
 def _own_figures(element: dict) -> List[dict]:
-    """The DC-resistance figures for this part: a series datasheet's figures named after
-    another part of the series are left out when one is named after this part."""
+    """The DC-resistance figures for this part: a figure named after something else (a
+    load switch's flg_on_resistance, its FLAG pin's FET) is left out when one is named
+    for the part itself (rds_on), and a series datasheet's figures named after another
+    part of the series are left out when one is named after this part."""
     figs = [(f, _prefix(f.get("spec"))) for f in element.get("datasheet_figures", [])]
     figs = [(f, p) for f, p in figs if p is not None]
+    if any(not p for _, p in figs):
+        return [f for f, p in figs if not p]
     pn = str(element.get("part_number") or "").lower()
     if len({p for _, p in figs if p}) > 1 and pn:
         own = [(f, p) for f, p in figs if not p or p in pn or pn in p]

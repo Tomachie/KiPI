@@ -689,11 +689,57 @@ class TomachiePdnImporter:
         self._series_parts()
         self._ground_links()
         self._loads()
+        self._switched_paths()
         self._drop_unpowered()
         self._unreferenced_grounds()
         self._caps()
         self._range_notes()
         return self.setup, self.notes
+
+    def _switched_paths(self):
+        """Power the board carries between its terminals and runs nothing from (a relay
+        switching a bench supply through a shunt; spec revision 7): an ideal source at its
+        IN terminals at the designer's voltage, its series parts as DC connections, and a
+        load at its OUT terminals drawing the designer's load current."""
+        for sp in self.pdn.get("switched_paths") or []:
+            label = sp.get("net") or "?"
+            what = f"Switched path {label}" + (f" ({sp['switched_by']})"
+                                               if sp.get("switched_by") else "")
+            inp, out = sp.get("in"), sp.get("out")
+            if sp.get("contact_only") or not isinstance(inp, dict) or not isinstance(out, dict):
+                self.notes.append(f"{what}: contacts only, no source or load side on the "
+                                  "board; not imported")
+                continue
+            volts = sp.get("voltage") if isinstance(sp.get("voltage"), dict) else {}
+            v = number(volts.get("nominal"))
+            amps_max = amps(sp.get("load_current_max"))
+            if v is None or amps_max is None:
+                self.notes.append(f"{what}: its {'voltage' if v is None else 'load current'} "
+                                  "is not stated; not imported")
+                continue
+            src = self._terminal_pins(inp, f"{what} input")
+            dst = self._terminal_pins(out, f"{what} output")
+            if src is None or dst is None:
+                continue
+            self.setup.vrms.append(Vrm(self._unique(f"{label} (switched path)"), src, v,
+                                       "source"))
+            for e in sp.get("series") or []:
+                self._link(e)
+            name = self._unique(f"{out.get('net') or label} load (switched path)")
+            self.setup.loads.append(Load(name, dst, amps_max, current_max=amps_max))
+            self.notes.append(f"{what}: {inp.get('net')} -> {out.get('net')} at {v:g} V, "
+                              f"{amps_max:g} A load (the designer's figures)")
+
+    def _terminal_pins(self, end: dict, what: str) -> Optional[PinRef]:
+        """The pins of a switched path's terminals on its net (the first terminal found)."""
+        net = self.idx.board_net(end.get("net", "")) or end.get("net", "")
+        for ref in end.get("terminals") or []:
+            pins = self.idx.part_on_net(ref, net)
+            if pins is not None:
+                return pins
+        self.notes.append(f"{what}: terminals {', '.join(end.get('terminals') or [])} not "
+                          f"found on the board on {end.get('net')}")
+        return None
 
     def _unreferenced_grounds(self):
         """A ground net carries return current only from a reference: a source VRM's ground

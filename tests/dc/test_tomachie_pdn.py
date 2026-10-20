@@ -520,3 +520,46 @@ def test_a_pull_resistor_returns_through_the_part_it_pulls():
     setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
     load = by_name(setup.loads, "FB1")
     assert load.ground is not None and (load.ground.ref, load.ground.net) == ("U1", "GND")
+
+
+def test_a_switched_path_is_a_source_series_parts_and_a_load():
+    """switched_paths (spec revision 7): power carried from J1 through FB1 to U1's pin, at
+    the designer's voltage and load current."""
+    pdn = _behind_ferrite_pdn({"role": "ic", "refdes": "U2", "pins": ["U2_1"],
+                               "current": {"amps": 0.1, "basis": "typ"}})
+    pdn["rails"] = []
+    pdn["switched_paths"] = [{
+        "net": "VIN", "nets": ["VIN", "VIN_F"], "terminals": ["J1", "U1"],
+        "in": {"net": "VIN", "terminals": ["J1"]}, "out": {"net": "VIN_F", "terminals": ["U1"]},
+        "switched_by": "FB1", "element": "relay", "contact_only": False, "parts": ["FB1"],
+        "series": [{"refdes": "FB1", "class": "relay", "net_in": "VIN", "net_out": "VIN_F",
+                    "resistance_ohm": "unknown",
+                    "datasheet_figures": [{"spec": "contact_resistance", "max": "100",
+                                           "unit": "m\u03a9"}]}],
+        "voltage": {"nominal": 10.0, "min": 0.0, "max": 25.0, "basis": "user"},
+        "load_current_max": {"amps": 2.5, "basis": "user"}}]
+    setup, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert [(v.output.net, v.voltage, v.kind) for v in setup.vrms] == [("VIN", 10.0, "source")]
+    assert {k.name: (k.side_a.net, k.side_b.net, k.resistance) for k in setup.links} == \
+        {"FB1": ("VIN", "VIN_F", pytest.approx(0.1))}
+    load = setup.loads[0]
+    assert (load.supply.net, load.current) == ("VIN_F", 2.5)
+    assert any("Switched path VIN (FB1)" in n for n in notes)
+
+
+def test_a_switched_path_with_no_stated_voltage_is_left_out():
+    pdn = _behind_ferrite_pdn({"role": "ic", "refdes": "U2", "pins": ["U2_1"],
+                               "current": {"amps": 0.1, "basis": "typ"}})
+    pdn["switched_paths"] = [{"net": "VIN", "contact_only": True}]
+    _, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert any("contacts only" in n for n in notes)
+
+
+def test_a_figure_named_for_another_pin_is_not_the_parts_resistance():
+    """A load switch's FLAG FET (flg_on_resistance, 30 ohm) is not its switch (rds_on)."""
+    from kipi.dc.pi.importers.pdn_figures import dc_resistance
+    e = {"resistance_ohm": "unknown", "datasheet_figures": [
+        {"spec": "flg_on_resistance", "typ": "30", "max": "60", "unit": "\u03a9"},
+        {"spec": "rds_on", "typ": "75", "max": "95", "unit": "m\u03a9"}]}
+    typ, mx, _ = dc_resistance(e)
+    assert (typ, mx) == (pytest.approx(0.075), pytest.approx(0.095))
