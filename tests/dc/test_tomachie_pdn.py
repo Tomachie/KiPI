@@ -295,7 +295,7 @@ def test_import_keeps_the_rest_of_the_setup(tmp_path):
 
 
 def test_isolated_converter_is_a_switcher():
-    """An isolated DC/DC converter (RFM-0505S) draws its output power over its
+    """An isolated DC/DC converter (an RFM-0505S on a supply board) draws its output power over its
     efficiency from its input rail, like a switcher."""
     pdn = copy.deepcopy(PDN)
     pdn["regulators"][0].update(type="isolated", efficiency=0.8)
