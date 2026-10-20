@@ -927,6 +927,11 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
   <tr><td>Sense pins</td><td class="wrap">Optional remote sense (positive).</td></tr>
   <tr><td>Ground sense pins</td><td class="wrap">Optional negative remote sense on the ground net
     (needs ground pins).</td></tr>
+  <tr><td>Mesh sense</td><td class="wrap">Off by default. Any number of sense points (<b>Sense
+    points</b>, edited one at a time with <b>Edit sense point</b>), each with its own sense
+    and optional ground sense pins. Every point's sense pins are held at the set voltage
+    (less the load line), above its own ground sense pins; the VRM's current enters there
+    and its output pins only measure.</td></tr>
 </table>
 </div>
 </details>
@@ -1000,6 +1005,21 @@ on its other net, and when both sides are on the same resistor, the resistance i
 value field (<code>10m</code>, <code>4k7</code>, <code>0R1</code>, <code>5 mΩ</code>…).
 <b>ESL</b> is used by AC only. A new link starts on a part that bridges the first two ticked
 nets that are not grounds, if there is one.</p>
+<p><b>Estimate ESL</b> fills in the ESL for you:</p>
+<ul>
+  <li><b>From package</b> uses the size of the part on side A. It reads the size from the
+    footprint's name (<code>R_0603_1608Metric</code>, <code>RESC2012X65N</code>,
+    <code>0805</code>), or else from how far apart the part's two pads are. The estimate is
+    0.1 nH + 0.3 nH for each mm between the terminals. That line runs through Vishay's
+    measured 0402 and 0603 chip resistors (0.4 and 0.6 nH), and gives 0.7 nH for an 0805,
+    1.1 nH for a 1206 and 2 nH for a 2512. It suits a chip resistor, fuse or jumper. A
+    ferrite bead's ferrite makes its inductance far larger, so use its impedance instead.</li>
+  <li><b>Ferrite bead…</b> asks for the bead's impedance |Z| at one frequency, read off its
+    datasheet's curve, and works out L = √(|Z|² − DCR²) / 2πf. Choose a point well below
+    the curve's peak, where |Z| still climbs in a straight line. At and above the peak the
+    bead acts as a resistor, so a point there (such as the 100 MHz headline figure of many
+    beads) overstates the inductance.</li>
+</ul>
 <p>The nets a link joins are solved together as one group, so a group can only hold one
 VRM. A load pin with no copper path to its VRM is reported, not guessed at (see
 <a href="#ts-no-path">Loads not connected by copper</a>).</p>
@@ -1714,7 +1734,19 @@ between the pads you name, as wide as the copper along it, and computes its indu
 partial inductances, with the plane under it taking image currents. With the switch node's
 capacitance to ground (the switch's Coss plus the switch-node copper's capacitance to the
 neighbouring planes) it sets the <b>ringing</b> on every edge, at
-f = 1 / (2π√(L·C)).</p>
+f = 1 / (2π√(L·C)). The ringing's current flows round the hot loop too, so the input
+capacitors of a buck (the output capacitors of a boost) carry it, and it couples onto
+victims through their loops.</p>
+<p>The two edges do not ring alike. When the control switch turns on (a buck's high side,
+a boost's low side) it takes the inductor current from the other switch's conducting body
+diode: a <b>hard</b> edge, which must also sweep out the diode's reverse-recovery charge
+(Qrr). The diode snaps off with that current in the loop, and the node rings. When the
+control switch turns off, the inductor current itself carries the node across into the
+other switch's body diode, whose clamp takes the ringing's energy: a <b>soft</b> edge,
+which overshoots once and settles. So a buck rings on its rising edge and a boost on its
+falling one. At light load the current may be too small to carry the node across within
+the controller's dead time; the next switch then turns on part way and finishes the edge
+hard. The results notes say which edge is which.</p>
 <p>The waveforms are exact Fourier series of piecewise-linear shapes (trapezoids and
 triangles) up to a highest frequency set by the edges and the ringing, so nothing is
 time-stepped and a solve takes well under a second.</p>
@@ -1735,6 +1767,18 @@ top of the form holds what all phases share:</p>
   <li><b>Switching frequency</b>, <b>Rise time</b> and <b>Fall time</b> of the switch node.
     Phases are interleaved evenly, 360°/N apart.</li>
   <li><b>Duty cycle</b>: blank computes it from the voltages, raised by the losses you enter.</li>
+  <li><b>Least ringing damping</b>: the hot loop's resistance alone barely damps a real
+    switch node; its switches' output capacitance, reverse recovery and radiation take
+    energy too, and measured ringing usually dies within five to ten cycles. The ringing is
+    damped at least this much (ζ, default 0.05); 0 uses the loop's resistance alone.</li>
+  <li><b>Soft edge damping</b>: the least damping of the soft edge, the one the inductor
+    current carries into a body diode's clamp (ζ, default 0.5: one overshoot, then
+    settled). Set it to the least ringing damping to ring both edges alike.</li>
+  <li><b>Ripple at AC probes</b>: tick any of the AC setup's probes to see this aggressor's
+    ripple there. The ripple is the voltage between the probe's rail and ground pins, from
+    the board model, so the board model must be on. A probe has to be on the aggressor's
+    input or output rail, or on a net that a series link joins to one; any other probe is
+    noted and left out.</li>
 </ul>
 <p>Below, one phase at a time: pick it in the phase list, or <b>Add phase</b> /
 <b>Remove phase</b>. <b>Fill from VRM</b> replaces the phases with one per VRM phase, read
@@ -1752,6 +1796,10 @@ given to the nearest phase. Each phase has:</p>
     this phase uses. The ripple current is shared among them by their impedances.</li>
   <li><b>Coss</b>, <b>High-side Rds(on)</b> and <b>Low-side Rds(on)</b> from the datasheet,
     all optional: without them typical values are used and the ringing is approximate.</li>
+  <li><b>Qrr</b>: the reverse-recovery charge of the body diode the hard edge switches off
+    (a buck's low-side FET, a boost's rectifier), from its datasheet. Not set: 5 nC, a
+    low-voltage MOSFET's after a short dead time; enter 0 for a Schottky or GaN switch.
+    More charge rings the hard edge higher.</li>
   <li><b>Package inductance</b>: the loop inductance inside the device, added to the board's.</li>
 </ul>
 </div>
@@ -1764,12 +1812,16 @@ receiver guessed as the net's two pads farthest apart. For each victim:</p>
 <ul>
   <li><b>Net</b> and an optional <b>Name</b>.</li>
   <li><b>Type</b>: what drives and loads the net. CMOS push-pull, open drain (held only by its
-    pull-up), series or parallel terminated, a differential (LVDS) leg or a high-impedance
-    analog input. A type fills in the values below; editing them makes it Custom.</li>
+    pull-up), series or parallel terminated, a differential (LVDS) leg, a high-impedance
+    analog input, or <b>High impedance (undriven)</b>: a tri-stated or floating net, held by
+    nothing but its inputs' leakage. A type fills in the values below; editing them makes it
+    Custom.</li>
   <li><b>Driver pins</b> and <b>Receiver pins</b> (<a href="#pin-picker">pin pickers</a>):
     where the trace is driven and where its noise is judged. Blank guesses them.</li>
-  <li><b>Driver resistance</b>, <b>Receiver resistance</b>, <b>Receiver capacitance</b> and
-    <b>Termination</b> (a parallel termination at the receiver).</li>
+  <li><b>Driver resistance</b> (driving high, or an open drain's pull-up), <b>Driving
+    low</b> (where it differs: an open drain's switch, 20 Ω; blank is the same as driving
+    high), <b>Receiver resistance</b>, <b>Receiver capacitance</b> and <b>Termination</b> (a
+    parallel termination at the receiver).</li>
   <li><b>Logic level</b>: the family's supply; its JESD8 levels give the noise margin,
     min(VIL − VOL, VOH − VIH), 400 mV for 3.3 V CMOS. <b>Noise margin</b> overrides it.</li>
 </ul>
@@ -1794,10 +1846,10 @@ and the results say so.</p>
   <li><b>Highest frequency</b>: the highest harmonic kept. Blank: ten times the faster
     edge's corner frequency, 1/(π·rise time), or three times the ringing, at most 3 GHz.</li>
   <li><b>Harmonic limit</b>: the most harmonics of the switching frequency kept.</li>
-  <li><b>Least ringing damping</b>: the hot loop's resistance alone barely damps a real
-    switch node; its switches' output capacitance, reverse recovery and radiation take
-    energy too, and measured ringing usually dies within five to ten cycles. The ringing is
-    damped at least this much (ζ, default 0.05); 0 uses the loop's resistance alone.</li>
+  <li><b>Dead time</b>: how long the inductor current has to carry a soft edge across
+    (default 20 ns). A soft edge that would take longer (C_sw·V/I, at light load) is
+    finished hard by the next switch, at the entered edge time. 0 lets the current take as
+    long as it needs.</li>
   <li><b>Periods shown</b> in the waveform plot.</li>
   <li><b>Victim segment</b>: victim traces are cut into pieces this long, each with its own
     cross-section of the copper around it (default 0.5 mm).</li>
@@ -1809,9 +1861,11 @@ and the results say so.</p>
     response in between is interpolated (default 10).</li>
   <li><b>Scan radius</b>: the scan looks at signal nets with a trace this close to the
     aggressor's parts (default 10 mm). <b>Scan: solve in full</b>: how many of the worst
-    estimates are solved in full (default 10). <b>Scan: driver resistance</b> and
-    <b>logic level</b>: what scanned nets are solved and judged with, as their real
-    drivers are not known.</li>
+    estimates are solved in full (default 10). <b>Scan: victim type</b> and <b>logic
+    level</b>: what scanned nets are solved as and judged with, as their real drivers are
+    not known. The default type, <b>High impedance (undriven)</b>, is the worst case for
+    capacitive coupling. A net that is a victim already keeps its own type. <b>Custom
+    driver</b> uses <b>Scan: driver resistance</b> instead.</li>
 </ul>
 </div>
 </details>
@@ -1827,8 +1881,8 @@ while you work on one route), or none (the aggressor's waveforms only).</p>
 <p>Tick <b>Scan nearby nets</b> to also look for victims you have not named: every signal net
 with a trace within the scan radius of the aggressor's parts gets a quick estimate of its
 noise (capacitive from its distance to the switch-node copper, inductive from the full
-model), and the worst are solved in full with the scan's default driver and logic level
-(Settings). They are marked <b>(scan)</b> in the results table. Scan and a chosen victim
+model), and the worst are solved in full as the scan's victim type, undriven by
+default, and its logic level (Settings). They are marked <b>(scan)</b> in the results table. Scan and a chosen victim
 work together: name the nets you know, scan for the ones you do not.</p>
 <p>Tick <b>Report</b> to write <code>&lt;board&gt;_&lt;aggressor&gt;_noise_report_&lt;date&gt;_&lt;time&gt;.html</code>
 (or <code>.pdf</code>) next to the board after each solve: the victims against their
@@ -1844,19 +1898,41 @@ scan's estimates and the notes. <b>Open report</b> opens it again. <b>Save resul
 <div class="body">
 <p>The <b>Waveforms</b> tab beside the 3D view plots, over a few switching periods: the
 switch node of every phase (with its ringing), the inductor currents, each input and output
-capacitor's ripple current (the largest twelve), and the input and output rails' ripple
-voltage. Tick <b>Spectrum</b> to see each waveform's harmonics instead; hover to read the
-curves.</p>
+capacitor's ripple current (the largest twelve), the input and output rails' ripple
+voltage, and the ripple at each AC probe ticked for the aggressor (<b>Ripple at AC
+probes</b>). Tick <b>Spectrum</b> to see each waveform's harmonics instead; hover to read the
+curves. With several curves in a view, a tickbox for each, in its colour, sits beside the
+plot: untick one to hide it. It stays hidden when you change views or solve again. Tick
+<b>20 MHz limit</b> to see every view as an oscilloscope with its 20 MHz bandwidth limit
+on would: each waveform passes through a single-pole low-pass filter, 3 dB down at
+20 MHz, so the ringing and fast spikes shrink to what such a measurement shows. The plot
+titles, the results table and the notes keep the full bandwidth's figures.</p>
 <p>The results notes give the operating point and, for each phase, the hot loop's
 inductance, the switch node's capacitance to ground (Coss and copper), the loop's
-resistance, and the ringing's frequency and damping.</p>
+resistance, and the ringing's frequency and damping. They also give the peak-to-peak and
+RMS ripple at each AC probe ticked.</p>
 <p>The <b>results table</b> lists each victim: its receiver's peak noise over a switching
 period, its noise margin, the share of the margin used, the coupling mechanism that
 dominates, and <b>PASS</b> or <b>FAIL</b>. The worst victim is selected; select one to plot
-its noise under <b>Victim noise</b> in the Waveforms tab: the receiver's total, each
-mechanism's share of it and the driver's, against its margin (in time, or as a
-spectrum). The log gives each victim's mutual capacitance to the switch node, the length
-of trace beside it, and its mutual inductance to the capacitor loops.</p>
+its noise under <b>Victim noise</b> in the Waveforms tab, against its margin (in time, or as
+a spectrum). By default the plot shows the <b>Superposition</b>, the receiver's noise from
+every mechanism added up, and the <b>Driver end</b>; tick <b>Capacitive</b>,
+<b>Inductive</b> or <b>Common ground</b> to add that mechanism's own curve. The log gives
+each victim's mutual capacitance to the switch node, the length of trace beside it, and
+its mutual inductance to the capacitor loops.</p>
+<p><b>Victim held high and low</b> plots the receiver's line as it sits: at VOH with VIH
+below it, and at VOL with VIL above it, with the noise on each. Each plot's title gives how
+far the noise reaches toward that threshold and the share of that state's margin it uses.
+A victim whose driver holds the line differently each way (an open drain: the pull-up
+high, the switch low) is solved once per state. The verdict takes the larger noise of the
+two against the smaller margin.</p>
+<p><b>Coupling in 3D</b>, under the results table, shows in the 3D view where the selected
+victim's peak noise couples in: <b>Superposition</b>, or one mechanism. Each piece of its
+traces is colored by its share of the receiver's peak, red adding to it and blue taking
+from it; the shares add up exactly to the peak, so the brightest pieces are the ones to
+move. The common-ground share is a dot at the driver, and the capacitor loops that induce
+the inductive noise are drawn in magenta. The line under the menu gives each mechanism's
+share. Choose <b>Off</b> to go back to the board.</p>
 <p>The mechanisms answer different fixes. <b>Capacitive</b> noise comes from the switch
 node's dV/dt: keep victims away from the switch node's copper (or behind a plane), and
 drive them harder. <b>Inductive</b> noise comes from the hot loop's dI/dt: make the loop
@@ -1938,6 +2014,9 @@ imbalance.</p>
     ground pins too).</li>
   <li>Solve. The sense point sits exactly at the set voltage; pins nearer the VRM read
     <em>above</em> it (a boost). The tolerance check catches both directions.</li>
+  <li>To hold several points at the set voltage at once (mesh remote sense), tick <b>Mesh
+    sense</b>, set <b>Sense points</b> and pick each point's pins in turn with <b>Edit sense
+    point</b>. Every point is then a fixed voltage, the VRM's current entering there.</li>
 </ol>
 </div>
 </details>
