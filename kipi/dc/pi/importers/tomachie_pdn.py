@@ -227,7 +227,22 @@ class TomachiePdnImporter:
                 self.setup.vrms.append(Vrm(self._unique(f"{src.get('refdes') or name} {name}"),
                                            out, v, "source",
                                            ground=self._ground(src.get("refdes"),
-                                                               ret.get("net") or r.get("ground"))))
+                                                               ret.get("net") or r.get("ground")),
+                                           **self._input_range(r, src)))
+
+    def _input_range(self, rail: dict, src: dict) -> dict:
+        """A board input's stated range, as the source's accuracy in volts (the worst case
+        solves it at its minimum), and its cable allowance (a USB Type-C receptacle's)."""
+        out: dict = {}
+        volts = rail.get("voltage") or {}
+        lo, hi = number(volts.get("min")), number(volts.get("max"))
+        if lo is not None or hi is not None:
+            out.update(acc_min=lo, acc_max=hi, acc_pct=False, acc_dv=False)
+        cable = src.get("cable") if isinstance(src.get("cable"), dict) else {}
+        ohms = number(cable.get("resistance_ohm"))
+        if ohms:
+            out["cable_mohm"] = ohms * 1e3
+        return out
 
     def _ground(self, ref: Optional[str], net: Optional[str] = None) -> Optional[PinRef]:
         """The part's pads on its ground net - ``net`` when the file names it (the ground

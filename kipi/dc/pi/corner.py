@@ -9,7 +9,9 @@ A setup can hold, besides each value KiPI solves with, a maximum: each load's cu
   without a maximum are listed, so the result says which loads were not at their worst.
   A VRM with a DC accuracy is solved at the end of it nearer 0 V (its lowest output),
   the loads' tolerances and the VRMs' input ranges first fixed in volts at the set
-  voltages, so they do not move with it.
+  voltages, so they do not move with it. A board input is a source whose accuracy is its
+  stated range (USB's 4.75 to 5.5 V): it is solved at its minimum, and through its cable
+  allowance (added to its load line), where it has one.
 
 :func:`resolve` turns a setup into a copy holding only the corner's numbers, before
 anything else in the solve looks at it.
@@ -34,6 +36,7 @@ class CornerInfo:
     basis: Dict[str, str] = field(default_factory=dict)     # load name -> typ / max / ...
     set_points: Dict[str, Tuple[float, float]] = field(default_factory=dict)  # VRM -> (set, solved)
     no_accuracy: List[str] = field(default_factory=list)    # VRMs solved at their set voltage
+    cables: Dict[str, float] = field(default_factory=dict)  # source -> cable allowance, mOhm
 
     def warnings(self) -> List[str]:
         if self.corner != "max":
@@ -43,6 +46,9 @@ class CornerInfo:
             out.append("Worst case: these VRMs are solved at the low end of their DC "
                        "accuracy: " + ", ".join(f"{n} {lo:.4g} V (set {v:.4g} V)"
                                                 for n, (v, lo) in self.set_points.items()))
+        if self.cables:
+            out.append("Worst case: these inputs are solved through their cable allowance: "
+                       + ", ".join(f"{n} {r:g} mΩ" for n, r in self.cables.items()))
         if self.no_accuracy:
             out.append("Worst case: no DC accuracy is given for these VRMs, so they are "
                        "solved at their set voltage: " + ", ".join(self.no_accuracy))
@@ -132,6 +138,10 @@ def resolve(setup):
     worst = info.corner == "max"
     if worst:
         _set_points(out, info)
+        for v in out.vrms:
+            if v.cable_mohm:
+                info.cables[v.name] = v.cable_mohm
+                v.load_line_mohm += v.cable_mohm
     for l in out.loads:
         if l.groups:
             bases = set()

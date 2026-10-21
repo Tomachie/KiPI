@@ -647,3 +647,26 @@ def test_a_load_switch_is_judged_against_its_rated_output_current():
                        max_output_current={"amps": 0.5, "basis": "max"})
     setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
     assert by_name(setup.links, "U1").rated_current_a == pytest.approx(0.5)
+
+
+def test_the_worst_case_runs_a_board_input_at_its_minimum_through_its_cable():
+    """A board input's stated range is its source's accuracy in volts, and its USB Type-C
+    cable allowance a worst-case load line: typical at 12 V, worst case at its minimum less
+    the cable's drop at the current drawn."""
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][0]["voltage"] = {"nominal": 12.0, "min": 11.4, "max": 12.6, "basis": "user"}
+    pdn["rails"][0]["source"]["cable"] = {"resistance_ohm": 0.25,
+                                          "basis": "usb_typec_allowance"}
+    setup, _ = run(pdn)
+    j1 = by_name(setup.vrms, "J1 VIN")
+    assert (j1.acc_min, j1.acc_max, j1.acc_pct, j1.acc_dv) == (11.4, 12.6, False, False)
+    assert j1.cable_mohm == pytest.approx(250.0)
+    typ = solve_tree(board(), setup)
+    setup.corner = "max"
+    worst = solve_tree(board(), setup)
+    v_typ = by_name(typ.vrms, "J1 VIN").v_out
+    v_worst = by_name(worst.vrms, "J1 VIN").v_out
+    i = by_name(worst.vrms, "J1 VIN").i_out
+    assert v_typ == pytest.approx(12.0, abs=1e-6)
+    assert v_worst == pytest.approx(11.4 - 0.25 * i, abs=1e-6)
+    assert any("cable allowance: J1 VIN 250 mΩ" in w for w in worst.warnings)

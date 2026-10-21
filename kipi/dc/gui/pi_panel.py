@@ -497,6 +497,8 @@ class VrmEditor(_Editor):
         self.i_limit.setSpecialValueText("no limit")
         self.load_line = _spin(0, 1e6, 0, 3, " mΩ", 0.1)
         self.load_line.setSpecialValueText("none")
+        self.cable = _spin(0, 1e6, 0, 3, " mΩ", 1)
+        self.cable.setSpecialValueText("none")
         self.dropout = _spin(0, 100, 0, 3, " V", 0.05)
         # Input range, in volts or in % from the input rail's nominal voltage.
         self.vin_row = RangeRow(self._input_nominal)
@@ -532,6 +534,7 @@ class VrmEditor(_Editor):
         f.addRow("Quiescent", self.iq)
         f.addRow("Output current limit", self.i_limit)
         f.addRow("Load line", self.load_line)
+        f.addRow("Cable allowance", self.cable)
         f.addRow("Dropout", self.dropout)
         f.addRow("Input range", self.vin_row)
         f.addRow("DC accuracy", self.acc_row)
@@ -587,6 +590,11 @@ class VrmEditor(_Editor):
                                  "VRMs it feeds actually draw. Drops are still measured "
                                  "from the target voltage, so the droop counts against each "
                                  "load's tolerance. 'none' holds the target voltage."),
+                (self.cable, "A board input's cable, in the worst case only: the input "
+                             "droops by this resistance times the current the board draws "
+                             "(a USB Type-C cable is allowed 250 mΩ). With the input's range "
+                             "as its accuracy, the worst case runs the input at its minimum "
+                             "through this cable."),
                 (self.dropout, "LDO dropout: the least input-to-output difference it "
                                "regulates at. Below it, its loads are marked VRM OUT OF "
                                "REGULATION."),
@@ -658,7 +666,7 @@ class VrmEditor(_Editor):
                                  "are shown below")):
             tip(f, w, text, art.get(w))
         self._watch(self.name, self.kind, self.voltage, self.eff, self.iq, self.i_limit,
-                    self.load_line, self.dropout, self.bandwidth)
+                    self.load_line, self.cable, self.dropout, self.bandwidth)
         self.vin_row.changed.connect(self._store)
         self.acc_row.changed.connect(self._store)
         self.kind.currentIndexChanged.connect(self._kind_rows)
@@ -679,25 +687,31 @@ class VrmEditor(_Editor):
         self.form.setRowVisible(self.input, kind != "source")
         self.form.setRowVisible(self.dropout, kind == "ldo")
         self.form.setRowVisible(self.vin_row, kind != "source")
-        self.form.setRowVisible(self.acc_row, kind != "source")
+        # A source's accuracy is its stated range (a board input's 4.75 to 5.5 V): the
+        # worst case solves it at its minimum.
+        self.form.setRowVisible(self.acc_row, True)
+        self.form.setRowVisible(self.cable, kind == "source")
         self.form.setRowVisible(self.btn_accuracy_calc, kind in ("ldo", "smps"))
         dc = self.mode == "dc"
         dc_only = (self.kind, self.eff, self.iq, self.i_limit, self.load_line, self.n_phases,
                    self.input, self.sense, self.ground_sense, self.dropout, self.mesh,
                    self.n_points)
-        ac_only = (self.bandwidth, self.acc_row)
-        _gray((*dc_only, *self.vin_row.fields()),
+        # The DC accuracy is used by both: the worst-case DC solve runs the VRM at its low
+        # end, and the AC target calculator takes it off the tolerance.
+        ac_only = (self.bandwidth,)
+        _gray((*dc_only, self.cable, *self.vin_row.fields()),
               dc, "Used by the DC analysis only", editable=True)
-        _gray((self.bandwidth, *self.acc_row.fields()), not dc, "Used by the AC analysis only",
-              editable=True)
-        needs = {w: OPTIONAL for w in (self.iq, self.i_limit, self.load_line, self.dropout,
-                                       self.vin_row, self.n_phases, self.ground, self.sense,
+        _gray((self.bandwidth,), not dc, "Used by the AC analysis only", editable=True)
+        needs = {w: OPTIONAL for w in (self.iq, self.i_limit, self.load_line, self.cable,
+                                       self.dropout, self.vin_row, self.acc_row,
+                                       self.n_phases, self.ground, self.sense,
                                        self.ground_sense, self.mesh, self.n_points,
                                        *ac_only)}
         needs.update({w: REQUIRED for w in (self.name, self.kind, self.voltage, self.output)})
         needs[self.eff] = REQUIRED              # a switcher's input current follows from it
         needs[self.input] = REQUIRED if kind != "source" else OPTIONAL   # ties it into the tree
-        needs.update({w: UNUSED for w in (ac_only if dc else (*dc_only, self.vin_row))})
+        needs.update({w: UNUSED for w in (ac_only if dc else (*dc_only, self.cable,
+                                                                 self.vin_row))})
         self._mark(needs)
 
     def _input_nominal(self) -> Optional[float]:
@@ -798,6 +812,7 @@ class VrmEditor(_Editor):
         self.iq.setValue(v.quiescent_a * 1e3)
         self.i_limit.setValue(v.current_limit_a or 0.0)
         self.load_line.setValue(v.load_line_mohm)
+        self.cable.setValue(getattr(v, "cable_mohm", 0.0))
         self.bandwidth.setValue(v.bandwidth_khz or 0.0)
         self.n_phases.setValue(len(v.phases) + 1)
         self._phase = 0
@@ -841,6 +856,7 @@ class VrmEditor(_Editor):
         v.quiescent_a = self.iq.value() / 1e3
         v.current_limit_a = self.i_limit.value() or None
         v.load_line_mohm = self.load_line.value()
+        v.cable_mohm = self.cable.value()
         v.dropout_v = self.dropout.value()
         v.vin_min, v.vin_max = self.vin_row.values()
         v.vin_pct, v.vin_dv = self.vin_row.pct(), self.vin_row.dv()

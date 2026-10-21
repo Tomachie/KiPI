@@ -115,6 +115,10 @@ class Vrm:
     # Load line (#94): the regulated voltage droops by this many milliohms times the
     # output current actually drawn (0 = none).
     load_line_mohm: float = 0.0
+    # A board input's cable allowance in milliohms (a USB Type-C cable's 250 mOhm): in the
+    # worst case it droops the input like a load line, at the current the board draws;
+    # the typical solve leaves it out. 0 = none.
+    cable_mohm: float = 0.0
     # AC only: control loop bandwidth, kHz (None = not given).
     bandwidth_khz: Optional[float] = None
     # Mesh remote sense (#93, DC only, off by default): every sense point's pins are held
@@ -389,6 +393,7 @@ class PISetup:
                       acc_min=v.get("acc_min"), acc_max=v.get("acc_max"),
                       acc_pct=v.get("acc_pct", True), acc_dv=v.get("acc_dv", False),
                       load_line_mohm=v.get("load_line_mohm", 0.0),
+                      cable_mohm=v.get("cable_mohm", 0.0),
                       bandwidth_khz=v.get("bandwidth_khz"),
                       mesh_sense=v.get("mesh_sense", False),
                       sense_points=[SensePoint(pin(sp.get("sense")),
@@ -644,6 +649,8 @@ def validate(setup: PISetup) -> List[str]:
             errors.append(f"VRM {v.name}: quiescent current and dropout cannot be negative")
         if v.load_line_mohm < 0:
             errors.append(f"VRM {v.name}: the load line cannot be negative")
+        if v.cable_mohm < 0:
+            errors.append(f"VRM {v.name}: the cable allowance cannot be negative")
         if v.vin_min is not None and v.vin_max is not None and v.vin_min > v.vin_max:
             errors.append(f"VRM {v.name}: input range minimum is above its maximum")
         if v.acc_min is not None and v.acc_max is not None and v.acc_min > v.acc_max:
