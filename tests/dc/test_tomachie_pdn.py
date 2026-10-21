@@ -351,19 +351,28 @@ def test_worst_case_solves_the_maximum_current():
     assert worst.drop > typ.drop
 
 
-def test_current_not_known_marks_its_rail_incomplete():
-    """A load the file gives no current is solved at 0 A and marked not known; every load
-    on its rail (and upstream) is INCOMPLETE rather than PASS, since the drop it would
-    cause is missing."""
-    from kipi.dc.pi.results import INCOMPLETE
+def test_current_not_known_gives_its_rail_a_headroom():
+    """A load the file gives no current is solved at 0 A and marked not known. Its rail is
+    judged at the known currents, and the headroom says how much such loads may add
+    together before a load leaves its tolerance: margin / (volts lost per amp)."""
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["current"] = "unknown"
     pdn["rails"][1]["loads"][0].pop("current_max", None)
     setup, notes = run(pdn)
     u2 = by_name(setup.loads, "U2")
     assert (u2.current, u2.current_known) == (0.0, False)
-    res = by_name(solve_tree(board(), setup).loads, "U2")
-    assert (res.status, res.passed) == (INCOMPLETE, None)
+    tree = solve_tree(board(), setup)
+    res = by_name(tree.loads, "U2")
+    assert (res.status, res.passed) == ("", True)          # judged at 0 A, not INCOMPLETE
+    [h] = [h for h in tree.headroom if "U2" in h.unknown]
+    assert h.tightest == "U2" and h.room_a > 0 and h.costliest == "U2"
+    assert h.room_a == pytest.approx(h.margin_v / h.per_amp_v)
+    assert res.unknown_room_a == pytest.approx(h.room_a)
+    # Linear copper: drawing the room at U2 brings its lowest pin to its minimum.
+    u2.current, u2.current_known = h.room_a, True
+    at_room = by_name(solve_tree(board(), setup).loads, "U2")
+    assert at_room.margin_low == pytest.approx(0.0, abs=1e-6)
+    assert any("must stay under" in w and "U2" in w for w in tree.warnings)
     assert any("marked not known" in n for n in notes)
 
 

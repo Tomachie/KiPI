@@ -269,13 +269,23 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                        "v_supply_min_V", "v_ground_mean_V", "v_effective_V", "v_lowest_pin_V",
                        "v_highest_pin_V", "mean_mV", "mean_pct", "mean_is", "worst_pin_V",
                        "worst_pin_mV", "worst_pin_pct", "worst_pin_is", "tolerance",
-                       "tolerance_min_V", "tolerance_max_V", "result"],
+                       "tolerance_min_V", "tolerance_max_V", "unknowns_may_add_A", "result"],
                       [[l.name, l.group, l.current, l.nominal, l.v_supply, l.v_supply_min,
                         l.v_ground, l.v_effective, l.v_low, l.v_high,
                         *dev(l.drop, l.drop_pct), l.v_worst,
                         *dev(l.drop_worst, l.drop_worst_pct), l.tolerance, l.limit_low,
-                        l.limit_high, l.verdict]
+                        l.limit_high, getattr(l, "unknown_room_a", None), l.verdict]
                        for l in tree.loads]))
+    headroom = getattr(tree, "headroom", [])
+    if headroom:
+        out.append(_write(folder / f"{stem}_headroom.csv",
+                          ["rail", "vrm", "known_A", "tightest_load", "margin_V",
+                           "not_known", "they_may_add_A", "costliest", "costliest_V_per_A",
+                           "vrm_limit_leaves_A"],
+                          [[h.group, h.vrm, h.known_a, h.tightest, h.margin_v,
+                            "; ".join(h.unknown), h.room_a, h.costliest, h.per_amp_v,
+                            getattr(h, "vrm_room_a", None)]
+                           for h in headroom]))
     out.append(_write(folder / f"{stem}_load_pin_groups.csv",
                       ["load", "pin_group", "current_A", "v_mean_V", "v_min_V", "v_max_V"],
                       [[l.name, n, a, vm, vmin, vmax] for l in tree.loads

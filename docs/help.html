@@ -864,7 +864,8 @@ links from a Tomachie power-tree file (<code>&lt;schematic&gt;.pdn.json</code>, 
 <a href="#files">Files</a>), keeping the settings, thermal and AC setup. The typical
 current and resistance are solved; each maximum the file gives is kept for a
 <b>Worst case (max)</b> solve, chosen beside <b>Solve all</b>. A current the file does not
-give is marked not known, and the results it touches are INCOMPLETE. The log lists what
+give is marked not known and solved as entered; the <b>Headroom</b> results tab says how much
+such loads may add together before a load on their rail leaves its tolerance. The log lists what
 could not be placed on the board. Problems that stop a solve are listed in red under the tabs
 as you edit. The VRMs, Loads and Series links tabs share one layout: a list with <b>Add</b>,
 <b>Duplicate</b> and <b>Remove</b>, and an editor for the selected entry below it.</p>
@@ -1218,6 +1219,15 @@ scale, a minimum of zero or below falls back to four decades below the maximum.<
     the limits, the iteration history and the dielectric conductivities used, in-plane and
     through. Double-click a row to show its group's
     temperature.</td></tr>
+  <tr><td><b>Headroom</b></td><td class="wrap">One row per rail with a load whose current is
+  not known (a header, what a translator's lines drive): what the VRM supplies at the known
+  currents, the load with the least room and its margin, and how much the unknowns may draw
+  together before that load leaves its tolerance. It is a bound however the current is shared
+  (worst case, all of it at the costliest unknown), from one re-solve of the rail's copper with
+  1 A more at each unknown, its ground return counted where it has ground pins. The VRM holds
+  what it held. Where the VRM has an output current limit, the row also says what that limit
+  leaves. The Loads tab's last column gives each load's own room, and the Notes tab says it in
+  a sentence.</td></tr>
   <tr><td><b>Notes</b></td><td class="wrap">Solve time, the nets in each group, pin group
     results, warnings and excluded groups.</td></tr>
 </table>

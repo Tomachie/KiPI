@@ -166,6 +166,18 @@ def _mv_cell(volts: Optional[float]):
     return ("", None) if volts is None else (f"{volts * 1e3:.4g}", volts * 1e3)
 
 
+def _ma_cell(amps: Optional[float]):
+    """Amps as a milliamp table cell that sorts by value; empty when not known."""
+    if amps is None:
+        return ("", None)
+    return (f"{amps * 1e3:.4g}" if abs(amps) < 1 else f"{amps * 1e3:.0f}", amps * 1e3)
+
+
+def _a_cell(amps: Optional[float]):
+    """Amps as a table cell that sorts by value; empty when not known."""
+    return ("", None) if amps is None else (f"{amps:.4g}", amps)
+
+
 def tip(form: QFormLayout, field: QWidget, text: str, art: Optional[tuple] = None):
     """Give a form row's field and its label the tooltip ``text``, with the drawing
     ``art`` (a name and the parts to pick out, #116) under it if given."""
@@ -933,9 +945,9 @@ class LoadEditor(_Editor):
         f.addRow("Current", self.current)
         f.addRow("Max current", self.current_max)
         f.addRow("", self.chk_unknown)
-        tip(f, self.chk_unknown, "The current is not known: it is solved as entered, and every "
-                                 "load on this rail, upstream, on the rails those feed and "
-                                 "sharing its ground return is marked INCOMPLETE, never PASS")
+        tip(f, self.chk_unknown, "The current is not known: it is solved as entered, and the "
+                                 "Headroom results say how much such loads may add together "
+                                 "before a load on the rail leaves its tolerance")
         self.chk_unknown.toggled.connect(self._store)
         tip(f, self.current_max, "The load's maximum current, solved instead of Current when "
                                  "the solve is set to Worst case (max) beside Solve all")
@@ -1657,10 +1669,24 @@ class PIPanel(QWidget, PartSelection):
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
                                       "Tolerance", "", "Current", "Margin (mV)",
-                                      "Pre-layout margin (mV)"], sortable=True)
+                                      "Pre-layout margin (mV)", "Unknowns may add (mA)"],
+                                     sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM target voltage. Boost: above it, e.g. "
                                   "near a remote-sensed VRM's output pins. The worst pin is the "
-                                  "one furthest from the target voltage either way.")
+                                  "one furthest from the target voltage either way. Unknowns "
+                                  "may add: what the rail's loads whose current is not known "
+                                  "may draw together before this load leaves its tolerance.")
+        self.tbl_headroom = self._table(["Rail", "Known (A)", "Tightest load", "Margin (mV)",
+                                         "Not known", "They may add (mA)",
+                                         "Costliest (mV per A)", "VRM limit leaves (A)"],
+                                        sortable=True)
+        self.tbl_headroom.setToolTip(
+            "Rails with a load whose current is not known (a header, what a translator "
+            "drives): what the VRM supplies at the known currents, the load with the least "
+            "room and its margin, and how much the unknowns may draw together before that "
+            "load leaves its tolerance - a bound however the current is shared, worst case "
+            "all of it at the costliest unknown, its ground return counted where it has "
+            "ground pins. The VRM holds what it held.")
         self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
                                      "P in (W)", "Loss (W)", "I limit (A)", ""], sortable=True)
         self.tbl_vrms.setToolTip("Each VRM's solved output and input, conversion loss, and "
@@ -1671,6 +1697,7 @@ class PIPanel(QWidget, PartSelection):
         self.tbl_links.setToolTip("Current through, and power in, each series link")
         self.txt_notes = QTextBrowser(g_res)
         self.res_tabs.addTab(self.tbl_loads, "Loads")
+        self.res_tabs.addTab(self.tbl_headroom, "Headroom")
         self.res_tabs.addTab(self.tbl_vrms, "VRMs")
         self.res_tabs.addTab(self.tbl_links, "Series links")
         self.res_tabs.addTab(self._vias_tab(), "Vias")
@@ -2356,7 +2383,7 @@ class PIPanel(QWidget, PartSelection):
                                "with the problem in the Solve tab.")
 
     def show_results(self, tree, initial_group: str):
-        for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links):
+        for t in (self.tbl_loads, self.tbl_headroom, self.tbl_vrms, self.tbl_links):
             reset_sort(t)                         # new results show in their natural order
         t = self.tbl_loads
         t.setRowCount(len(tree.loads))
@@ -2370,11 +2397,22 @@ class PIPanel(QWidget, PartSelection):
                            ("" if math.isnan(l.drop_worst_pct)
                             else f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
                            l.tolerance, status, getattr(l, "basis", ""),
-                           _mv_cell(l.margin_low), _mv_cell(getattr(l, "copper_margin", None))])
+                           _mv_cell(l.margin_low), _mv_cell(getattr(l, "copper_margin", None)),
+                           _ma_cell(getattr(l, "unknown_room_a", None))])
             color = (("#ffb040" if l.status else None) if l.passed is None
                      else ("#60d060" if l.passed else "#ff6060"))
             if color:
                 t.item(r, 8).setForeground(QColor(color))
+        headroom = getattr(tree, "headroom", [])
+        t = self.tbl_headroom
+        t.setRowCount(len(headroom))
+        for r, h in enumerate(headroom):
+            set_row(t, r, [h.group, f"{h.known_a:.4g}", h.tightest, _mv_cell(h.margin_v),
+                           ", ".join(h.unknown), _ma_cell(h.room_a),
+                           f"{h.costliest} ({h.per_amp_v * 1e3:.4g})" if h.costliest else "",
+                           _a_cell(getattr(h, "vrm_room_a", None))])
+            if h.room_a is not None and h.room_a <= 0:
+                t.item(r, 5).setForeground(QColor("#ff6060"))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         t = self.tbl_vrms
         t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))

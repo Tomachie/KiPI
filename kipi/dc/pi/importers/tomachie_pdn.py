@@ -782,12 +782,12 @@ class TomachiePdnImporter:
         if static:
             self.notes.append("Draw what they drive: their own (static) current from the "
                               "datasheet is solved, what they drive is on top and not known, "
-                              "so the results they touch are INCOMPLETE: " + ", ".join(static))
+                              "the Headroom results say how much that may add: " + ", ".join(static))
         unknown = [n for n in self.unknown_current if n in kept]
         if unknown:
             self.notes.append("Current not known, imported as 0 A and marked not known (the "
-                              "results they touch are INCOMPLETE); enter it on the Loads tab: "
-                              + ", ".join(unknown))
+                              "Headroom results say how much they may add together); enter "
+                              "it on the Loads tab when known: " + ", ".join(unknown))
         unused = [f"{n} ({r})" for n, r in self.unused_current if n in kept]
         if unused:
             self.notes.append("The typical current is solved; these minimum currents are "

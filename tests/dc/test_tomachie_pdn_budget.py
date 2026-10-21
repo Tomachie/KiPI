@@ -185,7 +185,7 @@ def test_a_series_datasheets_figures_for_other_parts_are_left_out():
 
 def test_a_part_that_draws_what_it_drives_solves_its_own_current():
     """A level shifter's datasheet current is static: the least it draws. It is solved,
-    never 0 A, and what it drives on top keeps its results INCOMPLETE."""
+    never 0 A; what it drives on top is not known, so its rail gets a headroom."""
     pdn = copy.deepcopy(PDN)
     load = pdn["rails"][1]["loads"][0]
     load.update(current={"amps": 6e-6, "basis": "max"}, load_dependent=True,
@@ -197,4 +197,6 @@ def test_a_part_that_draws_what_it_drives_solves_its_own_current():
     assert (u2.current, u2.current_known) == (6e-6, False)
     assert any(n.startswith("Draw what they drive") and "U2 (6 µA)" in n for n in notes)
     assert not any(n.startswith("Current not known") for n in notes)
-    assert by_name(solve_tree(board(), setup).loads, "U2").status == "INCOMPLETE"
+    tree = solve_tree(board(), setup)
+    assert by_name(tree.loads, "U2").status == ""
+    assert [h.unknown for h in tree.headroom] == [["U2"]]

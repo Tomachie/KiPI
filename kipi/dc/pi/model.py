@@ -184,7 +184,7 @@ class Load:
     # The maximum current, for a worst-case solve (kipi.dc.pi.corner); None = the typical.
     current_max: Optional[float] = None
     # False: the current is not known and is solved as entered (0 A from an import). Every
-    # load whose result depends on it is INCOMPLETE rather than PASS (kipi.dc.pi.tree).
+    # load on its rail gets the room such loads may add together (kipi.dc.pi.tree headroom).
     current_known: bool = True
     # Volts the copper may take before the load is out of its tolerance, worked out before
     # layout from the datasheets (an import's figure, supply copper and ground return

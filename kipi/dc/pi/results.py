@@ -12,7 +12,7 @@ from kipi.dc.solver import NetResult
 NOT_CONVERGED = "NOT CONVERGED"
 OUT_OF_REGULATION = "VRM OUT OF REGULATION"
 DISCONNECTED = "DISCONNECTED"       # no copper path to its VRM: not solved (#88)
-INCOMPLETE = "INCOMPLETE"           # a current on this rail or upstream is not known
+INCOMPLETE = "INCOMPLETE"           # no longer given: results files saved before headroom
 
 
 @dataclass
@@ -38,6 +38,16 @@ def drop_or_boost(dv: float):
     if math.isnan(dv):                 # nothing solved, as for a disconnected load (#88)
         return dv, ""
     return (-dv, "boost") if dv < -BOOST_EPS else (max(dv, 0.0), "drop")
+
+
+def fmt_amps(amps: float) -> str:
+    """Amps for a sentence: "17.6 A" from 1 A up, "20 mA" below it, "350 µA" below 1 mA."""
+    a = abs(amps)
+    if a >= 1:
+        return f"{amps:.3g} A"
+    if a >= 1e-3:
+        return f"{amps * 1e3:.3g} mA"
+    return f"{amps * 1e6:.3g} µA"
 
 
 def fmt_drop(dv: float, fmt: str = ".3f", scale: float = 1e3, unit: str = " mV") -> str:
@@ -69,6 +79,9 @@ class LoadReport:
     limit_high: Optional[float] = None
     basis: str = ""                      # the current solved: typ, max, typ (no max)
     copper_margin: Optional[float] = None  # the load's pre-layout copper margin, volts
+    # Amps the rail's loads whose current is not known may add together before this load
+    # leaves its tolerance (RailHeadroom); None without a low limit or without such loads.
+    unknown_room_a: Optional[float] = None
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
@@ -80,7 +93,7 @@ class LoadReport:
                          limit_high=nom + abs(nom) * t / 100)
         state = {"v_low": state.get("v_worst"), "v_high": None, "status": "",
                  "tolerance": "", "limit_low": None, "limit_high": None,
-                 "copper_margin": None, **state}
+                 "copper_margin": None, "unknown_room_a": None, **state}
         state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
                                for g in state.get("pin_groups", [])]
         self.__dict__.update(state)
@@ -175,6 +188,50 @@ class VrmReport:
 
 
 @dataclass
+class RailHeadroom:
+    """What a rail's loads whose current is not known may draw, together, before a load
+    on the rail leaves its tolerance: the designer's unknowns (what a header or a
+    translator's lines will carry) as a budget, from the margin the known currents leave.
+    Supply copper and, where the unknown has ground pins, its ground return; the VRM
+    holds what it held (a load line's droop is not counted)."""
+    group: str                          # the rail's label
+    vrm: str                            # the VRM that drives it
+    known_a: float                      # what the VRM supplies at the known currents
+    unknown: List[str]                  # the loads whose current is not known
+    tightest: str = ""                  # the load with the least room ("" when none is judged)
+    margin_v: Optional[float] = None    # its lowest pin above its tolerance's low end
+    room_a: Optional[float] = None      # what the unknowns may add together (0: already out)
+    costliest: str = ""                 # the unknown whose current costs that load the most
+    per_amp_v: float = 0.0              # volts the tightest load loses per amp drawn there
+    upstream: List[str] = field(default_factory=list)   # rails the same current also loads
+    vrm_room_a: Optional[float] = None  # what the VRM's output current limit leaves, if set
+
+    def sentence(self) -> str:
+        """The budget in one sentence, for the notes and the report."""
+        who = ", ".join(self.unknown)
+        s = f"{self.group}: {fmt_amps(self.known_a)} known. "
+        if self.room_a is None:
+            return s + (f"Not known: {who}. No load on this rail has a minimum to judge "
+                        "against, so the room for them cannot be given.")
+        if self.margin_v is not None and self.margin_v <= 0:
+            return s + (f"{self.tightest} is already {-self.margin_v * 1e3:.4g} mV below "
+                        f"its minimum at the known currents; nothing can be added for {who}.")
+        s += (f"Tightest load: {self.tightest}, {self.margin_v * 1e3:.4g} mV above its "
+              f"minimum. Not known: {who} - together they must stay under "
+              f"{fmt_amps(self.room_a)} for the copper (worst case, all of it at "
+              f"{self.costliest}: {self.per_amp_v * 1e3:.4g} mV per A), or {self.tightest} "
+              "leaves its tolerance.")
+        if self.vrm_room_a is not None:
+            s += (f" {self.vrm}'s output current limit leaves {fmt_amps(self.vrm_room_a)}."
+                  if self.vrm_room_a > 0 else
+                  f" {self.vrm} is already at its output current limit.")
+        if self.upstream:
+            s += (f" Through {self.vrm} the same current also loads "
+                  f"{', '.join(self.upstream)}; not counted there.")
+        return s
+
+
+@dataclass
 class TreeResult:
     groups: Dict[str, GroupResult] = field(default_factory=dict)
     loads: List[LoadReport] = field(default_factory=list)
@@ -184,3 +241,4 @@ class TreeResult:
     thermal: Optional[object] = None          # kipi.dc.thermal.cosim.ThermalResult, if run
     report_path: Optional[object] = None      # HTML report written for this solve, if any
     corner: str = "typ"                       # "typ" or "max": kipi.dc.pi.corner
+    headroom: List[RailHeadroom] = field(default_factory=list)   # rails with unknowns
