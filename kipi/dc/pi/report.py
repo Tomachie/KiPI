@@ -280,11 +280,11 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
     if headroom:
         out.append(_write(folder / f"{stem}_headroom.csv",
                           ["rail", "vrm", "known_A", "tightest_load", "margin_V",
-                           "not_known", "they_may_add_A", "costliest", "costliest_V_per_A",
-                           "vrm_limit_leaves_A"],
+                           "not_known", "they_may_add_A", "limited_by", "copper_room_A",
+                           "vrm_rating_A", "costliest", "costliest_V_per_A"],
                           [[h.group, h.vrm, h.known_a, h.tightest, h.margin_v,
-                            "; ".join(h.unknown), h.room_a, h.costliest, h.per_amp_v,
-                            getattr(h, "vrm_room_a", None)]
+                            "; ".join(h.unknown), h.binding_a, h.limited_by, h.room_a,
+                            h.vrm_limit_a, h.costliest, h.per_amp_v]
                            for h in headroom]))
     out.append(_write(folder / f"{stem}_load_pin_groups.csv",
                       ["load", "pin_group", "current_A", "v_mean_V", "v_min_V", "v_max_V"],

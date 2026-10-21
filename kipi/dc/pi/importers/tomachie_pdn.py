@@ -298,6 +298,8 @@ class TomachiePdnImporter:
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max")),
+                                       # Its datasheet's rated output current.
+                                       current_limit_a=amps(reg.get("max_output_current")),
                                        ground=ground, output_ground=out_ground,
                                        **self._accuracy(r, reg["refdes"])))
             if vin is not None:

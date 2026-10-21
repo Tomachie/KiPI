@@ -364,7 +364,15 @@ class _TreeSolver:
                 room, hr.tightest, hr.costliest, hr.per_amp_v, hr.margin_v = min(rooms)
                 hr.room_a = None if math.isinf(room) else room
             if rail.vrm.current_limit_a is not None:
+                hr.vrm_limit_a = rail.vrm.current_limit_a
                 hr.vrm_room_a = rail.vrm.current_limit_a - hr.known_a
+                # A load's own room cannot be more than the VRM can still deliver.
+                for l in on_rail:
+                    rep = reports[l.name]
+                    if rep.margin_low is not None and not math.isnan(rep.margin_low):
+                        mine = max(0.0, hr.vrm_room_a)
+                        rep.unknown_room_a = (mine if rep.unknown_room_a is None
+                                              else min(rep.unknown_room_a, mine))
             out.append(hr)
         return out
 

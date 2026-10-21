@@ -173,10 +173,6 @@ def _ma_cell(amps: Optional[float]):
     return (f"{amps * 1e3:.4g}" if abs(amps) < 1 else f"{amps * 1e3:.0f}", amps * 1e3)
 
 
-def _a_cell(amps: Optional[float]):
-    """Amps as a table cell that sorts by value; empty when not known."""
-    return ("", None) if amps is None else (f"{amps:.4g}", amps)
-
 
 def tip(form: QFormLayout, field: QWidget, text: str, art: Optional[tuple] = None):
     """Give a form row's field and its label the tooltip ``text``, with the drawing
@@ -1677,9 +1673,8 @@ class PIPanel(QWidget, PartSelection):
                                   "may add: what the rail's loads whose current is not known "
                                   "may draw together before this load leaves its tolerance.")
         self.tbl_headroom = self._table(["Rail", "Known (A)", "Tightest load", "Margin (mV)",
-                                         "Not known", "They may add (mA)",
-                                         "Costliest (mV per A)", "VRM limit leaves (A)"],
-                                        sortable=True)
+                                         "Not known", "They may add (mA)", "Limited by",
+                                         "Costliest (mV per A)"], sortable=True)
         self.tbl_headroom.setToolTip(
             "Rails with a load whose current is not known (a header, what a translator "
             "drives): what the VRM supplies at the known currents, the load with the least "
@@ -2408,10 +2403,9 @@ class PIPanel(QWidget, PartSelection):
         t.setRowCount(len(headroom))
         for r, h in enumerate(headroom):
             set_row(t, r, [h.group, f"{h.known_a:.4g}", h.tightest, _mv_cell(h.margin_v),
-                           ", ".join(h.unknown), _ma_cell(h.room_a),
-                           f"{h.costliest} ({h.per_amp_v * 1e3:.4g})" if h.costliest else "",
-                           _a_cell(getattr(h, "vrm_room_a", None))])
-            if h.room_a is not None and h.room_a <= 0:
+                           ", ".join(h.unknown), _ma_cell(h.binding_a), h.limited_by,
+                           f"{h.costliest} ({h.per_amp_v * 1e3:.4g})" if h.costliest else ""])
+            if h.binding_a is not None and h.binding_a <= 0:
                 t.item(r, 5).setForeground(QColor("#ff6060"))
         f = lambda x, fmt: "" if x is None else format(x, fmt)
         t = self.tbl_vrms

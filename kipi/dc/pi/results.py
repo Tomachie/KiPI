@@ -205,26 +205,52 @@ class RailHeadroom:
     per_amp_v: float = 0.0              # volts the tightest load loses per amp drawn there
     upstream: List[str] = field(default_factory=list)   # rails the same current also loads
     vrm_room_a: Optional[float] = None  # what the VRM's output current limit leaves, if set
+    vrm_limit_a: Optional[float] = None  # that limit
+
+    @property
+    def binding_a(self) -> Optional[float]:
+        """What the unknowns may add: the copper's room or the VRM limit's, the smaller."""
+        rooms = [r for r in (self.room_a, self.vrm_room_a) if r is not None]
+        return max(0.0, min(rooms)) if rooms else None
+
+    @property
+    def vrm_binds(self) -> bool:
+        """The VRM's rating, not the copper, sets ``binding_a``."""
+        return self.vrm_room_a is not None and (self.room_a is None
+                                                or self.vrm_room_a < self.room_a)
+
+    @property
+    def limited_by(self) -> str:
+        """What sets ``binding_a``: the tightest load's supply minimum, or the VRM's rating."""
+        if self.binding_a is None:
+            return ""
+        if self.vrm_binds:
+            return f"{self.vrm} rated {fmt_amps(self.vrm_limit_a)}"
+        return f"{self.tightest}'s supply minimum"
 
     def sentence(self) -> str:
         """The budget in one sentence, for the notes and the report."""
         who = ", ".join(self.unknown)
-        s = f"{self.group}: {fmt_amps(self.known_a)} known. "
-        if self.room_a is None:
-            return s + (f"Not known: {who}. No load on this rail has a minimum to judge "
-                        "against, so the room for them cannot be given.")
+        s = f"{self.group}: {fmt_amps(self.known_a)} known. Not known: {who}. "
         if self.margin_v is not None and self.margin_v <= 0:
             return s + (f"{self.tightest} is already {-self.margin_v * 1e3:.4g} mV below "
-                        f"its minimum at the known currents; nothing can be added for {who}.")
-        s += (f"Tightest load: {self.tightest}, {self.margin_v * 1e3:.4g} mV above its "
-              f"minimum. Not known: {who} - together they must stay under "
-              f"{fmt_amps(self.room_a)} for the copper (worst case, all of it at "
-              f"{self.costliest}: {self.per_amp_v * 1e3:.4g} mV per A), or {self.tightest} "
-              "leaves its tolerance.")
-        if self.vrm_room_a is not None:
-            s += (f" {self.vrm}'s output current limit leaves {fmt_amps(self.vrm_room_a)}."
-                  if self.vrm_room_a > 0 else
-                  f" {self.vrm} is already at its output current limit.")
+                        "its minimum at the known currents; nothing can be added.")
+        if self.binding_a is None:
+            return s + ("No load on this rail has a minimum, and its VRM no rated current, "
+                        "so the room for them cannot be given.")
+        s += f"Together they must stay under {fmt_amps(self.binding_a)}"
+        if self.vrm_binds:
+            s += f": {self.vrm} is rated {fmt_amps(self.vrm_limit_a)}."
+            if self.room_a is not None:
+                s += (f" The copper alone would take {fmt_amps(self.room_a)} before "
+                      f"{self.tightest} ({self.margin_v * 1e3:.4g} mV above its minimum) "
+                      "leaves its tolerance.")
+        else:
+            s += (f", or {self.tightest} ({self.margin_v * 1e3:.4g} mV above its minimum) "
+                  f"leaves its tolerance (worst case, all of it at {self.costliest}: "
+                  f"{self.per_amp_v * 1e3:.4g} mV per A).")
+            if self.vrm_room_a is not None:
+                s += f" {self.vrm}'s rating leaves {fmt_amps(self.vrm_room_a)}."
         if self.upstream:
             s += (f" Through {self.vrm} the same current also loads "
                   f"{', '.join(self.upstream)}; not counted there.")

@@ -561,11 +561,10 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     if headroom:
         parts.append("<h3>Headroom: what the currents not known may add</h3>" + _table(
             ["Rail", "Known (A)", "Tightest load", "Margin (mV)", "Not known",
-             "They may add (mA)", "Costliest (mV per A)", "VRM limit leaves (A)"],
+             "They may add (mA)", "Limited by", "Costliest (mV per A)"],
             [[_e(h.group), _num(h.known_a), _e(h.tightest), _mv(h.margin_v),
-              _e(", ".join(h.unknown)), _ma(h.room_a),
-              _e(f"{h.costliest} ({h.per_amp_v * 1e3:.4g})") if h.costliest else "",
-              _num(getattr(h, "vrm_room_a", None))]
+              _e(", ".join(h.unknown)), _ma(h.binding_a), _e(h.limited_by),
+              _e(f"{h.costliest} ({h.per_amp_v * 1e3:.4g})") if h.costliest else ""]
              for h in headroom]))
         parts.append("<p class='note'>A rail with a load whose current is not known (a header, "
                      "what a translator drives) is solved at the known currents; the room is "

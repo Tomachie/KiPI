@@ -575,3 +575,20 @@ def test_a_figure_named_for_another_pin_is_not_the_parts_resistance():
         {"spec": "rds_on", "typ": "75", "max": "95", "unit": "m\u03a9"}]}
     typ, mx, _ = dc_resistance(e)
     assert (typ, mx) == (pytest.approx(0.075), pytest.approx(0.095))
+
+
+def test_a_regulators_rated_current_bounds_the_headroom():
+    """max_output_current is the VRM's output current limit; the room for currents not
+    known is the smaller of the copper's and what that rating leaves."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0]["max_output_current"] = {"amps": 0.3, "basis": "max"}
+    pdn["rails"][1]["loads"][0]["current"] = "unknown"
+    pdn["rails"][1]["loads"][0].pop("current_max", None)
+    setup, _ = run(pdn)
+    assert by_name(setup.vrms, "U1 +3V3").current_limit_a == pytest.approx(0.3)
+    tree = solve_tree(board(), setup)
+    [h] = [h for h in tree.headroom if "U2" in h.unknown]
+    assert h.vrm_binds and h.binding_a == pytest.approx(0.3 - h.known_a)
+    assert h.limited_by.startswith("U1 +3V3 rated")
+    assert "is rated 300 mA" in h.sentence()
+    assert by_name(tree.loads, "U2").unknown_room_a == pytest.approx(h.binding_a)

@@ -1225,8 +1225,9 @@ scale, a minimum of zero or below falls back to four decades below the maximum.<
   together before that load leaves its tolerance. It is a bound however the current is shared
   (worst case, all of it at the costliest unknown), from one re-solve of the rail's copper with
   1 A more at each unknown, its ground return counted where it has ground pins. The VRM holds
-  what it held. Where the VRM has an output current limit, the row also says what that limit
-  leaves. The Loads tab's last column gives each load's own room, and the Notes tab says it in
+  what it held. Where the VRM has an output current limit (a Tomachie import brings its rated
+  output current), the room is whichever is smaller, the copper's or the limit's, and
+  <b>Limited by</b> says which. The Loads tab's last column gives each load's own room, and the Notes tab says it in
   a sentence.</td></tr>
   <tr><td><b>Notes</b></td><td class="wrap">Solve time, the nets in each group, pin group
     results, warnings and excluded groups.</td></tr>
