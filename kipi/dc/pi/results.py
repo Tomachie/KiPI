@@ -82,6 +82,9 @@ class LoadReport:
     # Amps the rail's loads whose current is not known may add together before this load
     # leaves its tolerance (RailHeadroom); None without a low limit or without such loads.
     unknown_room_a: Optional[float] = None
+    # True when a load on the same rail has a current not known: an answer "in range" then
+    # holds at the known currents (the Headroom says what the rest may add).
+    unknowns_on_rail: bool = False
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
@@ -93,7 +96,8 @@ class LoadReport:
                          limit_high=nom + abs(nom) * t / 100)
         state = {"v_low": state.get("v_worst"), "v_high": None, "status": "",
                  "tolerance": "", "limit_low": None, "limit_high": None,
-                 "copper_margin": None, "unknown_room_a": None, **state}
+                 "copper_margin": None, "unknown_room_a": None, "unknowns_on_rail": False,
+                 **state}
         state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
                                for g in state.get("pin_groups", [])]
         self.__dict__.update(state)
@@ -124,6 +128,32 @@ class LoadReport:
         if self.status:
             return self.status
         return "" if self.passed is None else ("PASS" if self.passed else "FAIL")
+
+    @property
+    def margin_high(self) -> Optional[float]:
+        """Volts the highest pin is below the tolerance's high end (negative: above it);
+        None without a high end."""
+        if self.limit_high is None or self.v_high is None or self.v_high != self.v_high:
+            return None
+        return self.limit_high - self.v_high
+
+    @property
+    def answer(self) -> str:
+        """The result in words: what was judged, against what, and how much room is left.
+        "In range" means every supply pin, less its ground pins, is inside the load's
+        voltage window at the currents solved."""
+        if self.status:
+            return self.status
+        if self.passed is None:
+            return ""
+        low, high = self.margin_low, self.margin_high
+        if self.passed:
+            spare = min(m for m in (low, high) if m is not None)
+            where = " at known currents" if self.unknowns_on_rail else ""
+            return f"In range{where}, {spare * 1e3:.4g} mV spare"
+        if low is not None and low < 0:
+            return f"Out of range: {-low * 1e3:.4g} mV below its {self.limit_low:.4g} V minimum"
+        return f"Out of range: {-high * 1e3:.4g} mV above its {self.limit_high:.4g} V maximum"
 
 
 @dataclass
@@ -268,3 +298,20 @@ class TreeResult:
     report_path: Optional[object] = None      # HTML report written for this solve, if any
     corner: str = "typ"                       # "typ" or "max": kipi.dc.pi.corner
     headroom: List[RailHeadroom] = field(default_factory=list)   # rails with unknowns
+
+    def summary(self) -> str:
+        """The loads in one sentence: how many are in range, out of range, not checked
+        (no voltage window) or not solved, and which rails have currents not known."""
+        n = len(self.loads)
+        inside = sum(1 for l in self.loads if l.passed and not l.status)
+        out = sum(1 for l in self.loads if l.passed is False)
+        unjudged = sum(1 for l in self.loads if l.passed is None and not l.status)
+        other = n - inside - out - unjudged
+        s = (f"{n} loads solved: {inside} in range, {out} out of range, {unjudged} with no "
+             "voltage window to check against")
+        s += f", {other} not solved (see the Loads tab)." if other else "."
+        rails = [h.group for h in self.headroom]
+        if rails:
+            s += (f" {len(rails)} rail{'s' if len(rails) > 1 else ''} with currents not "
+                  f"known ({', '.join(rails)}): the Headroom tab says how much they may add.")
+        return s

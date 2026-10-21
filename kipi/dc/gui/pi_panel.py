@@ -1661,12 +1661,19 @@ class PIPanel(QWidget, PartSelection):
         row.addWidget(b_export)
         lr.addLayout(row)
         lr.addLayout(self._scale_row(g_res))
+        # The loads in one sentence, over the tabs: in range, out of range, not checked.
+        self.lbl_summary = QLabel(g_res)
+        self.lbl_summary.setWordWrap(True)
+        self.lbl_summary.setToolTip("In range: every supply pin of the load, less its ground "
+                                    "pins, is inside its voltage window at the currents "
+                                    "solved")
+        lr.addWidget(self.lbl_summary)
         self.res_tabs = QTabWidget(g_res)
         self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
                                       "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance", "", "Current", "Margin (mV)",
-                                      "Pre-layout margin (mV)", "Unknowns may add (mA)"],
-                                     sortable=True)
+                                      "Tolerance", "Voltage at pins", "Current",
+                                      "Margin (mV)", "Pre-layout margin (mV)",
+                                      "Unknowns may add (mA)"], sortable=True)
         self.tbl_loads.setToolTip("Drop: below the VRM target voltage. Boost: above it, e.g. "
                                   "near a remote-sensed VRM's output pins. The worst pin is the "
                                   "one furthest from the target voltage either way. Unknowns "
@@ -2382,8 +2389,9 @@ class PIPanel(QWidget, PartSelection):
             reset_sort(t)                         # new results show in their natural order
         t = self.tbl_loads
         t.setRowCount(len(tree.loads))
+        self.lbl_summary.setText(tree.summary() if hasattr(tree, "summary") else "")
         for r, l in enumerate(tree.loads):
-            status = l.verdict
+            status = getattr(l, "answer", l.verdict)
             v_eff = "" if math.isnan(l.v_effective) else f"{l.v_effective:.5f}"
             # Drop and boost sort as one signed value: largest boost ... largest drop.
             set_row(t, r, [l.name, l.group, f"{l.current:.4g}", v_eff,

@@ -1597,7 +1597,10 @@ class MainWindow(QMainWindow):
             self._show_group(first)
             for l in tree.loads:
                 self.log(f"  {l.name}: {fmt_drop(l.drop)} ({abs(l.drop_pct):.3f} %), worst pin "
-                         f"{fmt_drop(l.drop_worst)} at {l.current:g} A {l.verdict}".rstrip())
+                         f"{fmt_drop(l.drop_worst)} at {l.current:g} A "
+                         f"{getattr(l, 'answer', l.verdict)}".rstrip())
+            if hasattr(tree, "summary"):
+                self.log(tree.summary())
 
         if self._run(work, done, "Solving power tree") is not None:
             self.solve_panel.set_busy(True)

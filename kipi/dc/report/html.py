@@ -539,21 +539,26 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")
+    if hasattr(tree, "summary"):
+        parts.append(f"<p><b>{_e(tree.summary())}</b></p>")
     parts.append(_table(
         ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop / boost (mV)", "%",
          "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance", "Margin (mV)",
-         "Pre-layout margin (mV)", "Unknowns may add (mA)", "Result"],
+         "Pre-layout margin (mV)", "Unknowns may add (mA)", "Voltage at pins"],
         [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
           _num(l.v_effective, ".6f"), fmt_drop(l.drop, unit=""), _num(abs(l.drop_pct), ".3f"),
           _num(l.v_worst, ".6f"), fmt_drop(l.drop_worst, unit=""),
           _num(abs(l.drop_worst_pct), ".3f"),
           _e(l.tolerance), _mv(l.margin_low), _mv(getattr(l, "copper_margin", None)),
-          _ma(getattr(l, "unknown_room_a", None)), _verdict(l.passed, l.status)]
+          _ma(getattr(l, "unknown_room_a", None)),
+          _verdict(l.passed, getattr(l, "answer", l.status))]
          for l in tree.loads]))
     parts.append("<p class='note'>Drop: below the VRM target voltage. Boost: above it, e.g. near a "
                  "remote-sensed VRM's output pins. The worst pin is the one furthest from the "
-                 "target voltage either way. A load passes when every pin is within its "
-                 "tolerance. Margin: the lowest pin above the tolerance's low end. Pre-layout "
+                 "target voltage either way. In range: every supply pin of the load, less its "
+                 "ground pins, is inside its voltage window at the currents solved; at known "
+                 "currents when a load on the same rail has a current not known. Margin: the "
+                 "lowest pin above the tolerance's low end. Pre-layout "
                  "margin: what the copper could take, worked out from the datasheets before "
                  "layout (imported). Unknowns may add: what the rail's loads whose current is "
                  "not known may draw together before this load leaves its tolerance.</p>")

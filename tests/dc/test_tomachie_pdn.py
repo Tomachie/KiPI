@@ -592,3 +592,22 @@ def test_a_regulators_rated_current_bounds_the_headroom():
     assert h.limited_by.startswith("U1 +3V3 rated")
     assert "is rated 300 mA" in h.sentence()
     assert by_name(tree.loads, "U2").unknown_room_a == pytest.approx(h.binding_a)
+
+
+def test_loads_answer_in_words_and_the_tree_sums_them_up():
+    """In place of PASS / FAIL: "In range, N mV spare" (at known currents when the rail has
+    a current not known) or "Out of range: N mV below its V minimum"; one summary line."""
+    pdn = copy.deepcopy(PDN)
+    pdn["rails"][1]["loads"][0]["current"] = "unknown"
+    pdn["rails"][1]["loads"][0].pop("current_max", None)
+    setup, _ = run(pdn)
+    tree = solve_tree(board(), setup)
+    u2 = by_name(tree.loads, "U2")
+    assert u2.answer.startswith("In range at known currents, ") and u2.answer.endswith("mV spare")
+    assert "1 in range, 0 out of range" in tree.summary() and "Headroom" in tree.summary()
+    # A window above the solved voltage: out of range, by how much and against what.
+    by_name(setup.loads, "U2").current_known = True
+    by_name(setup.loads, "U2").tol_min, by_name(setup.loads, "U2").tol_pct = 3.4, False
+    out = by_name(solve_tree(board(), setup).loads, "U2")
+    assert out.passed is False and out.answer.startswith("Out of range: ")
+    assert "below its 3.4 V minimum" in out.answer

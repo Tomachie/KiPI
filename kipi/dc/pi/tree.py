@@ -750,6 +750,9 @@ class _TreeSolver:
         # Loads whose current is not known are solved as entered; the headroom says what
         # they may add together before a load on their rail leaves its tolerance.
         out.headroom = self._headroom({r.name: r for r in out.loads})
+        with_unknowns = {h.group for h in out.headroom}
+        for r in out.loads:
+            r.unknowns_on_rail = r.group in with_unknowns
         out.warnings.extend(h.sentence() for h in out.headroom)
         out.vrms = [self._vrm_report(v, regulation[v.name]) for v in self.setup.vrms]
         out.solve_s = time.perf_counter() - t0
