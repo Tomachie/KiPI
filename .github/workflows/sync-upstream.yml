@@ -1,12 +1,10 @@
 # Keep this fork's main = drewsum/KiPI main + the fork's own work.
-# Daily (and on demand): merge upstream main into main, lint and test, and push only if
+# On demand: merge upstream main into main, lint and test, and push only if
 # everything passes. On a merge conflict or a failure nothing is pushed, and one issue,
 # "Upstream sync needs attention", is opened (or updated) with the details.
 name: Sync upstream
 
 on:
-  schedule:
-    - cron: "23 6 * * *"
   workflow_dispatch:
 
 permissions:
