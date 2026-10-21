@@ -1694,7 +1694,8 @@ class PIPanel(QWidget, PartSelection):
         self.tbl_vrms.setToolTip("Each VRM's solved output and input, conversion loss, and "
                                  "PASS/FAIL against its output current limit; a row per phase "
                                  "under a multi-phase VRM")
-        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"],
+        self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)",
+                                       "Rated (A)", "Current against rating"],
                                       sortable=True)
         self.tbl_links.setToolTip("Current through, and power in, each series link")
         self.txt_notes = QTextBrowser(g_res)
@@ -2437,11 +2438,19 @@ class PIPanel(QWidget, PartSelection):
                     t.item(r, c).setForeground(QColor("#a0a0a0"))
             r += 1
         rows = [(g.name, s) for g in tree.groups.values() for s in g.result.fields.series]
+        ratings = {k.name: k for k in getattr(tree, "link_ratings", [])}
         self.tbl_links.setRowCount(len(rows))
         for r, (gname, s) in enumerate(rows):
             cur = "" if math.isnan(s.current) else f"{s.current:.4g}"
+            k = ratings.get(s.name)
             set_row(self.tbl_links, r, [s.name, gname, f"{s.resistance * 1e3:g}", cur,
-                                        f"{s.power * 1e3:.3f}"])
+                                        f"{s.power * 1e3:.3f}",
+                                        "" if k is None or k.rated_a is None
+                                        else f"{k.rated_a:.4g}",
+                                        "" if k is None else k.answer])
+            if k is not None and k.within is not None:
+                self.tbl_links.item(r, 6).setForeground(
+                    QColor("#60d060" if k.within else "#ff6060"))
         notes = [f"Solved {len(tree.groups)} net group(s) in {tree.solve_s:.2f} s:"]
         th = getattr(tree, "thermal", None)
         if th is not None:

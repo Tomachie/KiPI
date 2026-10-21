@@ -287,6 +287,9 @@ class DcLink:
     diode_vf: float = 0.0                   # DC forward drop, side A (anode) -> side B
     resistance_max: Optional[float] = None  # worst-case solve; None = the typical
     diode_vf_max: Optional[float] = None    # worst-case solve; None = the typical
+    # The part's continuous rated current, amps (a ferrite's, a fuse's hold current, a
+    # jumper's): its solved current is judged against it. None = not given.
+    rated_current_a: Optional[float] = None
     # The diode's datasheet forward-voltage curve, [[amps, volts], ...] (typical, 25 C):
     # the solve moves diode_vf so the line meets it at the current the diode carries
     # (kipi.dc.pi.diode_curve). None = solved on the line as entered.
@@ -406,7 +409,8 @@ class PISetup:
                           diode_vf=k.get("diode_vf", k.get("forward_v")) or 0.0,
                           resistance_max=k.get("resistance_max"),
                           diode_vf_max=k.get("diode_vf_max", k.get("forward_v_max")),
-                          vf_curve=k.get("vf_curve"))
+                          vf_curve=k.get("vf_curve"),
+                          rated_current_a=k.get("rated_current_a"))
                    for k in d.get("links", [])],
             corner=d.get("corner", "typ"),
             via_current_limit_a=d.get("via_current_limit_a", DEFAULT_VIA_CURRENT_LIMIT_A),

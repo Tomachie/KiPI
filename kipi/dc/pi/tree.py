@@ -64,6 +64,7 @@ from kipi.dc.pi.results import (  # also importable from here, where they were d
     OUT_OF_REGULATION,
     GroupResult,
     LoadReport,
+    LinkRating,
     PhaseReport,
     RailHeadroom,
     TreeResult,
@@ -750,6 +751,9 @@ class _TreeSolver:
         # Loads whose current is not known are solved as entered; the headroom says what
         # they may add together before a load on their rail leaves its tolerance.
         out.headroom = self._headroom({r.name: r for r in out.loads})
+        rated = {k.name: k.rated_current_a for k in self.setup.links}
+        out.link_ratings = [LinkRating(s.name, g.name, s.current, rated.get(s.name))
+                            for g in out.groups.values() for s in g.result.fields.series]
         with_unknowns = {h.group for h in out.headroom}
         for r in out.loads:
             r.unknowns_on_rail = r.group in with_unknowns

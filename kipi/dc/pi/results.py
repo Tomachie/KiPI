@@ -47,7 +47,11 @@ def fmt_amps(amps: float) -> str:
         return f"{amps:.3g} A"
     if a >= 1e-3:
         return f"{amps * 1e3:.3g} mA"
-    return f"{amps * 1e6:.3g} µA"
+    if a >= 1e-6:
+        return f"{amps * 1e6:.3g} µA"
+    if a >= 1e-9:
+        return f"{amps * 1e9:.3g} nA"
+    return "0 A"
 
 
 def fmt_drop(dv: float, fmt: str = ".3f", scale: float = 1e3, unit: str = " mV") -> str:
@@ -218,6 +222,37 @@ class VrmReport:
 
 
 @dataclass
+class LinkRating:
+    """A series part's solved current against its rated current."""
+    name: str
+    group: str
+    current: float               # amps through it (NaN for a short)
+    rated_a: Optional[float]     # its continuous rated current; None when not given
+
+    @property
+    def within(self) -> Optional[bool]:
+        """At or below its rating; a current that rounds to the rating (a USB port's 0.5 A
+        through a 0.5 A switch, plus the switch's own microamps) is at it."""
+        if self.rated_a is None or self.current != self.current:
+            return None
+        i = abs(self.current)
+        return i <= self.rated_a or fmt_amps(i) == fmt_amps(self.rated_a)
+
+    @property
+    def answer(self) -> str:
+        if self.rated_a is None:
+            return "No rated current given: not checked"
+        if self.current != self.current:
+            return "Current not resolved (a short): not checked"
+        i = abs(self.current)
+        if fmt_amps(i) == fmt_amps(self.rated_a):
+            return f"At its rating: {fmt_amps(i)} of {fmt_amps(self.rated_a)}"
+        if i <= self.rated_a:
+            return f"{fmt_amps(i)} of {fmt_amps(self.rated_a)} rated"
+        return f"Above its rating: {fmt_amps(i)} of {fmt_amps(self.rated_a)}"
+
+
+@dataclass
 class RailHeadroom:
     """What a rail's loads whose current is not known may draw, together, before a load
     on the rail leaves its tolerance: the designer's unknowns (what a header or a
@@ -298,6 +333,7 @@ class TreeResult:
     report_path: Optional[object] = None      # HTML report written for this solve, if any
     corner: str = "typ"                       # "typ" or "max": kipi.dc.pi.corner
     headroom: List[RailHeadroom] = field(default_factory=list)   # rails with unknowns
+    link_ratings: List[LinkRating] = field(default_factory=list)  # series parts vs rating
 
     def summary(self) -> str:
         """The loads in one sentence: how many are in range, out of range, not checked
@@ -310,6 +346,11 @@ class TreeResult:
         s = (f"{n} loads solved: {inside} in range, {out} out of range, {unjudged} with no "
              "voltage window to check against")
         s += f", {other} not solved (see the Loads tab)." if other else "."
+        rated = [k for k in self.link_ratings if k.within is not None]
+        if self.link_ratings:
+            over = sum(1 for k in rated if not k.within)
+            s += (f" Series parts: {len(rated) - over} within their rated current, {over} "
+                  f"above, {len(self.link_ratings) - len(rated)} with no rating to check.")
         rails = [h.group for h in self.headroom]
         if rails:
             s += (f" {len(rails)} rail{'s' if len(rails) > 1 else ''} with currents not "

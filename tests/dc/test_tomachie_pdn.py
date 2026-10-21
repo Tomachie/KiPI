@@ -243,6 +243,7 @@ def test_load_switch_behind_an_input_filter_with_a_part_on_its_output():
         dict(ferrite, refdes="FB2", net_in="SWOUT", net_out="+3V3")])
     setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
     links = {k.name: (k.side_a.net, k.side_b.net, k.resistance) for k in setup.links}
+    assert by_name(setup.links, "U1").rated_current_a is None    # no max_output_current
     assert links == {"U1": ("VIN_F", "SWOUT", pytest.approx(0.089)),
                      "FB1": ("VIN", "VIN_F", pytest.approx(0.08)),
                      "FB2": ("SWOUT", "+3V3", pytest.approx(0.08))}
@@ -611,3 +612,38 @@ def test_loads_answer_in_words_and_the_tree_sums_them_up():
     out = by_name(solve_tree(board(), setup).loads, "U2")
     assert out.passed is False and out.answer.startswith("Out of range: ")
     assert "below its 3.4 V minimum" in out.answer
+
+
+def test_a_series_part_is_judged_against_its_rated_current():
+    """A ferrite's rated_current (and a resettable fuse's i_hold) is its rating; the
+    solved current through it is set against it. Peak and trip figures are not."""
+    from kipi.dc.pi.importers.pdn_figures import rated_current
+    assert rated_current({"datasheet_figures": [
+        {"spec": "rated_current", "max": "2.5", "unit": "A"},
+        {"spec": "rated_current", "max": "1700", "unit": "mA", "temperature": "85C"},
+        {"spec": "jumper_max_current", "max": "10", "unit": "A"}]}) == pytest.approx(1.7)
+    assert rated_current({"datasheet_figures": [
+        {"spec": "i_hold", "max": "0.10", "unit": "A"},
+        {"spec": "i_trip", "min": "0.30", "unit": "A"}]}) == pytest.approx(0.10)
+    assert rated_current({"datasheet_figures": [{"spec": "coil_resistance", "typ": "208",
+                                                  "unit": "ohm"}]}) is None
+    fb1 = {"refdes": "FB1", "class": "ferrite", "net_in": "VIN", "net_out": "VIN_F",
+           "resistance_ohm": "unknown",
+           "datasheet_figures": [{"spec": "dcr", "max": "0.080", "unit": "ohm"},
+                                 {"spec": "rated_current", "max": "0.15", "unit": "A"}]}
+    pdn = _behind_ferrite_pdn({"role": "ic", "refdes": "U1", "pins": ["U1_1"],
+                               "current": {"amps": 0.2, "basis": "typ"},
+                               "input_net": "VIN_F", "input_filter": [fb1]})
+    setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert by_name(setup.links, "FB1").rated_current_a == pytest.approx(0.15)
+    tree = solve_tree(filtered_board(), setup)
+    [k] = [k for k in tree.link_ratings if k.name == "FB1"]
+    assert k.within is False and k.answer == "Above its rating: 200 mA of 150 mA"
+    assert "0 within their rated current, 1 above" in tree.summary()
+
+
+def test_a_load_switch_is_judged_against_its_rated_output_current():
+    pdn = _load_switch(datasheet_resistances=[{"spec": "rds_on", "typ": "0.089", "unit": "ohm"}],
+                       max_output_current={"amps": 0.5, "basis": "max"})
+    setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert by_name(setup.links, "U1").rated_current_a == pytest.approx(0.5)

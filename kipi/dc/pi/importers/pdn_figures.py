@@ -106,6 +106,27 @@ def dc_resistance(element: dict) -> Tuple[Optional[float], Optional[float], List
 # A diode's forward-voltage figures, under whatever key the datasheet read gave them.
 _FORWARD_V_SPEC = re.compile(r"(?i)^(v_?f\w*|v_?forward\w*|forward_voltage\w*)$")
 _AMPS_PER_UNIT = {"a": 1.0, "ma": 1e-3, "ua": 1e-6, "µa": 1e-6}
+# A series part's continuous current rating, under the names a datasheet read gives it:
+# a ferrite's, inductor's, fuse's or relay contact's rated current, a resettable fuse's
+# hold current, a 0 ohm jumper's rated (not its peak) current. Peak, pulsed, trip and
+# leakage figures are not ratings to carry current at.
+RATED_CURRENT_SPECS = ("rated_current", "i_hold", "hold_current", "jumper_rated_current",
+                       "continuous_drain_current", "average_forward_current", "if_av")
+
+
+def rated_current(element: dict) -> Optional[float]:
+    """The series part's continuous rated current in amps, the lowest printed where several
+    are (a rating at temperature next to one at 25 C); None when none is printed."""
+    out = []
+    for f in element.get("datasheet_figures", []) or []:
+        if str(f.get("spec", "")).lower() not in RATED_CURRENT_SPECS:
+            continue
+        unit = str(f.get("unit", "")).strip().split()[0].lower() if f.get("unit") else ""
+        scale = _AMPS_PER_UNIT.get(unit)
+        value = _printed(f.get("max")) if f.get("max") not in (None, "") else _printed(f.get("typ"))
+        if scale is not None and value is not None and value > 0:
+            out.append(value * scale)
+    return min(out) if out else None
 
 
 def _test_amps(text) -> Optional[float]:

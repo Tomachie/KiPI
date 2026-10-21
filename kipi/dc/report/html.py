@@ -601,12 +601,17 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         parts.append("<h3>VRM phases</h3>" +
                      _table(["VRM", "Phase", "V out", "I out (A)", "V in", "I in (A)",
                              "Loss (W)"], phases))
+    ratings = {k.name: k for k in getattr(tree, "link_ratings", [])}
     links = [[_e(sr.name), _e(g.name), _num(sr.resistance * 1e3, "g"), _num(sr.current),
-              _num(sr.power * 1e3, ".3f")]
+              _num(sr.power * 1e3, ".3f"),
+              _num(ratings[sr.name].rated_a) if sr.name in ratings else "",
+              _verdict(ratings[sr.name].within, ratings[sr.name].answer)
+              if sr.name in ratings else ""]
              for g in tree.groups.values() for sr in g.result.fields.series]
     if links:
         parts.append("<h3>DC connections</h3>" +
-                     _table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)"], links))
+                     _table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)", "Rated (A)",
+                             "Current against rating"], links))
     pins = pin_rows(tree, snap)
     parts.append("<h2 id='pins'>Pins</h2>")
     if pins:

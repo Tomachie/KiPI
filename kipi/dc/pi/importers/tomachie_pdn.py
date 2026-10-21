@@ -51,7 +51,7 @@ from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.solver.setup import DIODE_MIN_OHMS
 from kipi.dc.pi.importers.pdn_figures import (
-    amps, curve_points, dc_resistance, forward_drop, number,
+    amps, curve_points, dc_resistance, forward_drop, number, rated_current,
 )
 from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
@@ -398,7 +398,8 @@ class TomachiePdnImporter:
         self.linked.add(ref)
         typ, mx, fig_notes = dc_resistance({"datasheet_figures":
                                             reg.get("datasheet_resistances") or []})
-        self._add_link(ref, vin, out, typ, mx, fig_notes, "on-resistance")
+        self._add_link(ref, vin, out, typ, mx, fig_notes, "on-resistance",
+                       rated_a=amps(reg.get("max_output_current")))
         self.notes.append(f"{ref} ({rail}): load switch, imported as a DC connection from "
                           f"{vin.net} to {out.net}, not a regulator")
         self._input_filter(reg)
@@ -438,19 +439,20 @@ class TomachiePdnImporter:
                 # gives one figure (no slope).
                 self._add_link(ref, a, b, max(slope, DIODE_MIN_OHMS), None, [],
                                forward_v=vf, forward_v_max=vf_max,
-                               esl_h=esl, vf_curve=curve_points(e))
+                               esl_h=esl, vf_curve=curve_points(e), rated_a=rated_current(e))
                 return
         if loop_of:
             self.notes.append(f"{ref}: inside {loop_of}'s regulation loop, so its DC "
                               "resistance lowers nothing (its loss is in the efficiency); "
                               "modeled as a short")
             typ, mx, fig_notes = 0.0, None, []
-        self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl)
+        self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl, rated_a=rated_current(e))
 
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],
                   fig_notes: List[str], what: str = "DC resistance",
                   forward_v: Optional[float] = None, forward_v_max: Optional[float] = None,
-                  esl_h: Optional[float] = None, vf_curve: Optional[list] = None):
+                  esl_h: Optional[float] = None, vf_curve: Optional[list] = None,
+                  rated_a: Optional[float] = None):
         self.notes.extend(f"{ref}: {n}" for n in fig_notes)
         if typ is None and mx is None:
             self.notes.append(f"{ref}: {what} not known; modeled as a short")
@@ -464,7 +466,7 @@ class TomachiePdnImporter:
                                        resistance_max=mx if mx is not None and mx != typ
                                        else None,
                                        diode_vf=forward_v or 0.0, diode_vf_max=forward_v_max,
-                                       esl_h=esl_h, vf_curve=vf_curve))
+                                       esl_h=esl_h, vf_curve=vf_curve, rated_current_a=rated_a))
 
     def _ground_links(self):
         """The parts joining one ground net to another (a common-mode choke's return

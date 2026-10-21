@@ -308,10 +308,13 @@ def export_csv(tree, snap: BoardSnapshot, folder, stem: str = "kipi",
                            "p_in_W", "p_loss_W"],
                           [[v.name, p.index, p.v_out, p.i_out, p.v_in, p.i_in, p.p_out, p.p_in,
                             p.p_loss] for v in tree.vrms for p in v.phases]))
+    ratings = {k.name: k for k in getattr(tree, "link_ratings", [])}
     out.append(_write(folder / f"{stem}_dc_connections.csv",
                       ["part", "group", "resistance_ohm", "current_A", "v_a_V", "v_b_V",
-                       "power_W"],
-                      [[s.name, g.name, s.resistance, s.current, s.v_a, s.v_b, s.power]
+                       "power_W", "rated_A", "current_against_rating"],
+                      [[s.name, g.name, s.resistance, s.current, s.v_a, s.v_b, s.power,
+                        ratings[s.name].rated_a if s.name in ratings else None,
+                        ratings[s.name].answer if s.name in ratings else ""]
                        for g in tree.groups.values() for s in g.result.fields.series]))
     out.append(_write(folder / f"{stem}_pins.csv",
                       ["group", "group_kind", "terminal", "role", "part", "pin", "x_mm", "y_mm",
