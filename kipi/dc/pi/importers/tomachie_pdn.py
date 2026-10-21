@@ -700,7 +700,9 @@ class TomachiePdnImporter:
         """Power the board carries between its terminals and runs nothing from (a relay
         switching a bench supply through a shunt; spec revision 7): an ideal source at its
         IN terminals at the designer's voltage, its series parts as DC connections, and a
-        load at its OUT terminals drawing the designer's load current."""
+        load at its OUT terminals drawing the designer's load current, both returning on
+        the path's return terminals (the first for the source, the last for the load: the
+        file does not say which is which), else through an ideal ground."""
         for sp in self.pdn.get("switched_paths") or []:
             label = sp.get("net") or "?"
             what = f"Switched path {label}" + (f" ({sp['switched_by']})"
@@ -721,14 +723,24 @@ class TomachiePdnImporter:
             dst = self._terminal_pins(out, f"{what} output")
             if src is None or dst is None:
                 continue
+            ret = sp.get("return") if isinstance(sp.get("return"), dict) else {}
+            rets = [self._terminal_ground(t, ret.get("net")) for t in ret.get("terminals") or []]
+            rets = [g for g in rets if g is not None]
             self.setup.vrms.append(Vrm(self._unique(f"{label} (switched path)"), src, v,
-                                       "source"))
+                                       "source", ground=rets[0] if rets else None))
             for e in sp.get("series") or []:
                 self._link(e)
             name = self._unique(f"{out.get('net') or label} load (switched path)")
-            self.setup.loads.append(Load(name, dst, amps_max, current_max=amps_max))
+            self.setup.loads.append(Load(name, dst, amps_max, current_max=amps_max,
+                                         ground=rets[-1] if rets else None))
             self.notes.append(f"{what}: {inp.get('net')} -> {out.get('net')} at {v:g} V, "
                               f"{amps_max:g} A load (the designer's figures)")
+
+    def _terminal_ground(self, ref: str, net: Optional[str]) -> Optional[PinRef]:
+        """A return terminal's pins on the return net."""
+        if not net:
+            return None
+        return self.idx.part_on_net(ref, self.idx.board_net(net) or net)
 
     def _terminal_pins(self, end: dict, what: str) -> Optional[PinRef]:
         """The pins of a switched path's terminals on its net (the first terminal found)."""

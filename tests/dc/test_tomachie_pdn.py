@@ -531,6 +531,7 @@ def test_a_switched_path_is_a_source_series_parts_and_a_load():
     pdn["switched_paths"] = [{
         "net": "VIN", "nets": ["VIN", "VIN_F"], "terminals": ["J1", "U1"],
         "in": {"net": "VIN", "terminals": ["J1"]}, "out": {"net": "VIN_F", "terminals": ["U1"]},
+        "return": {"net": "GND", "terminals": ["J1", "U1"]},
         "switched_by": "FB1", "element": "relay", "contact_only": False, "parts": ["FB1"],
         "series": [{"refdes": "FB1", "class": "relay", "net_in": "VIN", "net_out": "VIN_F",
                     "resistance_ohm": "unknown",
@@ -544,6 +545,8 @@ def test_a_switched_path_is_a_source_series_parts_and_a_load():
         {"FB1": ("VIN", "VIN_F", pytest.approx(0.1))}
     load = setup.loads[0]
     assert (load.supply.net, load.current) == ("VIN_F", 2.5)
+    # Both return on the path's return terminals: the source on the first, the load the last.
+    assert (setup.vrms[0].ground.ref, load.ground.ref) == ("J1", "U1")
     assert any("Switched path VIN (FB1)" in n for n in notes)
 
 
