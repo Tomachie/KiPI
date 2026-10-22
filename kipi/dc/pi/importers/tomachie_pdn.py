@@ -545,7 +545,8 @@ class TomachiePdnImporter:
             mn = None if mn is None or rin_min is None else mn + rin_min
         if l.get("load_dependent"):
             # What the datasheet gives is the part's own (static) current: the least it
-            # draws, with what it drives on top. That is solved, never 0 A.
+            # draws, with what it drives on top. That is solved, never 0 A. Its own maximum
+            # (an ESP32's radio transmitting) is still its worst case.
             self.notes.append(f"{l['refdes']} on {rail}: draws what it drives "
                               f"({l.get('load_dependent_reason', 'no reason given')})")
             static = typ if typ is not None else mx
@@ -553,6 +554,8 @@ class TomachiePdnImporter:
                 self.unknown_current.append(label)
                 return 0.0
             self.static_current[label] = static
+            if mx is not None and mx != static:
+                self.max_current[label] = mx
             return static
         if typ is None and mx is not None:
             self.notes.append(f"{label}: only a maximum current is known; {_amps(mx)} is "

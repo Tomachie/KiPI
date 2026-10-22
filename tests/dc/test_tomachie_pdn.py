@@ -96,6 +96,7 @@ def test_load_that_draws_what_it_drives_is_not_known():
     setup, notes = run(pdn)
     u2 = by_name(setup.loads, "U2")
     assert (u2.current, u2.current_known) == (1.0, False)
+    assert u2.current_max == 1.5               # its own maximum is still its worst case
     assert any("LED driver" in n for n in notes)
     assert any(n.startswith("Draw what they drive") for n in notes)
     pdn["rails"][1]["loads"][0].update(current="unknown")
