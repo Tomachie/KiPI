@@ -784,7 +784,7 @@ class _TreeSolver:
         if v.kind == "ldo":
             headroom = self._ldo_headroom(v)
             if headroom < v.dropout_v:
-                return (f"input leaves {headroom:.4f} V across it, less than its "
+                return (f"input leaves {self._across(v, headroom)}, less than its "
                         f"{v.dropout_v:g} V dropout")
         return ""
 
@@ -795,8 +795,18 @@ class _TreeSolver:
         return v.kind == "ldo" and v.dropout_v > 0
 
     def _ldo_headroom(self, v: Vrm) -> float:
+        """The least input-to-output difference across the LDO. The worst case solves its
+        output at the low end of its accuracy (worst for its loads) but judges its dropout
+        at the high end: the part whose output is highest needs the most input."""
         sign = 1.0 if v.voltage >= 0 else -1.0
-        return min(sign * (vi - vo) for vi, vo in zip(self.v_in[v.name], self.v_out[v.name]))
+        lift = abs(self.corner.high_points.get(v.name, v.voltage) - v.voltage)
+        return min(sign * (vi - vo) for vi, vo in
+                   zip(self.v_in[v.name], self.v_out[v.name])) - lift
+
+    def _across(self, v: Vrm, headroom: float) -> str:
+        high = self.corner.high_points.get(v.name)
+        at = "" if high is None else f" at its highest output, {high:.4g} V"
+        return f"{headroom:.4f} V across it{at}"
 
     def _accuracy(self, v: Vrm) -> str:
         """Why an LDO that still regulates is not guaranteed its accuracy ("" if it is):
@@ -808,8 +818,8 @@ class _TreeSolver:
         if vin_min is None or lo >= vin_min:
             return ""
         return (f"input {lo:.4f} V is below {vin_min:.4g} V, where its datasheet states "
-                f"its output accuracy; it still regulates ({self._ldo_headroom(v):.4f} V "
-                f"across it, {v.dropout_v:g} V dropout)")
+                f"its output accuracy; it still regulates "
+                f"({self._across(v, self._ldo_headroom(v))}, {v.dropout_v:g} V dropout)")
 
     def _groups_below_accuracy(self, out_of_reg: set, warnings: List[str]) -> set:
         out = set()

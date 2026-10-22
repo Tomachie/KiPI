@@ -37,6 +37,9 @@ class CornerInfo:
     set_points: Dict[str, Tuple[float, float]] = field(default_factory=dict)  # VRM -> (set, solved)
     no_accuracy: List[str] = field(default_factory=list)    # VRMs solved at their set voltage
     cables: Dict[str, float] = field(default_factory=dict)  # source -> cable allowance, mOhm
+    # VRM -> its highest output in its DC accuracy: an LDO's dropout is judged there, the
+    # part that needs the most input.
+    high_points: Dict[str, float] = field(default_factory=dict)
 
     def warnings(self) -> List[str]:
         if self.corner != "max":
@@ -107,20 +110,35 @@ def _fix_in_volts(setup):
             v.vin_pct = v.vin_dv = False
 
 
+def _ends(v) -> List[float]:
+    return [x for x in range_volts(v.voltage, v.acc_min, v.acc_max,
+                                   range_unit(v.acc_pct, v.acc_dv)) if x is not None]
+
+
+def _high_end(v) -> Optional[float]:
+    """The VRM's highest output in its DC accuracy (furthest from 0 V), None without one."""
+    if not v.has_accuracy() or not v.voltage:
+        return None
+    highest = max(_ends(v) + [v.voltage], key=abs)
+    return highest if highest != v.voltage else None
+
+
 def _low_end(v) -> Optional[float]:
     """The VRM's lowest output in its DC accuracy (nearest 0 V on a negative rail), None
     without an accuracy."""
     if not v.has_accuracy() or not v.voltage:
         return None
-    ends = [x for x in range_volts(v.voltage, v.acc_min, v.acc_max,
-                                   range_unit(v.acc_pct, v.acc_dv)) if x is not None]
-    lowest = min(ends + [v.voltage], key=abs)
+    lowest = min(_ends(v) + [v.voltage], key=abs)
     return lowest if lowest != v.voltage else None
 
 
 def _set_points(out, info: CornerInfo):
     lows = {v.name: _low_end(v) for v in out.vrms}
     info.no_accuracy = [v.name for v in out.vrms if not v.has_accuracy()]
+    for v in out.vrms:
+        high = _high_end(v)
+        if high is not None:
+            info.high_points[v.name] = high
     if not any(x is not None for x in lows.values()):
         return
     _fix_in_volts(out)

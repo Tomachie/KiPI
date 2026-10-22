@@ -321,6 +321,23 @@ def test_ldo_above_its_dropout_below_its_input_minimum_still_regulates():
     assert by_name(solve_tree(board(), s).loads, "U2").verdict == OUT_OF_REGULATION
 
 
+def test_worst_case_judges_ldo_dropout_at_the_high_end_of_its_accuracy():
+    """Its loads are solved at its lowest output; its dropout at its highest, where it
+    needs the most input."""
+    s = setup("ldo")
+    s.corner = "max"
+    u1 = s.vrms[1]
+    u1.acc_min, u1.acc_max, u1.acc_pct, u1.acc_dv = 3.2, 3.4, False, False
+    v_in = by_name(solve_tree(board(), s).vrms, "U1").v_in
+    u1.dropout_v = v_in - 3.3          # met at its lowest output, not at its highest
+    res = solve_tree(board(), s)
+    assert "at its highest output, 3.4 V" in by_name(res.vrms, "U1").regulation
+    assert by_name(res.loads, "U2").verdict == OUT_OF_REGULATION
+    s.corner = "typ"                   # at its set voltage: 3.3 V
+    u1.dropout_v = v_in - 3.35
+    assert by_name(solve_tree(board(), s).vrms, "U1").regulation == ""
+
+
 def test_switcher_below_its_input_minimum_fails_the_loads_it_feeds():
     s = setup("smps", eff=0.9)
     s.vrms[1].vin_min = 13.0
