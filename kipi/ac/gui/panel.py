@@ -26,7 +26,9 @@ from qtpy.QtWidgets import (
 )
 
 from kipi.ac.checks import capacitor_candidates, default_ground, validate_ac
-from kipi.ac.gui.caps import describe_cap, models_from_values, new_cap
+from kipi.ac.gui.caps import (
+    CAP_COLUMNS, cap_columns, describe_cap, models_from_values, new_cap,
+)
 from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel, Probe
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
@@ -59,6 +61,12 @@ HOURS_PER_YEAR = 8760.0
 # ---------------------------------------------------------------------------
 # Capacitor models
 # ---------------------------------------------------------------------------
+
+def _spin_changed(spin, held: float) -> bool:
+    """Whether ``spin`` shows a value other than ``held`` as it would display it."""
+    step = 10.0 ** -spin.decimals()
+    return abs(spin.value() - round(held, spin.decimals())) > step / 2
+
 
 class CapEditor(_Editor):
     """A capacitor model's values, and which capacitors use it.
@@ -225,6 +233,17 @@ class CapEditor(_Editor):
         self.fill_table()
 
     def _save(self, m: CapModel):
+        # A value the user changes is theirs from now on: the list says "entered".
+        for key, spin, held, scale in (
+                ("C", self.cap, m.capacitance_f, 1e6), ("ESL", self.esl, m.esl_h, 1e9),
+                ("ESR", self.esr, m.esr_ohm, 1e3), ("rating", self.rated, m.rated_v or 0.0, 1),
+                ("kept", self.kept, m.kept_at_rated_pct, 1),
+                ("aging", self.aging, m.aging_pct_per_decade, 1),
+                ("tolerance", self.mfg_tol, m.mfg_tolerance_pct or 0.0, 1)):
+            if _spin_changed(spin, held * scale):
+                m.values_from[key] = "entered"
+        if (self.dielectric.currentData() or "") != m.dielectric:
+            m.values_from["dielectric"] = "entered"
         m.name = self.name.text().strip() or m.name
         m.capacitance_f = self.cap.value() * 1e-6
         m.esl_h = self.esl.value() * 1e-9
@@ -579,7 +598,7 @@ class ACPanel(QWidget, PartSelection):
         self.link_list = ItemList(lambda: self.setup.links, LinkEditor(self, mode="ac"),
                                   self._new_link, self._describe_link, noun="series link")
         self.cap_list = ItemList(lambda: self.setup.caps, CapEditor(self), self._new_cap,
-                                 self._describe_cap, noun="capacitor model")
+                                 cap_columns, noun="capacitor model", columns=CAP_COLUMNS)
         b_values = QPushButton("Models from values")
         b_values.setToolTip("Make one model per distinct value of the capacitors that have "
                             "none yet (capacitance read from the value; enter ESL and ESR)")

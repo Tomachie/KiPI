@@ -18,7 +18,7 @@ import math
 import re
 from contextlib import contextmanager
 from functools import partial
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence
 
 from qtpy.QtCore import Qt, Signal
 from qtpy.QtGui import QColor
@@ -26,7 +26,7 @@ from qtpy.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QCompleter, QDialog, QDialogButtonBox,
     QDoubleSpinBox, QFormLayout, QGroupBox,
     QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMenu, QMessageBox,
-    QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTabWidget,
+    QPushButton, QScrollArea, QSpinBox, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget,
     QTextBrowser, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -1350,19 +1350,70 @@ class BeadDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Ok).setEnabled(ok)
 
 
+class ItemTable(QTableWidget):
+    """A one-row-per-item table with the calls :class:`ItemList` makes of a list widget,
+    for items described in columns."""
+    currentRowChanged = Signal(int)
+
+    def __init__(self, columns: Sequence[str], parent=None):
+        super().__init__(0, len(columns), parent)
+        self.setHorizontalHeaderLabels(list(columns))
+        self.verticalHeader().setVisible(False)
+        self.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.setWordWrap(False)
+        head = self.horizontalHeader()
+        head.setSectionResizeMode(QHeaderView.ResizeToContents)
+        head.setStretchLastSection(True)
+        self.currentCellChanged.connect(lambda row, _c, old, _o: row != old
+                                        and self.currentRowChanged.emit(row))
+
+    def addItem(self, cells: Sequence[str]):
+        row = self.rowCount()
+        self.insertRow(row)
+        self.set_row(row, cells)
+
+    def set_row(self, row: int, cells: Sequence[str]):
+        for col, text in enumerate(cells):
+            it = self.item(row, col)
+            if it is None:
+                self.setItem(row, col, QTableWidgetItem(text))
+            else:
+                it.setText(text)
+            self.item(row, col).setToolTip(text)
+
+    def item(self, row: int, col: int = 0):
+        return super().item(row, col)
+
+    def clear(self):
+        self.setRowCount(0)
+
+    def count(self) -> int:
+        return self.rowCount()
+
+    def setCurrentRow(self, row: int):
+        if row < 0:
+            self.setCurrentCell(-1, -1)
+        else:
+            self.setCurrentCell(row, 0)
+
+
 class ItemList(QWidget):
-    """A list of setup items plus the editor for the selected one."""
+    """A list of setup items plus the editor for the selected one. With ``columns``, each
+    item is a row of a table and ``describe`` gives its cells."""
     changed = Signal()
     #: The item now selected (or None), and whether the user picked it in the list.
     selected = Signal(object, bool)
 
     def __init__(self, items: Callable[[], list], editor: _Editor, make_new: Callable[[], object],
-                 describe: Callable[[object], str], parent=None, noun: str = "item"):
+                 describe: Callable[[object], object], parent=None, noun: str = "item",
+                 columns: Optional[Sequence[str]] = None):
         super().__init__(parent)
         self.items, self.editor, self.make_new, self.describe = items, editor, make_new, describe
         lay = QVBoxLayout(self)
         lay.setContentsMargins(2, 2, 2, 2)
-        self.lst = QListWidget(self)
+        self.lst = ItemTable(columns, self) if columns else QListWidget(self)
         self.lst.currentRowChanged.connect(self._select)
         self.lst.itemClicked.connect(lambda _: self.selected.emit(self.current(), True))
         self.lst.setToolTip(f"Select a {noun} to edit it below")
@@ -1432,7 +1483,11 @@ class ItemList(QWidget):
     def _edited(self):
         row = self.lst.currentRow()
         if 0 <= row < len(self.items()):
-            self.lst.item(row).setText(self.describe(self.items()[row]))
+            said = self.describe(self.items()[row])
+            if isinstance(self.lst, ItemTable):
+                self.lst.set_row(row, said)
+            else:
+                self.lst.item(row).setText(said)
         self.changed.emit()
         self.selected.emit(self.current(), False)     # its name may have changed
 

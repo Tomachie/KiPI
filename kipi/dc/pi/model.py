@@ -433,7 +433,9 @@ class PISetup:
                            c.get("rated_v"),
                            c.get("kept_at_rated_pct", DEFAULT_KEPT_AT_RATED_PCT),
                            c.get("dielectric", ""), c.get("aging_pct_per_decade", 0.0),
-                           c.get("mfg_tolerance_pct"))
+                           c.get("mfg_tolerance_pct"),
+                           values_from=dict(c.get("values_from") or {}),
+                           defaults_because=c.get("defaults_because", ""))
                   for c in d.get("caps", [])],
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),

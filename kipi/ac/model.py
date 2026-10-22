@@ -16,6 +16,15 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 # a typical curve's shape; the datasheet's curve is better where there is one.
 BIAS_EXP = 1.5
 DEFAULT_KEPT_AT_RATED_PCT = 40.0
+# Where a capacitor model's value came from, as the model list says it: an imported
+# file's basis, or "entered" once the user changes it.
+SOURCE_WORDS = {"datasheet": "datasheet", "graph": "graph", "derived": "derived",
+                "estimated": "estimate", "entered": "entered", "schematic": "schematic"}
+# Why an imported capacitor's values are defaults (estimates).
+DEFAULTS_WHY = {"no_part_number": "no part number", "no_datasheet": "no datasheet",
+                "not_in_datasheet": "not in its datasheet"}
+_VALUE_NAMES = {"C": "capacitance", "rating": "voltage rating", "kept": "kept at rating",
+                "tolerance": "tolerance"}
 REPORT_FORMATS = ("html", "pdf")          # what a report can be written as (#119)
 
 # Aging (#109): a class II ceramic loses a fixed share of its capacitance per decade of
@@ -68,6 +77,32 @@ class CapModel:
     # not set). Worst case for a PDN is the low end, so the sweep settings apply it
     # subtractively: the model keeps 1 - tolerance of its capacitance.
     mfg_tolerance_pct: Optional[float] = None
+    # Where each value came from ("C", "ESL", "ESR", "kept", "rating", "dielectric",
+    # "aging", "tolerance" -> "datasheet" / "graph" / "estimated" / "entered" ...), and
+    # why an imported file's values are defaults ("no_part_number" ...).
+    values_from: Dict[str, str] = field(default_factory=dict)
+    defaults_because: str = ""
+
+    def values_from_text(self) -> str:
+        """Where the model's values came from, in a few words: "datasheet", "ESR
+        estimate, ESL graph", "estimate - no part number", "values needed"."""
+        if not (self.capacitance_f > 0 and self.esl_h > 0 and self.esr_ohm > 0):
+            return "values needed"
+        words = {k: SOURCE_WORDS.get(self.values_from.get(k, ""), "")
+                 for k in ("ESR", "ESL")}
+        if not any(words.values()):
+            said = "not recorded"
+        elif words["ESR"] == words["ESL"]:
+            said = words["ESR"]
+        else:
+            said = ", ".join(f"{k} {w or 'not recorded'}" for k, w in words.items())
+        if self.defaults_because and "estimate" in words.values():
+            said += f" - {DEFAULTS_WHY.get(self.defaults_because, self.defaults_because)}"
+        entered = [k for k, v in self.values_from.items()
+                   if v == "entered" and k not in ("ESR", "ESL")]
+        if entered:
+            said += "; " + ", ".join(_VALUE_NAMES.get(k, k) for k in entered) + " entered"
+        return said
 
     @property
     def dc_bias(self) -> bool:

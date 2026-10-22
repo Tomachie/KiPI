@@ -114,6 +114,28 @@ def test_capacitors_on_defaults_are_named_with_why():
     pdn = _ac_pdn()
     pdn["ac_defaults"] = [{"because": "no_part_number", "refdes": ["C1", "C2"]}]
     _, notes = run(pdn)
-    assert any("defaults are used for C1, C2" in n
-               and "the schematic does not use a part number so a datasheet could not be "
-                   "looked up" in n for n in notes)
+    note = next(n for n in notes if n.startswith("Capacitor AC values"))
+    # The count and the reason first, the capacitors on the next line.
+    first, refs = note.split("\n")
+    assert "defaults are used for 2 capacitors" in first
+    assert ("the schematic does not use a part number so a datasheet could not be "
+            "looked up") in first
+    assert refs == "C1, C2"
+
+
+def test_capacitor_models_say_where_their_values_came_from():
+    pdn = _ac_pdn()
+    for c in pdn["rails"][1]["decoupling"]:
+        c["ac"] = dict(c["ac"], defaults_because="no_part_number")
+    setup, _ = TomachiePdnImporter(pdn, _cap_board()).run()
+    m = {x.name: x for x in setup.caps}["PN22U"]
+    assert m.values_from == {"C": "schematic", "ESL": "estimated", "ESR": "estimated"}
+    assert m.values_from_text() == "estimate - no part number"
+    m.values_from["ESL"] = "graph"
+    assert m.values_from_text() == "ESR estimate, ESL graph - no part number"
+    # Kept in the setup file.
+    again = PISetup.from_dict(setup.to_dict())
+    m2 = {x.name: x for x in again.caps}["PN22U"]
+    assert (m2.values_from, m2.defaults_because) == (m.values_from, "no_part_number")
+    # A model without all three values says so.
+    assert {x.name: x for x in setup.caps}["PN100N"].values_from_text() == "values needed"

@@ -23,7 +23,7 @@ from qtpy.QtWidgets import (
     QSpinBox, QTableWidget, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from kipi.ac.gui.caps import describe_cap, models_from_values, new_cap
+from kipi.ac.gui.caps import CAP_COLUMNS, cap_columns, models_from_values, new_cap
 from kipi.ac.gui.panel import CapEditor
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import classify_nets, sorted_nets
@@ -773,7 +773,8 @@ class NoisePanel(QWidget, PartSelection):
                                  self._new_aggressor, self._describe_aggressor,
                                  noun="aggressor")
         self.cap_list = ItemList(lambda: self.setup.caps, CapEditor(self),
-                                 lambda: new_cap(self.setup), describe_cap,
+                                 lambda: new_cap(self.setup), cap_columns,
+                                 columns=CAP_COLUMNS,
                                  noun="capacitor model")
         b_values = QPushButton("Models from values")
         b_values.setToolTip("Make one model per distinct value of the capacitors that have "

@@ -692,16 +692,22 @@ class TomachiePdnImporter:
         for pn, caps in sorted(by_pn.items()):
             farads = next((f for f in (parse_capacitance(str(c.get("value", "")).split("/")[0])
                                        for c in caps) if f), 0.0)
-            esl = next((h for h in (_henries(c.get("esl")) for c in caps) if h), 0.0)
+            esl, esl_basis = next(((h, c["esl"].get("basis", "")) for c in caps
+                                   if (h := _henries(c.get("esl")))), (0.0, ""))
             m = models.get(pn)
             if m is None:
                 m = models[pn] = CapModel(pn, farads, esl, 0.0)
                 self.setup.caps.append(m)
                 added += 1
+                m.values_from["C"] = "schematic"
+                if esl:
+                    m.values_from["ESL"] = esl_basis
             else:
                 before = (m.capacitance_f, m.esl_h)
                 m.capacitance_f, m.esl_h = m.capacitance_f or farads, m.esl_h or esl
                 filled += before != (m.capacitance_f, m.esl_h)
+                if not before[1] and m.esl_h:
+                    m.values_from["ESL"] = esl_basis
             esr_filled, esr_estimated = fill_cap_model(m, caps, esl)
             esr_from_file += esr_filled
             esr_estimates += esr_estimated

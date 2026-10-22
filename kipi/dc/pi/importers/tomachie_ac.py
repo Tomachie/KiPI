@@ -46,17 +46,18 @@ def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tupl
     Returns ``(esr_filled, esr_estimated)``."""
     blocks = [c["ac"] for c in caps if isinstance(c.get("ac"), dict)]
     esr_filled = esr_estimated = False
+    src = m.values_from
     for ac in blocks:
-        own_esl, _ = ac_value(ac.get("esl"), "h")
-        if own_esl and m.esl_h in (0.0, file_esl):
-            m.esl_h = own_esl
-        kept, _ = ac_value(ac.get("kept_at_rated"), "pct")
+        own_esl, basis = ac_value(ac.get("esl"), "h")
+        if own_esl and m.esl_h in (0.0, file_esl) and src.get("ESL") != "entered":
+            m.esl_h, src["ESL"] = own_esl, basis or "graph"
+        kept, basis = ac_value(ac.get("kept_at_rated"), "pct")
         if kept and m.kept_at_rated_pct == DEFAULT_KEPT_AT_RATED_PCT:
-            m.kept_at_rated_pct = kept
+            m.kept_at_rated_pct, src["kept"] = kept, basis or "graph"
         if not m.esr_ohm:
             esr, basis = ac_value(ac.get("esr"), "ohm")
             if esr:
-                m.esr_ohm = esr
+                m.esr_ohm, src["ESR"] = esr, basis
                 esr_filled, esr_estimated = True, basis == "estimated"
         if m.rated_v is None:
             m.rated_v = _positive(ac.get("rated_v"))
@@ -66,6 +67,8 @@ def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tupl
                 m.aging_pct_per_decade = AGING_PCT_PER_DECADE[m.dielectric]
         if m.mfg_tolerance_pct is None:
             m.mfg_tolerance_pct = _positive(ac.get("tolerance_pct"))
+        if ac.get("defaults_because") and not m.defaults_because:
+            m.defaults_because = str(ac["defaults_because"])
     return esr_filled, esr_estimated
 
 
@@ -94,12 +97,14 @@ DEFAULTS_BECAUSE = {
 
 def defaults_notes(pdn: dict) -> List[str]:
     """One import note per reason the file gives for capacitors whose AC values are
-    defaults (estimates), naming them, so the cause is in front of the user."""
+    defaults (estimates): the count and the reason first, so a long list does not push
+    the cause out of view, then the capacitors on the line after."""
     notes = []
     for d in pdn.get("ac_defaults") or []:
         refs = d.get("refdes") or []
         if refs:
             why = DEFAULTS_BECAUSE.get(d.get("because"), str(d.get("because")))
-            notes.append(f"Capacitor AC values (AC): defaults are used for {', '.join(refs)} - "
-                         f"{why}")
+            many = "capacitor" if len(refs) == 1 else "capacitors"
+            notes.append(f"Capacitor AC values (AC): defaults are used for {len(refs)} {many} "
+                         f"- {why}:\n{', '.join(refs)}")
     return notes

@@ -31,14 +31,30 @@ def new_cap(setup: PISetup) -> CapModel:
     return CapModel(_unique("Model1", [m.name for m in setup.caps]))
 
 
-def describe_cap(m: CapModel) -> str:
+#: The capacitor model list's columns: the model, where its values came from, the values.
+CAP_COLUMNS = ("Model", "Values from", "Values")
+
+
+def _values(m: CapModel) -> str:
     vals = (f"{fmt_farads(m.capacitance_f)}, {m.esl_h * 1e9:g} nH, {m.esr_ohm * 1e3:g} mΩ"
             if m.capacitance_f and m.esl_h and m.esr_ohm else "values needed")
     bias = f", DC bias {m.rated_v:g} V rated" if m.dc_bias else ""
     bias += f", {m.dielectric}" if m.dielectric else ""
     bias += f", ±{m.mfg_tolerance_pct:g} %" if m.mfg_tolerance_pct else ""
-    return (f"{m.name}: {vals}{bias} "
-            f"({len(m.refs)} part{'s' if len(m.refs) != 1 else ''})")
+    return vals + bias
+
+
+def _model(m: CapModel) -> str:
+    return f"{m.name} ({len(m.refs)} part{'s' if len(m.refs) != 1 else ''})"
+
+
+def describe_cap(m: CapModel) -> str:
+    return f"{m.name}: {_values(m)} ({len(m.refs)} part{'s' if len(m.refs) != 1 else ''})"
+
+
+def cap_columns(m: CapModel) -> tuple:
+    """The model's row in the list: :data:`CAP_COLUMNS`."""
+    return (_model(m), m.values_from_text(), _values(m))
 
 
 def models_from_values(parent: QWidget, snapshot: BoardSnapshot, setup: PISetup,

@@ -472,14 +472,16 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     for m, n in models:
         refs = sorted((r for r in result.caps if model_of.get(r) is m), key=_natural)
         srf = m.srf_hz()
-        row = [_e(m.name), _si(m.capacitance_f, "F"), _si(m.esl_h, "H"),
-               _si(m.esr_ohm, "Ω"), _hz(srf) if srf else "", str(n), _e(", ".join(refs))]
+        row = [_e(m.name), _e(m.values_from_text()), _si(m.capacitance_f, "F"),
+               _si(m.esl_h, "H"), _si(m.esr_ohm, "Ω"), _hz(srf) if srf else "", str(n),
+               _e(", ".join(refs))]
         if bias:
-            row.insert(2, _bias_text(m, [bias[r] for r in refs if r in bias]))
+            row.insert(3, _bias_text(m, [bias[r] for r in refs if r in bias]))
         rows.append(row)
-    head = ["Model", "C", "ESL", "ESR", "Self-resonance", "Parts on rail", "References"]
+    head = ["Model", "Values from", "C", "ESL", "ESR", "Self-resonance", "Parts on rail",
+            "References"]
     if bias:
-        head.insert(2, "C derated")
+        head.insert(3, "C derated")
     parts.append(_table(head, rows, "caps"))
     if bias:
         parts.append(f"<p class='note'>{_e(result.bias_note)}. DC bias follows a typical "

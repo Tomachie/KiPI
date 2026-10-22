@@ -1501,7 +1501,11 @@ class MainWindow(QMainWindow):
         if notes:
             self.log(f"Notes on Tomachie {name}:")
         for note in notes:
-            self.log(f"  {note}", logging.WARNING)
+            # A note's later lines (a long list of parts) go under its first.
+            first, *more = note.split("\n")
+            self.log(f"  {first}", logging.WARNING)
+            for line in more:
+                self.log(f"      {line}", logging.WARNING)
         used = setup.pin_nets()
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole) in used)
