@@ -36,7 +36,7 @@ CAP_COLUMNS = ("Model", "Values from", "Values")
 
 
 def _values(m: CapModel) -> str:
-    vals = (f"{fmt_farads(m.capacitance_f)}, {m.esl_h * 1e9:g} nH, {m.esr_ohm * 1e3:g} mΩ"
+    vals = (f"{fmt_farads(m.capacitance_f)}, {m.esl_h * 1e9:.4g} nH, {m.esr_ohm * 1e3:.4g} mΩ"
             if m.capacitance_f and m.esl_h and m.esr_ohm else "values needed")
     bias = f", DC bias {m.rated_v:g} V rated" if m.dc_bias else ""
     bias += f", {m.dielectric}" if m.dielectric else ""

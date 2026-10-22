@@ -1504,8 +1504,8 @@ class MainWindow(QMainWindow):
             # A note's later lines (a long list of parts) go under its first.
             first, *more = note.split("\n")
             self.log(f"  {first}", logging.WARNING)
-            for line in more:
-                self.log(f"      {line}", logging.WARNING)
+            for line in more:      # no-break spaces: the log is HTML, which drops spaces
+                self.log("\u00a0" * 6 + line, logging.WARNING)
         used = setup.pin_nets()
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole) in used)
