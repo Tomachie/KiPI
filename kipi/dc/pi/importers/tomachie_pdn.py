@@ -700,7 +700,7 @@ class TomachiePdnImporter:
                 before = (m.capacitance_f, m.esl_h)
                 m.capacitance_f, m.esl_h = m.capacitance_f or farads, m.esl_h or esl
                 filled += before != (m.capacitance_f, m.esl_h)
-            esr_filled, esr_estimated = fill_cap_model(m, caps)
+            esr_filled, esr_estimated = fill_cap_model(m, caps, esl)
             esr_from_file += esr_filled
             esr_estimates += esr_estimated
             m.refs += [c["refdes"] for c in caps if c["refdes"] not in assigned]

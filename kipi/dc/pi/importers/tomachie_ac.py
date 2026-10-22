@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
-from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel
+from kipi.ac.model import AGING_PCT_PER_DECADE, DEFAULT_KEPT_AT_RATED_PCT, CapModel
 from kipi.dc.pi.importers.pdn_figures import number
 
 # Tomachie writes a C0G dielectric as the decoder names it ("C0G(NP0)").
@@ -38,13 +38,21 @@ def dielectric(name) -> str:
     return d if d in AGING_PCT_PER_DECADE else ""
 
 
-def fill_cap_model(m: CapModel, caps: List[dict]) -> Tuple[bool, bool]:
-    """Fill what ``m`` lacks from its capacitors' ``ac`` blocks: ESR, rating, dielectric
-    and tolerance (the capacitance and ESL are filled from ``value`` / ``esl`` as before).
+def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tuple[bool, bool]:
+    """Fill what ``m`` lacks from its capacitors' ``ac`` blocks: ESR, rating, dielectric,
+    tolerance and the capacitance kept at the rated voltage (the capacitance and ESL are
+    filled from ``value`` / ``esl`` as before). The part's own ESL from its curve
+    replaces the case estimate ``file_esl``, never a value the user entered.
     Returns ``(esr_filled, esr_estimated)``."""
     blocks = [c["ac"] for c in caps if isinstance(c.get("ac"), dict)]
     esr_filled = esr_estimated = False
     for ac in blocks:
+        own_esl, _ = ac_value(ac.get("esl"), "h")
+        if own_esl and m.esl_h in (0.0, file_esl):
+            m.esl_h = own_esl
+        kept, _ = ac_value(ac.get("kept_at_rated"), "pct")
+        if kept and m.kept_at_rated_pct == DEFAULT_KEPT_AT_RATED_PCT:
+            m.kept_at_rated_pct = kept
         if not m.esr_ohm:
             esr, basis = ac_value(ac.get("esr"), "ohm")
             if esr:

@@ -93,3 +93,18 @@ def test_without_ac_values_a_capacitor_needs_its_part_number():
     pdn["rails"][1]["decoupling"][0].pop("part_number")
     setup, _ = TomachiePdnImporter(pdn, _cap_board()).run()
     assert {x.name: x.refs for x in setup.caps}["PN22U"] == ["C2"]
+
+
+def test_the_parts_own_curves_give_its_esl_and_dc_bias():
+    pdn = _ac_pdn()
+    for c in pdn["rails"][1]["decoupling"]:
+        c["ac"] = dict(c["ac"], esl={"h": 2.5e-10, "basis": "graph", "page": 3},
+                       kept_at_rated={"pct": 35.0, "basis": "graph", "page": 3})
+    setup, _ = TomachiePdnImporter(pdn, _cap_board()).run()
+    m = {x.name: x for x in setup.caps}["PN22U"]
+    assert (m.esl_h, m.kept_at_rated_pct) == (2.5e-10, 35.0)
+    # A value the user entered stays.
+    base = PISetup(caps=[CapModel("PN22U", 22e-6, 3e-10, 0.003, ["C1"], kept_at_rated_pct=50.0)])
+    setup, _ = TomachiePdnImporter(pdn, _cap_board(), base).run()
+    m = {x.name: x for x in setup.caps}["PN22U"]
+    assert (m.esl_h, m.kept_at_rated_pct) == (3e-10, 50.0)
