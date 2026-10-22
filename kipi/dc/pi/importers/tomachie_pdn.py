@@ -46,9 +46,10 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from kipi.core.model.board import BoardSnapshot
-from kipi.ac.model import CapModel
+from kipi.ac.model import CapModel, Probe
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
+from kipi.dc.pi.importers.tomachie_ac import fill_cap_model, load_step, vrm_bandwidth_khz
 from kipi.dc.solver.setup import DIODE_MIN_OHMS
 from kipi.dc.pi.importers.pdn_figures import (
     amps, curve_points, dc_resistance, forward_drop, number, rated_current,
@@ -142,6 +143,10 @@ class TomachiePdnImporter:
         self.linked: Set[str] = set()
         self.accuracies: List[str] = []          # VRM output bands taken from the file
         self.out_before_copper: List[Tuple[str, str]] = []   # (load, by how much)
+        # AC values (spec revision 9): what came from estimates, and the probes added.
+        self.estimated_bandwidths: List[str] = []
+        self.probes_added: List[str] = []
+        self.probes_without_ground: List[str] = []
 
     # ------------------------------------------------------------ helpers
     def _unique(self, name: str) -> str:
@@ -307,6 +312,10 @@ class TomachiePdnImporter:
                                   "as an ideal source")
                 kind = "source"
             ground, out_ground = self._regulator_grounds(reg, r, kind)
+            bandwidth_khz, bw_basis = vrm_bandwidth_khz(reg)
+            if bw_basis == "estimated":
+                how = (reg.get("ac") or {}).get("bandwidth", {}).get("from", "")
+                self.estimated_bandwidths.append(f"{reg['refdes']} ({how})" if how else reg["refdes"])
             self.setup.vrms.append(Vrm(self._unique(f"{reg['refdes']} {name}"), out, v, kind,
                                        efficiency=eff, input=vin,
                                        quiescent_a=amps(reg.get("quiescent_current")) or 0.0,
@@ -316,6 +325,7 @@ class TomachiePdnImporter:
                                        # Its datasheet's rated output current.
                                        current_limit_a=amps(reg.get("max_output_current")),
                                        ground=ground, output_ground=out_ground,
+                                       bandwidth_khz=bandwidth_khz,
                                        **self._accuracy(r, reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
@@ -598,6 +608,7 @@ class TomachiePdnImporter:
                                          current_known=label not in self.unknown_current
                                          and label not in self.static_current,
                                          copper_margin_v=self._copper_margin(l, label)))
+            self._probe(l, label, supply, self.setup.loads[-1].ground)
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
             if supply is not None:
@@ -631,6 +642,21 @@ class TomachiePdnImporter:
             if name not in self.skipped_rails:
                 self._rail_loads(r)
 
+    def _probe(self, l: dict, label: str, supply: PinRef, ground: Optional[PinRef]):
+        """A probe on an IC load's supply and ground pins, where the file gives the load
+        its AC values (spec revision 9). No target is set: the file gives the load step
+        but not its rise time, so the target frequency is the user's."""
+        if l.get("role") != "ic" or not isinstance(l.get("ac"), dict):
+            return
+        if any(p.name == label for p in self.setup.probes):
+            return
+        if ground is None:
+            self.probes_without_ground.append(label)
+            return
+        self.setup.probes.append(Probe(label, supply, ground))
+        step, basis = load_step(l)
+        self.probes_added.append(label + (f" (step {step * 1e3:.4g} mA, {basis})" if step else ""))
+
     # ------------------------------------------------------------ capacitors (AC)
     def _file_caps(self) -> List[dict]:
         out = []
@@ -643,19 +669,24 @@ class TomachiePdnImporter:
     def _caps(self):
         """One capacitor model per part number, from the capacitors' values and ESL. A
         model of that name already in the setup keeps what it holds and only gets what it
-        lacks; a capacitor already in another model stays there."""
+        lacks; a capacitor already in another model stays there. A capacitor with no part
+        number that carries AC values (spec revision 9; a schematic that gives values
+        only) is grouped by its value and ESL instead."""
         by_pn: Dict[str, List[dict]] = {}
         seen = set()
         for c in self._file_caps():
             ref = c.get("refdes")
-            if ref and ref not in seen and c.get("part_number") and ref in self.idx.by_part:
+            if not ref or ref in seen or ref not in self.idx.by_part:
+                continue
+            key = _cap_model_name(c)
+            if key:
                 seen.add(ref)
-                by_pn.setdefault(str(c["part_number"]), []).append(c)
+                by_pn.setdefault(key, []).append(c)
         if not by_pn:
             return
         models = {m.name: m for m in self.setup.caps}
         assigned = {ref for m in self.setup.caps for ref in m.refs}
-        added = filled = 0
+        added = filled = esr_from_file = esr_estimates = 0
         for pn, caps in sorted(by_pn.items()):
             farads = next((f for f in (parse_capacitance(str(c.get("value", "")).split("/")[0])
                                        for c in caps) if f), 0.0)
@@ -669,12 +700,18 @@ class TomachiePdnImporter:
                 before = (m.capacitance_f, m.esl_h)
                 m.capacitance_f, m.esl_h = m.capacitance_f or farads, m.esl_h or esl
                 filled += before != (m.capacitance_f, m.esl_h)
+            esr_filled, esr_estimated = fill_cap_model(m, caps)
+            esr_from_file += esr_filled
+            esr_estimates += esr_estimated
             m.refs += [c["refdes"] for c in caps if c["refdes"] not in assigned]
             assigned.update(m.refs)
         no_esr = sum(1 for pn in by_pn if not models[pn].esr_ohm)
+        esr = (f"ESR from the file for {esr_from_file} ({esr_estimates} of them estimates); "
+               if esr_from_file else "")
         self.notes.append(f"Capacitor models (AC): {added} added and {filled} filled in by "
-                          f"part number, with their ESL; {no_esr} have no ESR in the file, "
-                          "to be entered before an AC sweep")
+                          f"part number (by value and ESL where none is given), with their "
+                          f"ESL; {esr}{no_esr} have no ESR in the file, to be entered before "
+                          "an AC sweep")
 
     # ------------------------------------------------------------ what nothing powers
     def _drop_unpowered(self):
@@ -715,8 +752,21 @@ class TomachiePdnImporter:
         self._drop_unpowered()
         self._unreferenced_grounds()
         self._caps()
+        self._ac_notes()
         self._range_notes()
         return self.setup, self.notes
+
+    def _ac_notes(self):
+        if self.estimated_bandwidths:
+            self.notes.append("VRM bandwidth (AC): estimated for "
+                              f"{', '.join(self.estimated_bandwidths)}")
+        if self.probes_added:
+            self.notes.append(f"Probes (AC): {len(self.probes_added)} added on IC loads' "
+                              f"supply and ground pins, without a target (the file gives no "
+                              f"rise time): {', '.join(self.probes_added)}")
+        if self.probes_without_ground:
+            self.notes.append("Probes (AC): no ground pins found, so no probe, for "
+                              f"{', '.join(self.probes_without_ground)}")
 
     def _switched_paths(self):
         """Power the board carries between its terminals and runs nothing from (a relay
@@ -836,6 +886,17 @@ def _amps(a: float) -> str:
 
 def _volts_range(lo: Optional[float], hi: Optional[float]) -> str:
     return " to ".join("?" if x is None else f"{x:.4g}" for x in (lo, hi)) + " V"
+
+
+def _cap_model_name(c: dict) -> Optional[str]:
+    """The capacitor model a capacitor belongs to: its part number, else (with AC
+    values) its value and ESL, named so; None for neither."""
+    if c.get("part_number"):
+        return str(c["part_number"])
+    if not isinstance(c.get("ac"), dict) or not c.get("value"):
+        return None
+    esl = _henries(c.get("esl"))
+    return f"{c['value']}{f', {esl * 1e9:g} nH' if esl else ''} (no part number)"
 
 
 def _henries(esl) -> Optional[float]:
