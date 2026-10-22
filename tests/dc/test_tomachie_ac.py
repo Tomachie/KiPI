@@ -108,3 +108,10 @@ def test_the_parts_own_curves_give_its_esl_and_dc_bias():
     setup, _ = TomachiePdnImporter(pdn, _cap_board(), base).run()
     m = {x.name: x for x in setup.caps}["PN22U"]
     assert (m.esl_h, m.kept_at_rated_pct) == (3e-10, 50.0)
+
+
+def test_capacitors_on_defaults_are_named_with_why():
+    pdn = _ac_pdn()
+    pdn["ac_defaults"] = [{"because": "no_part_number", "refdes": ["C1", "C2"]}]
+    _, notes = run(pdn)
+    assert any("defaults are used for C1, C2" in n and "no part number" in n for n in notes)

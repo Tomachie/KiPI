@@ -81,3 +81,25 @@ def load_step(load: dict) -> Tuple[Optional[float], str]:
     ac = load.get("ac") if isinstance(load.get("ac"), dict) else {}
     return ac_value(ac.get("i_step"), "amps")
 
+
+
+# Why a capacitor's AC values are defaults (spec revision 9 "ac_defaults").
+DEFAULTS_BECAUSE = {
+    "no_part_number": "the schematic gives them no part number, so no datasheet could be "
+                      "looked up; add part numbers to the schematic",
+    "no_datasheet": "no datasheet was found for their part numbers",
+    "not_in_datasheet": "their datasheets print no ESR",
+}
+
+
+def defaults_notes(pdn: dict) -> List[str]:
+    """One import note per reason the file gives for capacitors whose AC values are
+    defaults (estimates), naming them, so the cause is in front of the user."""
+    notes = []
+    for d in pdn.get("ac_defaults") or []:
+        refs = d.get("refdes") or []
+        if refs:
+            why = DEFAULTS_BECAUSE.get(d.get("because"), str(d.get("because")))
+            notes.append(f"Capacitor AC values (AC): defaults are used for {', '.join(refs)} - "
+                         f"{why}")
+    return notes
