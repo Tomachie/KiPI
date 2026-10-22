@@ -114,4 +114,6 @@ def test_capacitors_on_defaults_are_named_with_why():
     pdn = _ac_pdn()
     pdn["ac_defaults"] = [{"because": "no_part_number", "refdes": ["C1", "C2"]}]
     _, notes = run(pdn)
-    assert any("defaults are used for C1, C2" in n and "no part number" in n for n in notes)
+    assert any("defaults are used for C1, C2" in n
+               and "the schematic does not use a part number so a datasheet could not be "
+                   "looked up" in n for n in notes)

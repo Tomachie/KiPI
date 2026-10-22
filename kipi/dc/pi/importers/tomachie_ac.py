@@ -85,8 +85,8 @@ def load_step(load: dict) -> Tuple[Optional[float], str]:
 
 # Why a capacitor's AC values are defaults (spec revision 9 "ac_defaults").
 DEFAULTS_BECAUSE = {
-    "no_part_number": "the schematic gives them no part number, so no datasheet could be "
-                      "looked up; add part numbers to the schematic",
+    "no_part_number": "the schematic does not use a part number so a datasheet could not "
+                      "be looked up; add part numbers to the schematic",
     "no_datasheet": "no datasheet was found for their part numbers",
     "not_in_datasheet": "their datasheets print no ESR",
 }
