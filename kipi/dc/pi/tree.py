@@ -37,7 +37,9 @@ list every unconnected pin. A rail with loads but none of them connected stops t
 
 After the solve each VRM's input is checked against its dropout and input range. A VRM
 that cannot hold its target voltage fails every load it feeds, directly or downstream; a
-group whose iteration did not converge leaves its loads unjudged.
+group whose iteration did not converge leaves its loads unjudged. An LDO with a stated
+dropout is judged on its dropout: below its input minimum but above its dropout it still
+regulates, and the loads it feeds fail as "accuracy not guaranteed", not out of regulation.
 
 Excluded nets: only the net groups kept by :func:`~kipi.dc.pi.model.active_setup` are
 solved; its notes on what was left out become warnings.
@@ -59,6 +61,7 @@ from kipi.dc.pi.model import (
     Load, PISetup, PinRef, Vrm, active_setup, net_groups, validate, vin_range,
 )
 from kipi.dc.pi.results import (  # also importable from here, where they were defined
+    ACCURACY_NOT_GUARANTEED,
     DISCONNECTED,
     NOT_CONVERGED,
     OUT_OF_REGULATION,
@@ -747,7 +750,8 @@ class _TreeSolver:
         out.warnings.extend(warnings)
         regulation = {v.name: self._regulation(v) for v in self.setup.vrms}
         out_of_reg = self._groups_out_of_regulation(regulation, out.warnings)
-        out.loads = [self._load_report(l, out_of_reg) for l in self.setup.loads]
+        low_accuracy = self._groups_below_accuracy(out_of_reg, out.warnings)
+        out.loads = [self._load_report(l, out_of_reg, low_accuracy) for l in self.setup.loads]
         # Loads whose current is not known are solved as entered; the headroom says what
         # they may add together before a load on their rail leaves its tolerance.
         out.headroom = self._headroom({r.name: r for r in out.loads})
@@ -773,17 +777,49 @@ class _TreeSolver:
         vis = self.v_in[v.name]
         lo, hi = min(vis), max(vis)
         vin_min, vin_max = vin_range(self.setup, v)
-        if vin_min is not None and lo < vin_min:
+        if vin_min is not None and lo < vin_min and not self._dropout_judges(v):
             return f"input {lo:.4f} V is below its {vin_min:.4g} V minimum"
         if vin_max is not None and hi > vin_max:
             return f"input {hi:.4f} V is above its {vin_max:.4g} V maximum"
         if v.kind == "ldo":
-            sign = 1.0 if v.voltage >= 0 else -1.0
-            headroom = min(sign * (vi - vo) for vi, vo in zip(vis, self.v_out[v.name]))
+            headroom = self._ldo_headroom(v)
             if headroom < v.dropout_v:
                 return (f"input leaves {headroom:.4f} V across it, less than its "
                         f"{v.dropout_v:g} V dropout")
         return ""
+
+    @staticmethod
+    def _dropout_judges(v: Vrm) -> bool:
+        """An LDO with a stated dropout regulates down to it: its input minimum is where
+        its datasheet states its accuracy from, not where it stops regulating."""
+        return v.kind == "ldo" and v.dropout_v > 0
+
+    def _ldo_headroom(self, v: Vrm) -> float:
+        sign = 1.0 if v.voltage >= 0 else -1.0
+        return min(sign * (vi - vo) for vi, vo in zip(self.v_in[v.name], self.v_out[v.name]))
+
+    def _accuracy(self, v: Vrm) -> str:
+        """Why an LDO that still regulates is not guaranteed its accuracy ("" if it is):
+        its input is above its dropout but below its stated input minimum."""
+        if not v.input or not self._dropout_judges(v):
+            return ""
+        vin_min, _ = vin_range(self.setup, v)
+        lo = min(self.v_in[v.name])
+        if vin_min is None or lo >= vin_min:
+            return ""
+        return (f"input {lo:.4f} V is below {vin_min:.4g} V, where its datasheet states "
+                f"its output accuracy; it still regulates ({self._ldo_headroom(v):.4f} V "
+                f"across it, {v.dropout_v:g} V dropout)")
+
+    def _groups_below_accuracy(self, out_of_reg: set, warnings: List[str]) -> set:
+        out = set()
+        for v in self.setup.vrms:
+            reason = self._accuracy(v)
+            if reason:
+                warnings.append(f"VRM {v.name}: {reason}; the loads it feeds are marked "
+                                f"{ACCURACY_NOT_GUARANTEED}")
+                out.update(self._fed_from(self.groups[v.output.net]))
+        return out - out_of_reg
 
     def _groups_out_of_regulation(self, regulation: Dict[str, str],
                                   warnings: List[str]) -> set:
@@ -801,7 +837,7 @@ class _TreeSolver:
         return [pid for grp in l.groups
                 for pid in self.pads(PinRef(l.supply.ref, l.supply.net, list(grp.pins)))]
 
-    def _load_report(self, l: Load, out_of_reg: set) -> LoadReport:
+    def _load_report(self, l: Load, out_of_reg: set, low_accuracy: set) -> LoadReport:
         g = self.groups[l.supply.net]
         sol = self.rail_solutions[g]
         nominal = self.driver[g].voltage
@@ -834,6 +870,8 @@ class _TreeSolver:
             rep.status = NOT_CONVERGED
         elif g in out_of_reg:
             rep.status, rep.passed = OUT_OF_REGULATION, False
+        elif g in low_accuracy:
+            rep.status, rep.passed = ACCURACY_NOT_GUARANTEED, False
         elif rep.limit_low is not None or rep.limit_high is not None:
             # Every pin within the tolerance: the lowest and the highest one.
             rep.passed = ((rep.limit_low is None or low >= rep.limit_low)

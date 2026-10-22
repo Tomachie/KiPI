@@ -8,7 +8,9 @@ from shapely.geometry import box
 from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate, vin_range,
 )
-from kipi.dc.pi.tree import NOT_CONVERGED, OUT_OF_REGULATION, solve_tree
+from kipi.dc.pi.tree import (
+    ACCURACY_NOT_GUARANTEED, NOT_CONVERGED, OUT_OF_REGULATION, solve_tree,
+)
 from kipi.dc.solver.fem import SolveError
 
 from tree_boards import R, board, by_name, pad, setup
@@ -303,6 +305,20 @@ def test_ldo_in_dropout_fails_the_loads_it_feeds():
     assert "dropout" in by_name(res.vrms, "U1").regulation
     ld = by_name(res.loads, "U2")
     assert ld.passed is False and ld.verdict == OUT_OF_REGULATION
+
+
+def test_ldo_above_its_dropout_below_its_input_minimum_still_regulates():
+    """Its input minimum is where its datasheet states its accuracy from: below it, and
+    above its dropout, the loads it feeds fail as accuracy not guaranteed."""
+    s = setup("ldo")
+    s.vrms[1].dropout_v, s.vrms[1].vin_min = 1.0, 13.0   # 12 V in: 8.7 V across it
+    res = solve_tree(board(), s)
+    assert by_name(res.vrms, "U1").regulation == ""
+    ld = by_name(res.loads, "U2")
+    assert ld.passed is False and ld.verdict == ACCURACY_NOT_GUARANTEED
+    assert any("where its datasheet states its output accuracy" in w for w in res.warnings)
+    s.vrms[1].dropout_v = 0.0                  # no dropout stated: the minimum is the floor
+    assert by_name(solve_tree(board(), s).loads, "U2").verdict == OUT_OF_REGULATION
 
 
 def test_switcher_below_its_input_minimum_fails_the_loads_it_feeds():

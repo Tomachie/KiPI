@@ -11,6 +11,9 @@ from kipi.dc.solver import NetResult
 
 NOT_CONVERGED = "NOT CONVERGED"
 OUT_OF_REGULATION = "VRM OUT OF REGULATION"
+# An LDO above its dropout but below the input its datasheet states its accuracy from: it
+# regulates, but its output is not guaranteed to be inside its accuracy.
+ACCURACY_NOT_GUARANTEED = "VRM ACCURACY NOT GUARANTEED"
 DISCONNECTED = "DISCONNECTED"       # no copper path to its VRM: not solved (#88)
 INCOMPLETE = "INCOMPLETE"           # no longer given: results files saved before headroom
 
