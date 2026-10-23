@@ -18,13 +18,20 @@ from kipi.dc.pi.importers.pdn_figures import number
 _DIELECTRIC_ALIASES = {"C0G(NP0)": "C0G", "NP0": "C0G", "COG": "C0G"}
 
 
+GRAPH_SIG_FIGS = 4       # a value read off a datasheet graph is good to no more than this
+
+
 def ac_value(field, unit_key: str) -> Tuple[Optional[float], str]:
     """``(value, basis)`` of an AC field ``{unit_key: v, "basis": ...}``; ``(None, "")``
-    for "unknown" or none."""
+    for "unknown" or none. A value read off a graph is rounded to the figures a graph
+    can give."""
     if not isinstance(field, dict):
         return None, ""
     v = number(field.get(unit_key))
-    return (v, str(field.get("basis", ""))) if v and v > 0 else (None, "")
+    if not (v and v > 0):
+        return None, ""
+    basis = str(field.get("basis", ""))
+    return (float(f"{v:.{GRAPH_SIG_FIGS}g}") if basis == "graph" else v), basis
 
 
 def _positive(v) -> Optional[float]:

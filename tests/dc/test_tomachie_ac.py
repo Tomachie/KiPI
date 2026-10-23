@@ -123,6 +123,13 @@ def test_capacitors_on_defaults_are_named_with_why():
     assert refs == "C1, C2"
 
 
+def test_a_value_read_off_a_graph_is_rounded_to_four_figures():
+    from kipi.dc.pi.importers.tomachie_ac import ac_value
+    assert ac_value({"h": 1.075330938e-9, "basis": "graph"}, "h") == (1.075e-9, "graph")
+    assert ac_value({"ohm": 0.0058331, "basis": "estimated"}, "ohm") == (0.0058331,
+                                                                         "estimated")
+
+
 def test_capacitor_models_say_where_their_values_came_from():
     pdn = _ac_pdn()
     for c in pdn["rails"][1]["decoupling"]:
