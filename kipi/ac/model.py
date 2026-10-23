@@ -18,8 +18,14 @@ BIAS_EXP = 1.5
 DEFAULT_KEPT_AT_RATED_PCT = 40.0
 # Where a capacitor model's value came from, as the model list says it: an imported
 # file's basis, or "entered" once the user changes it.
-SOURCE_WORDS = {"datasheet": "datasheet", "graph": "graph", "derived": "derived",
-                "estimated": "estimate", "entered": "entered", "schematic": "schematic"}
+SOURCE_WORDS = {"maker_model": "maker's measured file", "datasheet": "datasheet",
+                "graph": "graph", "derived": "derived", "estimated": "estimate",
+                "entered": "entered", "schematic": "schematic"}
+
+
+def source_word(basis: str) -> str:
+    """How the model list says a basis; one it does not know, as the file names it."""
+    return SOURCE_WORDS.get(basis, basis.replace("_", " "))
 # Why an imported capacitor's values are defaults (estimates).
 DEFAULTS_WHY = {"no_part_number": "no part number", "no_datasheet": "no datasheet",
                 "not_in_datasheet": "not in its datasheet"}
@@ -88,8 +94,7 @@ class CapModel:
         estimate, estimates because: no part number"; "not recorded" when nothing is."""
         order = ("C", "ESL", "ESR", "rating", "kept", "dielectric", "aging", "tolerance")
         keys = sorted(self.values_from, key=lambda k: order.index(k) if k in order else 99)
-        said = [f"{_VALUE_NAMES.get(k, k)} {SOURCE_WORDS.get(self.values_from[k], '')}"
-                for k in keys]
+        said = [f"{_VALUE_NAMES.get(k, k)} {source_word(self.values_from[k])}" for k in keys]
         if not said:
             return "not recorded"
         why = DEFAULTS_WHY.get(self.defaults_because, self.defaults_because)
@@ -102,8 +107,7 @@ class CapModel:
         estimate, ESL graph", "estimate - no part number", "values needed"."""
         if not (self.capacitance_f > 0 and self.esl_h > 0 and self.esr_ohm > 0):
             return "values needed"
-        words = {k: SOURCE_WORDS.get(self.values_from.get(k, ""), "")
-                 for k in ("ESR", "ESL")}
+        words = {k: source_word(self.values_from.get(k, "")) for k in ("ESR", "ESL")}
         if not any(words.values()):
             said = "not recorded"
         elif words["ESR"] == words["ESL"]:

@@ -142,6 +142,11 @@ def test_capacitor_models_say_where_their_values_came_from():
     assert m.values_from_text() == "ESR estimate, ESL graph - no part number"
     assert m.values_from_detail() == ("capacitance schematic, ESL graph, ESR estimate, "
                                       "estimates because: no part number")
+    # The maker's measured S-parameter file; a basis KiPI does not know reads as written.
+    m.values_from.update(ESL="maker_model", ESR="maker_model")
+    assert m.values_from_text() == "maker's measured file"
+    m.values_from["ESR"] = "some_new_basis"
+    assert m.values_from_text() == "ESR some new basis, ESL maker's measured file"
     # Kept in the setup file.
     again = PISetup.from_dict(setup.to_dict())
     m2 = {x.name: x for x in again.caps}["PN22U"]
