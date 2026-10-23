@@ -50,7 +50,7 @@ from kipi.ac.model import CapModel, Probe
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.tomachie_ac import (
-    defaults_notes, fill_cap_model, load_step, vrm_bandwidth_khz,
+    defaults_notes, doubt_notes, fill_cap_model, load_step, vrm_bandwidth_khz,
 )
 from kipi.dc.solver.setup import DIODE_MIN_OHMS
 from kipi.dc.pi.importers.pdn_figures import (
@@ -766,6 +766,7 @@ class TomachiePdnImporter:
 
     def _ac_notes(self):
         self.notes.extend(defaults_notes(self.pdn))
+        self.notes.extend(doubt_notes(self.setup.caps))
         if self.estimated_bandwidths:
             self.notes.append("VRM bandwidth (AC): estimated for "
                               f"{', '.join(self.estimated_bandwidths)}")

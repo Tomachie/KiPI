@@ -53,8 +53,10 @@ def describe_cap(m: CapModel) -> str:
 
 
 def cap_columns(m: CapModel) -> tuple:
-    """The model's row in the list: :data:`CAP_COLUMNS`."""
-    return (_model(m), m.values_from_text(), _values(m))
+    """The model's row in the list: :data:`CAP_COLUMNS`. A cell may be ``(text, tip)``:
+    a maker's figure not trusted says why on hover."""
+    said = m.values_from_text()
+    return (_model(m), (said, m.doubt) if m.doubt else said, _values(m))
 
 
 def models_from_values(parent: QWidget, snapshot: BoardSnapshot, setup: PISetup,

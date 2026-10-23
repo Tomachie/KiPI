@@ -1374,14 +1374,16 @@ class ItemTable(QTableWidget):
         self.insertRow(row)
         self.set_row(row, cells)
 
-    def set_row(self, row: int, cells: Sequence[str]):
-        for col, text in enumerate(cells):
+    def set_row(self, row: int, cells: Sequence):
+        """Each cell is its text, or ``(text, tooltip)``."""
+        for col, cell in enumerate(cells):
+            text, tip_text = cell if isinstance(cell, tuple) else (cell, cell)
             it = self.item(row, col)
             if it is None:
                 self.setItem(row, col, QTableWidgetItem(text))
             else:
                 it.setText(text)
-            self.item(row, col).setToolTip(text)
+            self.item(row, col).setToolTip(tip_text)
 
     def item(self, row: int, col: int = 0):
         return super().item(row, col)

@@ -76,7 +76,27 @@ def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tupl
             m.mfg_tolerance_pct = _positive(ac.get("tolerance_pct"))
         if ac.get("defaults_because") and not m.defaults_because:
             m.defaults_because = str(ac["defaults_because"])
+        maker = ac.get("maker_model") if isinstance(ac.get("maker_model"), dict) else {}
+        if "equivalent_maker_model" in src.values() and maker.get("equivalent"):
+            m.equivalent = m.equivalent or str(maker["equivalent"])
+        if ac.get("doubt") and not m.doubt:
+            m.doubt = str(ac["doubt"])
     return esr_filled, esr_estimated
+
+
+def doubt_notes(models: List[CapModel]) -> List[str]:
+    """One import note for the models whose maker's own figure is used but not trusted:
+    the reason first, then each model and why on the lines after."""
+    doubted = [m for m in models if m.doubt]
+    if not doubted:
+        return []
+    many = "model" if len(doubted) == 1 else "models"
+    # The part count, not the references: a long list would push the reason out of view
+    # (the model's parts are in its editor).
+    lines = [f"{m.name} ({len(m.refs)} part{'' if len(m.refs) == 1 else 's'}): {m.doubt}"
+             for m in doubted]
+    return [f"Capacitor AC values (AC): the maker's own figure is used but not trusted for "
+            f"{len(doubted)} capacitor {many}:\n" + "\n".join(lines)]
 
 
 def vrm_bandwidth_khz(reg: dict) -> Tuple[Optional[float], str]:

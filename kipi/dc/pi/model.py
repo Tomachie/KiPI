@@ -435,7 +435,8 @@ class PISetup:
                            c.get("dielectric", ""), c.get("aging_pct_per_decade", 0.0),
                            c.get("mfg_tolerance_pct"),
                            values_from=dict(c.get("values_from") or {}),
-                           defaults_because=c.get("defaults_because", ""))
+                           defaults_because=c.get("defaults_because", ""),
+                           equivalent=c.get("equivalent", ""), doubt=c.get("doubt", ""))
                   for c in d.get("caps", [])],
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),

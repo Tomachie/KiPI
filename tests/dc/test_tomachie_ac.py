@@ -153,3 +153,27 @@ def test_capacitor_models_say_where_their_values_came_from():
     assert (m2.values_from, m2.defaults_because) == (m.values_from, "no_part_number")
     # A model without all three values says so.
     assert {x.name: x for x in setup.caps}["PN100N"].values_from_text() == "values needed"
+
+
+def test_an_equivalent_parts_file_and_a_maker_figure_not_trusted():
+    """An equivalent part's measured file is named as that part's, never this one's; a
+    maker's figure that is used but doubted is marked and said why, its value kept."""
+    pdn = _ac_pdn()
+    doubt = "the maker's figure gives ESL 1.76 nH; the equivalent's measured file 0.67 nH"
+    for c in pdn["rails"][1]["decoupling"]:
+        c["ac"] = dict(c["ac"], esr={"ohm": 0.004, "basis": "equivalent_maker_model"},
+                       esl={"h": 1.76e-9, "basis": "graph"}, doubt=doubt,
+                       maker_model={"status": "equivalent",
+                                    "equivalent": "TDK C1608X7R1E104K080AA"})
+    setup, notes = TomachiePdnImporter(pdn, _cap_board()).run()
+    m = {x.name: x for x in setup.caps}["PN22U"]
+    assert (m.esl_h, m.esr_ohm) == (1.76e-9, 0.004)
+    assert m.values_from_text() == ("ESR measured file of an equivalent part (TDK "
+                                    "C1608X7R1E104K080AA), ESL graph - not trusted")
+    assert m.values_from_detail().endswith(f"not trusted: {doubt}")
+    note = next(n for n in notes if "not trusted" in n)
+    first, line = note.split("\n")
+    assert first.endswith("not trusted for 1 capacitor model:")
+    assert line == f"PN22U (2 parts): {doubt}"
+    again = {x.name: x for x in PISetup.from_dict(setup.to_dict()).caps}["PN22U"]
+    assert (again.equivalent, again.doubt) == ("TDK C1608X7R1E104K080AA", doubt)
