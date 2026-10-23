@@ -83,6 +83,20 @@ class CapModel:
     values_from: Dict[str, str] = field(default_factory=dict)
     defaults_because: str = ""
 
+    def values_from_detail(self) -> str:
+        """Where each value came from, one by one: "capacitance schematic, ESL graph, ESR
+        estimate, estimates because: no part number"; "not recorded" when nothing is."""
+        order = ("C", "ESL", "ESR", "rating", "kept", "dielectric", "aging", "tolerance")
+        keys = sorted(self.values_from, key=lambda k: order.index(k) if k in order else 99)
+        said = [f"{_VALUE_NAMES.get(k, k)} {SOURCE_WORDS.get(self.values_from[k], '')}"
+                for k in keys]
+        if not said:
+            return "not recorded"
+        why = DEFAULTS_WHY.get(self.defaults_because, self.defaults_because)
+        if why and "estimated" in self.values_from.values():
+            said.append(f"estimates because: {why}")
+        return ", ".join(said)
+
     def values_from_text(self) -> str:
         """Where the model's values came from, in a few words: "datasheet", "ESR
         estimate, ESL graph", "estimate - no part number", "values needed"."""

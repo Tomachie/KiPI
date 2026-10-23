@@ -133,6 +133,8 @@ def test_capacitor_models_say_where_their_values_came_from():
     assert m.values_from_text() == "estimate - no part number"
     m.values_from["ESL"] = "graph"
     assert m.values_from_text() == "ESR estimate, ESL graph - no part number"
+    assert m.values_from_detail() == ("capacitance schematic, ESL graph, ESR estimate, "
+                                      "estimates because: no part number")
     # Kept in the setup file.
     again = PISetup.from_dict(setup.to_dict())
     m2 = {x.name: x for x in again.caps}["PN22U"]

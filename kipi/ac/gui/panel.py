@@ -89,6 +89,10 @@ class CapEditor(_Editor):
         self.esr = _spin(0, 1e6, 0, 3, " mΩ", 0.5)
         self.esr.setSpecialValueText("required")
         f.addRow("Name", self.name)
+        # Where each value came from: the file's basis, or the user's own entry.
+        self.values_from = QLabel()
+        self.values_from.setWordWrap(True)
+        f.addRow("Values from", self.values_from)
         f.addRow("Capacitance", self.cap)
         f.addRow("ESL", self.esl)
         f.addRow("ESR", self.esr)
@@ -216,6 +220,7 @@ class CapEditor(_Editor):
     # ------------------------------------------------------------ values
     def _load(self, m: CapModel):
         self.name.setText(m.name)
+        self.values_from.setText(m.values_from_detail())
         self.cap.setValue(m.capacitance_f * 1e6)
         self.esl.setValue(m.esl_h * 1e9)
         self.esr.setValue(m.esr_ohm * 1e3)
@@ -253,6 +258,7 @@ class CapEditor(_Editor):
         m.dielectric = self.dielectric.currentData() or ""
         m.aging_pct_per_decade = self.aging.value()
         m.mfg_tolerance_pct = self.mfg_tol.value() or None
+        self.values_from.setText(m.values_from_detail())
 
     # ------------------------------------------------------------ parts
     def fill_table(self):

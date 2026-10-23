@@ -175,4 +175,5 @@ def test_the_cap_list_shows_where_values_came_from(panel):
     assert [lst.horizontalHeaderItem(c).text() for c in range(3)] == [
         "Model", "Values from", "Values"]
     assert lst.item(row, 1).text() == m.values_from_text()
+    assert ed.values_from.text() == m.values_from_detail()
     assert "10 µF, 0.4 nH, 5 mΩ" in lst.item(row, 2).text()

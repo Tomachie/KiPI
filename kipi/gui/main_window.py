@@ -744,10 +744,16 @@ class MainWindow(QMainWindow):
             self._fitted = True
             fit_to_screen(self)
 
+    # Log colours (warning, error, stage line), for a dark and for a light background.
+    _LOG_COLORS = {True: ("#e0b050", "#ff6060", "#80c0ff"),
+                   False: ("#a85000", "#c00000", "#1a4f9c")}
+
     def log(self, text: str, level: int = logging.INFO):
-        color = {logging.WARNING: "#e0b050", logging.ERROR: "#ff6060"}.get(level)
+        dark = self.log_view.palette().base().color().lightness() < 128
+        warn, error, stage = self._LOG_COLORS[dark]
+        color = {logging.WARNING: warn, logging.ERROR: error}.get(level)
         if text.startswith("== "):
-            color = "#80c0ff"
+            color = stage
         esc = html.escape(text)
         self.log_view.appendHtml(f'<span style="color:{color}">{esc}</span>' if color else esc)
         self.log_view.moveCursor(QTextCursor.End)
