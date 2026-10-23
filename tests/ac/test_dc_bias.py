@@ -178,6 +178,8 @@ def test_the_cap_list_shows_where_values_came_from(panel):
     assert ed.values_from.text() == m.values_from_detail()
     m.doubt = "the maker's figure is 2.6 times the equivalent's"   # said on hover
     panel.cap_list.reload()
-    assert lst.item(row, 1).text().endswith("not trusted")
-    assert lst.item(row, 1).toolTip() == m.doubt
+    assert lst.item(row, 1).text().endswith("questionable")
+    assert lst.item(row, 1).toolTip().startswith("These are simulation values provided by "
+                                                 "the manufacturer")
+    assert lst.item(row, 1).toolTip().endswith(m.doubt)
     assert "10 µF, 0.4 nH, 5 mΩ" in lst.item(row, 2).text()

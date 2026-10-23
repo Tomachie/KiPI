@@ -169,11 +169,11 @@ def test_an_equivalent_parts_file_and_a_maker_figure_not_trusted():
     m = {x.name: x for x in setup.caps}["PN22U"]
     assert (m.esl_h, m.esr_ohm) == (1.76e-9, 0.004)
     assert m.values_from_text() == ("ESR measured file of an equivalent part (TDK "
-                                    "C1608X7R1E104K080AA), ESL graph - not trusted")
-    assert m.values_from_detail().endswith(f"not trusted: {doubt}")
-    note = next(n for n in notes if "not trusted" in n)
+                                    "C1608X7R1E104K080AA), ESL graph - questionable")
+    assert m.values_from_detail().endswith(f"questionable: {doubt}")
+    note = next(n for n in notes if "questionable" in n)
     first, line = note.split("\n")
-    assert first.endswith("not trusted for 1 capacitor model:")
+    assert first.endswith("questionable for 1 capacitor model:")
     assert line == f"PN22U (2 parts): {doubt}"
     again = {x.name: x for x in PISetup.from_dict(setup.to_dict()).caps}["PN22U"]
     assert (again.equivalent, again.doubt) == ("TDK C1608X7R1E104K080AA", doubt)

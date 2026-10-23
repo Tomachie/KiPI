@@ -85,7 +85,7 @@ def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tupl
 
 
 def doubt_notes(models: List[CapModel]) -> List[str]:
-    """One import note for the models whose maker's own figure is used but not trusted:
+    """One import note for the models whose maker's own figure is used but questionable:
     the reason first, then each model and why on the lines after."""
     doubted = [m for m in models if m.doubt]
     if not doubted:
@@ -95,7 +95,7 @@ def doubt_notes(models: List[CapModel]) -> List[str]:
     # (the model's parts are in its editor).
     lines = [f"{m.name} ({len(m.refs)} part{'' if len(m.refs) == 1 else 's'}): {m.doubt}"
              for m in doubted]
-    return [f"Capacitor AC values (AC): the maker's own figure is used but not trusted for "
+    return [f"Capacitor AC values (AC): the maker's own figure is used but questionable for "
             f"{len(doubted)} capacitor {many}:\n" + "\n".join(lines)]
 
 

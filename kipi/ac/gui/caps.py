@@ -11,7 +11,7 @@ from typing import List
 from qtpy.QtWidgets import QMessageBox, QWidget
 
 from kipi.ac.checks import capacitor_candidates
-from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel
+from kipi.ac.model import AGING_PCT_PER_DECADE, QUESTIONABLE, CapModel
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.parts import (
     is_class2, parse_capacitance, parse_dielectric, parse_voltage_rating,
@@ -54,9 +54,10 @@ def describe_cap(m: CapModel) -> str:
 
 def cap_columns(m: CapModel) -> tuple:
     """The model's row in the list: :data:`CAP_COLUMNS`. A cell may be ``(text, tip)``:
-    a maker's figure not trusted says why on hover."""
+    a questionable maker's figure says what that means, and why, on hover."""
     said = m.values_from_text()
-    return (_model(m), (said, m.doubt) if m.doubt else said, _values(m))
+    return (_model(m), (said, f"{QUESTIONABLE}.\n\n{m.doubt}") if m.doubt else said,
+            _values(m))
 
 
 def models_from_values(parent: QWidget, snapshot: BoardSnapshot, setup: PISetup,

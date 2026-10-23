@@ -29,6 +29,9 @@ def source_word(basis: str, equivalent: str = "") -> str:
     if basis == "equivalent_maker_model":
         return "measured file of an equivalent part" + (f" ({equivalent})" if equivalent else "")
     return SOURCE_WORDS.get(basis, basis.replace("_", " "))
+# What a questionable maker's figure means, said wherever the mark is explained.
+QUESTIONABLE = ("These are simulation values provided by the manufacturer and we question "
+                "their accuracy when compared to like capacitors")
 # Why an imported capacitor's values are defaults (estimates).
 DEFAULTS_WHY = {"no_part_number": "no part number", "no_datasheet": "no datasheet",
                 "not_in_datasheet": "not in its datasheet"}
@@ -92,7 +95,7 @@ class CapModel:
     values_from: Dict[str, str] = field(default_factory=dict)
     defaults_because: str = ""
     # The equivalent part whose measured file gave a value ("TDK C1608X7R1E104K080AA"),
-    # and why the maker's own figure, used, is not trusted ("" when it is).
+    # and why the maker's own figure, used, is questionable ("" when it is not).
     equivalent: str = ""
     doubt: str = ""
 
@@ -109,7 +112,7 @@ class CapModel:
         if why and "estimated" in self.values_from.values():
             said.append(f"estimates because: {why}")
         if self.doubt:
-            said.append(f"not trusted: {self.doubt}")
+            said.append(f"questionable: {self.doubt}")
         return ", ".join(said)
 
     def values_from_text(self) -> str:
@@ -132,7 +135,7 @@ class CapModel:
         if entered:
             said += "; " + ", ".join(_VALUE_NAMES.get(k, k) for k in entered) + " entered"
         if self.doubt:
-            said += " - not trusted"
+            said += " - questionable"
         return said
 
     @property
