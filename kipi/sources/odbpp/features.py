@@ -309,10 +309,25 @@ def pad_points(f: Feature, units: Units, max_error: float = DEFAULT_MAX_ERROR_MM
     return out
 
 
+def place(g, f: Feature, mirror: bool = True):
+    """A symbol's geometry ``g`` (centered on its origin, y down) placed as the pad ``f``:
+    mirrored, rotated and moved as :func:`pad_points` places a standard symbol."""
+    from shapely.ops import transform
+    a = math.radians(f.angle_deg)
+    c, s = math.cos(a), math.sin(a)
+    flip = -1.0 if f.mirror and mirror else 1.0
+
+    def move(x, y, z=None):
+        x = x * flip
+        return f.at[0] + x * c + y * s, f.at[1] - x * s + y * c
+    return transform(move, g)
+
+
 def geometry(f: Feature, units: Units, max_error: float = DEFAULT_MAX_ERROR_MM,
-             mirror: bool = True):
+             mirror: bool = True, user_symbol=None):
     """The copper of a feature as a shapely geometry, or None (negative features, text,
-    unknown symbols)."""
+    unknown symbols). ``user_symbol(name)`` gives a symbol the job defines itself (its
+    ``symbols/<name>/features``), centered on its origin, or None."""
     from shapely.geometry import LineString, Point as SPoint, Polygon as SPolygon
     from shapely.ops import unary_union
     if not f.positive:
@@ -320,6 +335,9 @@ def geometry(f: Feature, units: Units, max_error: float = DEFAULT_MAX_ERROR_MM,
     if f.kind == "P":
         pts = pad_points(f, units, max_error, mirror)
         if pts is None:
+            own = user_symbol(f.symbol) if user_symbol is not None else None
+            if own is not None and not own.is_empty:
+                return place(own, f, mirror)
             size = symbol_size(f.symbol, units)
             return SPoint(f.at).buffer(size[0] / 2.0, quad_segs=8) if size else None
         g = SPolygon(pts)

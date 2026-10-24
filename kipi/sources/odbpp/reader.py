@@ -294,9 +294,27 @@ class _Board:
         self.layers: Dict[str, feat.LayerFeatures] = {}
         self.mirror = True                  # mirror the symbols of mirrored pads
         self.kicad = False                  # written by KiCad, with its quirks
+        self.user_symbols: Dict[str, object] = {}   # name -> geometry, or None
 
     def geometry(self, f: feat.Feature, folder: str):
-        return feat.geometry(f, self.layers[folder].units, mirror=self.mirror)
+        return feat.geometry(f, self.layers[folder].units, mirror=self.mirror,
+                             user_symbol=self.user_symbol)
+
+    def user_symbol(self, name: str):
+        """A pad shape the job defines itself (``symbols/<name>/features``, as Allegro
+        writes its custom pads): the union of its positive features, centered on its
+        origin; None if the job has no such symbol."""
+        if name not in self.user_symbols:
+            self.user_symbols[name] = None          # a symbol that uses itself stops here
+            text = self.job.read(f"symbols/{name}/features")
+            if text is not None:
+                from shapely.ops import unary_union
+                lf = feat.parse(text, self.units)
+                parts = [g for g in (feat.geometry(sf, lf.units, mirror=False,
+                                                   user_symbol=self.user_symbol)
+                                     for sf in lf.features) if g is not None and not g.is_empty]
+                self.user_symbols[name] = unary_union(parts) if parts else None
+        return self.user_symbols[name]
 
     def features(self, folder: str) -> Optional[feat.LayerFeatures]:
         if folder not in self.layers:
