@@ -101,6 +101,15 @@ def test_a_probe_target_from_a_slew_and_per_pin_steps():
     assert p.target_hz == pytest.approx(1 / (3.141592653589793 * 0.2 / 2e7))
 
 
+def test_a_module_with_its_own_regulators_needs_no_step():
+    setup, notes = run(_target_pdn(i_step="unknown", i_step_because="module"))
+    p = by_name(setup.probes, "U2")
+    said = ("Module carries its own regulators. Module doesn't publish an i_step as it has "
+            "its own regulators, designer only needs to supply steady input.")
+    assert (p.target_ohm, p.target_from) == (None, said)
+    assert f"Probe targets (AC): not needed for U2 - {said}" in notes
+
+
 def test_the_makers_own_target_wins_and_no_step_says_why():
     setup, _ = run(_target_pdn(target={"ohm": 0.02, "hz": 2e7, "basis": "datasheet",
                                        "page": 41},

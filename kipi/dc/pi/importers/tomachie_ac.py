@@ -127,6 +127,10 @@ STEP_BECAUSE = {"no_dynamic_figure": "its datasheet prints no dynamic current",
                 "no_datasheet": "no datasheet was found for its part number",
                 "no_part_number": "the schematic does not give its part number",
                 "not_read": "its datasheet was not read for it"}
+# A module with regulators of its own needs no step from the board (i_step_because
+# "module"): what the user is told, in the user's words.
+MODULE_NO_STEP = ("Module carries its own regulators. Module doesn't publish an i_step as it "
+                  "has its own regulators, designer only needs to supply steady input.")
 
 
 def load_rise(load: dict, step: float) -> Tuple[Optional[float], str]:

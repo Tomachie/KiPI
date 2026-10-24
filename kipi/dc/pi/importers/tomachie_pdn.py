@@ -50,7 +50,7 @@ from kipi.ac.model import CapModel, Probe
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.tomachie_ac import (
-    STEP_BECAUSE, defaults_notes, doubt_notes, fill_cap_model, load_rise, load_step,
+    MODULE_NO_STEP, STEP_BECAUSE, defaults_notes, doubt_notes, fill_cap_model, load_rise, load_step,
     maker_target, vrm_bandwidth_khz,
 )
 from kipi.dc.solver.setup import DIODE_MIN_OHMS
@@ -151,6 +151,7 @@ class TomachiePdnImporter:
         self.new_probes: List[Tuple[Probe, dict]] = []
         self.targets_set: List[str] = []
         self.targets_missing: Dict[str, List[str]] = {}
+        self.targets_not_needed: List[str] = []
         self.probes_without_ground: List[str] = []
 
     # ------------------------------------------------------------ helpers
@@ -683,6 +684,10 @@ class TomachiePdnImporter:
             step, step_basis = load_step(l, pins)
             if not step:
                 ac = l.get("ac") or {}
+                if ac.get("i_step_because") == "module":
+                    probe.target_from = MODULE_NO_STEP
+                    self.targets_not_needed.append(probe.name)
+                    continue
                 why = STEP_BECAUSE.get(ac.get("i_step_because"),
                                        ac.get("i_step_because") or "the file gives none")
                 self.targets_missing.setdefault(f"no current step: {why}", []).append(
@@ -828,6 +833,9 @@ class TomachiePdnImporter:
             self.notes.append(f"Probe targets (AC): set for {len(self.targets_set)} from the "
                               "file (the DC drop is not taken off; the target calculator "
                               "does that after a DC solve):\n" + "\n".join(self.targets_set))
+        if self.targets_not_needed:
+            self.notes.append(f"Probe targets (AC): not needed for "
+                              f"{', '.join(self.targets_not_needed)} - {MODULE_NO_STEP}")
         for why, names in self.targets_missing.items():
             self.notes.append(f"Probe targets (AC): none for {len(names)} probe"
                               f"{'' if len(names) == 1 else 's'} - {why}:\n"
