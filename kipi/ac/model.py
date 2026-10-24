@@ -207,6 +207,9 @@ class Probe:
     # by straight lines on the log-log plot. The flat values are kept while it is in use.
     target_custom: bool = False
     target_points: List[Tuple[float, float]] = field(default_factory=list)
+    # Where the target came from ("" when not recorded): an imported file's step and rise
+    # time, the maker's own target, or "entered" once the user changes it.
+    target_from: str = ""
 
     def target_mask(self) -> Optional[List[Tuple[float, float]]]:
         """The custom mask's points, sorted by frequency, when it is in use."""

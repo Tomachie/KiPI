@@ -57,11 +57,61 @@ def test_vrm_takes_its_bandwidth_and_says_when_estimated():
 
 
 def test_ic_load_gets_a_probe_without_a_target():
+    """A step with no rise time, slew or clock: a probe, but no target, and why."""
     setup, notes = run(_ac_pdn())
     p = by_name(setup.probes, "U2")
     assert (p.rail.net, p.ground.net, p.target_ohm, p.target_hz) == ("+3V3", "GND", None, None)
-    assert any("Probes (AC): 1 added" in n and "U2 (step 500 mA, estimated)" in n
-               for n in notes)
+    assert any(n.startswith("Probe targets (AC): none for 1 probe - no rise time, slew or "
+                            "fastest clock:") and n.endswith("\nU2") for n in notes)
+
+
+def _target_pdn(**ac):
+    pdn = _ac_pdn()
+    pdn["rails"][1]["loads"][0]["ac"] = ac
+    return pdn
+
+
+def test_a_probe_target_from_the_loads_step_and_clock():
+    """Z = V_ac / I_step up to 1 / (pi t_rise), t_rise = 1 / (pi f_max) from the clock."""
+    from kipi.ac.target import probe_loads, vrm_accuracies
+    setup, notes = run(_target_pdn(i_step={"amps": 0.5, "basis": "datasheet", "page": 9},
+                                   f_max={"hz": 50e6, "basis": "estimated"}))
+    p = by_name(setup.probes, "U2")
+    v_ac = probe_loads(setup, p.rail, p.ground)[0].tolerance.v_ac_v - max(
+        (a.v for a in vrm_accuracies(setup, p.rail)), default=0.0)
+    assert p.target_ohm == pytest.approx(v_ac / 0.5)
+    assert p.target_hz == pytest.approx(50e6)
+    assert p.target_from.startswith("step 500 mA (datasheet), fastest clock or edge, "
+                                    "estimated")
+    assert any(n.startswith("Probe targets (AC): set for 1") for n in notes)
+    # Kept in the setup file.
+    again = by_name(PISetup.from_dict(setup.to_dict()).probes, "U2")
+    assert again.target_from == p.target_from
+
+
+def test_a_probe_target_from_a_slew_and_per_pin_steps():
+    pins = by_name(run(_ac_pdn())[0].probes, "U2").rail.pins
+    setup, _ = run(_target_pdn(
+        i_step={"amps": 0.9, "basis": "datasheet"},
+        i_step_by_pin=[{"pin": f"U2_{pins[0]}", "amps": 0.2, "basis": "datasheet"},
+                       {"pin": "U2_999", "amps": 0.7, "basis": "datasheet"}],
+        slew={"amps_per_s": 2e7, "basis": "datasheet"}))
+    p = by_name(setup.probes, "U2")
+    assert p.target_from.startswith("step 200 mA (datasheet), slew, datasheet")
+    assert p.target_hz == pytest.approx(1 / (3.141592653589793 * 0.2 / 2e7))
+
+
+def test_the_makers_own_target_wins_and_no_step_says_why():
+    setup, _ = run(_target_pdn(target={"ohm": 0.02, "hz": 2e7, "basis": "datasheet",
+                                       "page": 41},
+                               i_step={"amps": 0.5, "basis": "datasheet"},
+                               f_max={"hz": 50e6, "basis": "estimated"}))
+    p = by_name(setup.probes, "U2")
+    assert (p.target_ohm, p.target_hz, p.target_from) == (0.02, 2e7,
+                                                          "the maker's target, page 41")
+    _, notes = run(_target_pdn(i_step="unknown", i_step_because="no_dynamic_figure"))
+    assert any("none for 1 probe - no current step: its datasheet prints no dynamic "
+               "current:\nU2" in n for n in notes)
 
 
 def test_a_file_without_ac_values_imports_as_before():

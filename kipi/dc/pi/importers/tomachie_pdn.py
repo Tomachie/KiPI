@@ -50,7 +50,8 @@ from kipi.ac.model import CapModel, Probe
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
 from kipi.dc.pi.importers.tomachie_ac import (
-    defaults_notes, doubt_notes, fill_cap_model, load_step, vrm_bandwidth_khz,
+    STEP_BECAUSE, defaults_notes, doubt_notes, fill_cap_model, load_rise, load_step,
+    maker_target, vrm_bandwidth_khz,
 )
 from kipi.dc.solver.setup import DIODE_MIN_OHMS
 from kipi.dc.pi.importers.pdn_figures import (
@@ -147,7 +148,9 @@ class TomachiePdnImporter:
         self.out_before_copper: List[Tuple[str, str]] = []   # (load, by how much)
         # AC values (spec revision 9): what came from estimates, and the probes added.
         self.estimated_bandwidths: List[str] = []
-        self.probes_added: List[str] = []
+        self.new_probes: List[Tuple[Probe, dict]] = []
+        self.targets_set: List[str] = []
+        self.targets_missing: Dict[str, List[str]] = {}
         self.probes_without_ground: List[str] = []
 
     # ------------------------------------------------------------ helpers
@@ -646,8 +649,8 @@ class TomachiePdnImporter:
 
     def _probe(self, l: dict, label: str, supply: PinRef, ground: Optional[PinRef]):
         """A probe on an IC load's supply and ground pins, where the file gives the load
-        its AC values (spec revision 9). No target is set: the file gives the load step
-        but not its rise time, so the target frequency is the user's."""
+        its AC values (spec revision 9). Its target is set once the power tree is in
+        (:meth:`_probe_targets`)."""
         if l.get("role") != "ic" or not isinstance(l.get("ac"), dict):
             return
         if any(p.name == label for p in self.setup.probes):
@@ -655,9 +658,59 @@ class TomachiePdnImporter:
         if ground is None:
             self.probes_without_ground.append(label)
             return
-        self.setup.probes.append(Probe(label, supply, ground))
-        step, basis = load_step(l)
-        self.probes_added.append(label + (f" (step {step * 1e3:.4g} mA, {basis})" if step else ""))
+        probe = Probe(label, supply, ground)
+        self.setup.probes.append(probe)
+        self.new_probes.append((probe, l))
+
+    def _probe_targets(self):
+        """Each new probe's target: the maker's own where the file gives one, else
+        Z = V_ac / I_step up to f = 1 / (pi t_rise), with V_ac the load's tolerance (its
+        tighter side) less the DC accuracy of the regulator driving its rail. The DC drop
+        is not taken off: it needs a DC solve (the target calculator does it)."""
+        from kipi.ac.target import _hz as _hz_text
+        from kipi.ac.target import probe_loads, target_from_transient, vrm_accuracies
+        kept = {p.name for p in self.setup.probes}
+        for probe, l in self.new_probes:
+            if probe.name not in kept:
+                continue
+            ohm, hz, said = maker_target(l)
+            if ohm and hz:
+                probe.target_ohm, probe.target_hz, probe.target_from = ohm, hz, said
+                self.targets_set.append(f"{probe.name} {ohm * 1e3:.4g} mOhm to "
+                                        f"{_hz_text(hz)} ({said})")
+                continue
+            pins = [f"{probe.rail.ref}_{p}" for p in probe.rail.pins or []]
+            step, step_basis = load_step(l, pins)
+            if not step:
+                ac = l.get("ac") or {}
+                why = STEP_BECAUSE.get(ac.get("i_step_because"),
+                                       ac.get("i_step_because") or "the file gives none")
+                self.targets_missing.setdefault(f"no current step: {why}", []).append(
+                    probe.name)
+                continue
+            rise, rise_basis = load_rise(l, step)
+            if not rise:
+                self.targets_missing.setdefault("no rise time, slew or fastest clock",
+                                                []).append(probe.name)
+                continue
+            loads = [x for x in probe_loads(self.setup, probe.rail, probe.ground)
+                     if x.tolerance]
+            if not loads:
+                self.targets_missing.setdefault("no supply tolerance", []).append(probe.name)
+                continue
+            accuracy = max((a.v for a in vrm_accuracies(self.setup, probe.rail)), default=0.0)
+            v_ac = loads[0].tolerance.v_ac_v - accuracy
+            t = target_from_transient(v_ac, step, step / rise) if v_ac > 0 else None
+            if t is None:
+                self.targets_missing.setdefault(
+                    "the regulator's DC accuracy takes the whole tolerance", []).append(
+                    probe.name)
+                continue
+            probe.target_ohm, probe.target_hz = t.z_ohm, t.f_hz
+            probe.target_from = (f"step {step * 1e3:.4g} mA ({step_basis}), "
+                                 f"{rise_basis}, ±{v_ac * 1e3:.4g} mV allowed")
+            self.targets_set.append(f"{probe.name} {t.z_ohm * 1e3:.4g} mOhm to "
+                                    f"{_hz_text(t.f_hz)} ({probe.target_from})")
 
     # ------------------------------------------------------------ capacitors (AC)
     def _file_caps(self) -> List[dict]:
@@ -760,6 +813,7 @@ class TomachiePdnImporter:
         self._drop_unpowered()
         self._unreferenced_grounds()
         self._caps()
+        self._probe_targets()
         self._ac_notes()
         self._range_notes()
         return self.setup, self.notes
@@ -770,10 +824,14 @@ class TomachiePdnImporter:
         if self.estimated_bandwidths:
             self.notes.append("VRM bandwidth (AC): estimated for "
                               f"{', '.join(self.estimated_bandwidths)}")
-        if self.probes_added:
-            self.notes.append(f"Probes (AC): {len(self.probes_added)} added on IC loads' "
-                              f"supply and ground pins, without a target (the file gives no "
-                              f"rise time): {', '.join(self.probes_added)}")
+        if self.targets_set:
+            self.notes.append(f"Probe targets (AC): set for {len(self.targets_set)} from the "
+                              "file (the DC drop is not taken off; the target calculator "
+                              "does that after a DC solve):\n" + "\n".join(self.targets_set))
+        for why, names in self.targets_missing.items():
+            self.notes.append(f"Probe targets (AC): none for {len(names)} probe"
+                              f"{'' if len(names) == 1 else 's'} - {why}:\n"
+                              + ", ".join(names))
         if self.probes_without_ground:
             self.notes.append("Probes (AC): no ground pins found, so no probe, for "
                               f"{', '.join(self.probes_without_ground)}")

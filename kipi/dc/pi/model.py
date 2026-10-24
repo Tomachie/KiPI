@@ -440,7 +440,8 @@ class PISetup:
                   for c in d.get("caps", [])],
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),
-                          [(float(f), float(z)) for f, z in p.get("target_points", [])])
+                          [(float(f), float(z)) for f, z in p.get("target_points", [])],
+                          target_from=p.get("target_from", ""))
                     for p in d.get("probes", [])],
             ac=ACSettings(**{k: v for k, v in d.get("ac", {}).items()
                              if k in {f.name for f in dataclasses.fields(ACSettings)}}),

@@ -433,3 +433,22 @@ def test_dialog_asks_for_a_dc_solve_for_a_regulators_current(app, monkeypatch):
     assert "in the last DC solve, 0.501 A" in d.btn_current.toolTip()
     d.btn_current.click()
     assert d.i_step.value() == pytest.approx(0.501)
+
+
+def test_the_probe_editor_says_where_the_target_came_from(app):
+    """An imported target says what it was made from; changing it makes it the user's."""
+    from kipi.ac.gui.panel import ACPanel
+    from kipi.ac.model import Probe
+    from kipi.dc.pi.model import PinRef
+    panel = ACPanel()
+    probe = Probe("U1", PinRef("U1", "+1V0", ["1"]), PinRef("U1", "GND", ["2"]),
+                  target_ohm=0.02, target_hz=1e7,
+                  target_from="step 500 mA (datasheet), slew, datasheet")
+    panel.setup.probes.append(probe)
+    panel.setEnabled(True)
+    panel.probe_list.reload()
+    panel.probe_list.lst.setCurrentRow(0)
+    ed = panel.probe_list.editor
+    assert ed.target_from.text() == probe.target_from
+    ed.target.setValue(15.0)                                  # mOhm
+    assert probe.target_from == "entered" and ed.target_from.text() == "entered"

@@ -428,6 +428,10 @@ class ProbeEditor(_Editor):
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.rail)
         f.addRow("Ground pins", self.ground)
+        # Where the target came from: the file's step and rise time, or the user's entry.
+        self.target_from = QLabel()
+        self.target_from.setWordWrap(True)
+        f.addRow("Target from", self.target_from)
         f.addRow("Target", self.target_kind)
         f.addRow("Target |Z|", self.target)
         f.addRow("Target frequency", self.target_f)
@@ -544,6 +548,7 @@ class ProbeEditor(_Editor):
             self._add_point_row(f_hz, z_ohm)
         self.target_kind.setCurrentIndex(1 if p.target_custom else 0)
         self._target_rows()
+        self.target_from.setText(p.target_from or "not recorded")
 
     def _save(self, p: Probe):
         old = p.rail
@@ -563,6 +568,10 @@ class ProbeEditor(_Editor):
             if gnd is not None and gnd != p.ground:
                 p.ground = gnd
                 self._show(self.ground, gnd)
+        if (_spin_changed(self.target, (p.target_ohm or 0.0) * 1e3)
+                or _spin_changed(self.target_f, (p.target_hz or 0.0) / 1e3)):
+            p.target_from = "entered"
+            self.target_from.setText(p.target_from)
         p.target_ohm = self.target.value() / 1e3 or None
         p.target_hz = self.target_f.value() * 1e3 or None
         p.target_custom = self.target_kind.currentData() == "custom"

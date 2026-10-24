@@ -9,6 +9,7 @@ stays as the setup has it, and the import notes say how many came from estimates
 
 from __future__ import annotations
 
+import math
 from typing import List, Optional, Tuple
 
 from kipi.ac.model import AGING_PCT_PER_DECADE, DEFAULT_KEPT_AT_RATED_PCT, CapModel
@@ -106,10 +107,53 @@ def vrm_bandwidth_khz(reg: dict) -> Tuple[Optional[float], str]:
     return (hz / 1e3, basis) if hz else (None, "")
 
 
-def load_step(load: dict) -> Tuple[Optional[float], str]:
-    """A load's current step in amps and its basis, from its ``ac`` block."""
+def load_step(load: dict, pins: Optional[List[str]] = None) -> Tuple[Optional[float], str]:
+    """A load's current step in amps and its basis, from its ``ac`` block: the steps of
+    the supply pins ``pins`` ("U2_7") where the file gives them per pin, else the load's
+    total."""
     ac = load.get("ac") if isinstance(load.get("ac"), dict) else {}
+    if pins:
+        mine = [ac_value(e, "amps") for e in ac.get("i_step_by_pin") or []
+                if isinstance(e, dict) and e.get("pin") in pins]
+        mine = [(a, b) for a, b in mine if a]
+        if mine:
+            bases = {b for _, b in mine}
+            return sum(a for a, _ in mine), bases.pop() if len(bases) == 1 else "mixed"
     return ac_value(ac.get("i_step"), "amps")
+
+
+# Why a load has no current step (spec revision 9 "i_step_because").
+STEP_BECAUSE = {"no_dynamic_figure": "its datasheet prints no dynamic current",
+                "no_datasheet": "no datasheet was found for its part number",
+                "no_part_number": "the schematic does not give its part number",
+                "not_read": "its datasheet was not read for it"}
+
+
+def load_rise(load: dict, step: float) -> Tuple[Optional[float], str]:
+    """The rise time of a load's step in seconds and how it was had: the file's rise
+    time, else its slew (step / slew), else its fastest clock or edge (1 / (pi f))."""
+    ac = load.get("ac") if isinstance(load.get("ac"), dict) else {}
+    t, basis = ac_value(ac.get("t_rise"), "s")
+    if t:
+        return t, f"rise time, {basis}"
+    slew, basis = ac_value(ac.get("slew"), "amps_per_s")
+    if slew:
+        return step / slew, f"slew, {basis}"
+    f, basis = ac_value(ac.get("f_max"), "hz")
+    if f:
+        return 1.0 / (math.pi * f), f"fastest clock or edge, {basis}"
+    return None, ""
+
+
+def maker_target(load: dict) -> Tuple[Optional[float], Optional[float], str]:
+    """The maker's own target impedance and frequency, where a power guide prints one."""
+    ac = load.get("ac") if isinstance(load.get("ac"), dict) else {}
+    t = ac.get("target")
+    if not isinstance(t, dict):
+        return None, None, ""
+    ohm, hz = _positive(t.get("ohm")), _positive(t.get("hz"))
+    page = f", page {t['page']}" if t.get("page") else ""
+    return ohm, hz, f"the maker's target{page}"
 
 
 
