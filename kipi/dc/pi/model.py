@@ -121,6 +121,9 @@ class Vrm:
     cable_mohm: float = 0.0
     # AC only: control loop bandwidth, kHz (None = not given).
     bandwidth_khz: Optional[float] = None
+    # The output voltages it can be set to, when a pin or firmware selects one (an SD
+    # card's 1.8 / 3.3 V I/O supply); the VRM editor offers them. Empty = one voltage.
+    levels: List[float] = field(default_factory=list)
     # Mesh remote sense (#93, DC only, off by default): every sense point's pins are held
     # at the target voltage (less the load line, above that point's ground sense pins), the
     # VRM's current entering there; its output pins only measure. Point 1 is sense and
@@ -403,6 +406,7 @@ class PISetup:
                       load_line_mohm=v.get("load_line_mohm", 0.0),
                       cable_mohm=v.get("cable_mohm", 0.0),
                       bandwidth_khz=v.get("bandwidth_khz"),
+                      levels=[float(x) for x in v.get("levels") or []],
                       mesh_sense=v.get("mesh_sense", False),
                       sense_points=[SensePoint(pin(sp.get("sense")),
                                                pin(sp.get("ground_sense")))

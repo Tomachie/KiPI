@@ -544,6 +544,14 @@ class VrmEditor(_Editor):
         f.addRow("Name", self.name)
         f.addRow("Type", self.kind)
         f.addRow("Target voltage", self.voltage)
+        # A regulator whose output a pin or firmware selects: its levels, one pick away.
+        self.level = QComboBox()
+        self.level.setToolTip("The output voltages this regulator can be set to (a pin or "
+                              "firmware selects one, e.g. an SD card's 1.8 / 3.3 V I/O "
+                              "supply). Picking one sets the target voltage; solve again "
+                              "to see the rail at that level.")
+        self.level.activated.connect(self._level_picked)
+        f.addRow("Level", self.level)
         f.addRow("Efficiency", self.eff)
         f.addRow("Quiescent", self.iq)
         f.addRow("Output current limit", self.i_limit)
@@ -820,10 +828,21 @@ class VrmEditor(_Editor):
         self._phase_rows()
         self._show_phase(self.obj)
 
+    def _level_picked(self, index: int):
+        level = self.level.itemData(index)
+        if level is not None:
+            self.voltage.setValue(level)        # saved like a typed target voltage
+
     def _load(self, v: Vrm):
         self.name.setText(v.name)
         self.kind.setCurrentIndex(max(0, self.kind.findData(v.kind)))
         self.voltage.setValue(v.voltage)
+        levels = getattr(v, "levels", None) or []
+        self.level.clear()
+        for x in levels:
+            self.level.addItem(f"{x:g} V", x)
+        self.level.setCurrentIndex(levels.index(v.voltage) if v.voltage in levels else -1)
+        self.form.setRowVisible(self.level, bool(levels))
         self.eff.setValue(v.efficiency * 100)
         self.iq.setValue(v.quiescent_a * 1e3)
         self.i_limit.setValue(v.current_limit_a or 0.0)

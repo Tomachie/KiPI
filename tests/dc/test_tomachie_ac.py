@@ -236,3 +236,25 @@ def test_an_equivalent_parts_file_and_a_maker_figure_not_trusted():
     assert line == f"PN22U (2 parts): {doubt}"
     again = {x.name: x for x in PISetup.from_dict(setup.to_dict()).caps}["PN22U"]
     assert (again.equivalent, again.doubt) == ("TDK C1608X7R1E104K080AA", doubt)
+
+
+def test_a_rail_with_selectable_levels_takes_its_default_and_keeps_the_others():
+    """A rail a pin or firmware sets to one of several levels (an SD card's 1.8 / 3.3 V
+    I/O supply): solved at its power-up default, else its lowest level; the others are
+    kept for the VRM editor and said in the notes."""
+    pdn = _ac_pdn()
+    rail = pdn["rails"][1]
+    rail["voltage"] = {"nominal": "not_specified", "basis": "not_stated", "levels": [1.8, 3.3]}
+    setup, notes = run(pdn)
+    v = next(x for x in setup.vrms if x.output.net == rail["name"])
+    assert (v.voltage, v.levels) == (1.8, [1.8, 3.3])
+    assert any("solved at 1.8 V (the lowest of its levels); it also runs at 3.3 V" in n
+               for n in notes)
+    rail["voltage"]["default_level"] = {"volts": 3.3, "basis": "pull_up", "from": "R97"}
+    setup, notes = run(pdn)
+    v = next(x for x in setup.vrms if x.output.net == rail["name"])
+    assert v.voltage == 3.3
+    assert any("solved at 3.3 V (its power-up default); it also runs at 1.8 V" in n
+               for n in notes)
+    again = next(x for x in PISetup.from_dict(setup.to_dict()).vrms if x.name == v.name)
+    assert again.levels == [1.8, 3.3]

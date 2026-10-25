@@ -152,6 +152,7 @@ class TomachiePdnImporter:
         self.targets_set: List[str] = []
         self.targets_missing: Dict[str, List[str]] = {}
         self.targets_not_needed: List[str] = []
+        self.rail_levels: Dict[str, List[float]] = {}   # rail -> its selectable voltages
         self.probes_without_ground: List[str] = []
 
     # ------------------------------------------------------------ helpers
@@ -175,7 +176,22 @@ class TomachiePdnImporter:
                     self.idx.learn(l["input_net"], l.get("pins", []))
 
     def _voltage(self, rail: dict) -> Optional[float]:
-        v = number(rail.get("voltage", {}).get("nominal"))
+        """The rail's voltage: its nominal, else, for a rail whose level a pin or firmware
+        selects (``voltage.levels``), its power-up default (``voltage.default_level``),
+        else the lowest level; the others are kept for the VRM editor and noted."""
+        volts = rail.get("voltage") or {}
+        v = number(volts.get("nominal"))
+        levels = sorted({x for x in (number(y) for y in volts.get("levels") or []) if x})
+        if v is None and levels:
+            dl = volts.get("default_level")
+            default = number(dl.get("volts")) if isinstance(dl, dict) else number(dl)
+            v = default if default in levels else levels[0]
+            how = "its power-up default" if default in levels else "the lowest of its levels"
+            others = ", ".join(f"{x:g} V" for x in levels if x != v)
+            self.rail_levels[rail["name"]] = levels
+            self.notes.append(f"Rail {rail['name']}: solved at {v:g} V ({how}); it also runs "
+                              f"at {others}: pick the level on the VRMs tab (Level) to solve "
+                              "it there")
         if v is None:
             self.notes.append(f"Rail {rail['name']}: voltage not stated, so it has no source; "
                               "its loads are not imported")
@@ -332,6 +348,7 @@ class TomachiePdnImporter:
                                        current_limit_a=amps(reg.get("max_output_current")),
                                        ground=ground, output_ground=out_ground,
                                        bandwidth_khz=bandwidth_khz,
+                                       levels=self.rail_levels.get(name, []),
                                        **self._accuracy(r, reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
