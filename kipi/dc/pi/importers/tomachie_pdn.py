@@ -67,6 +67,7 @@ NOT_A_LOAD = ("signal_pin_only", "not_a_supply")
 
 SCHEMA = "tomachie-pdn"
 SCHEMA_VERSION = 1
+MAX_FILE_BYTES = 64 << 20       # a power-tree file is kilobytes; this is not one
 SOURCE_ROLES = ("board_input", "battery", "generator")
 # A resistor joining two ground nets above this carries no DC to speak of (a shield's 1M).
 GROUND_LINK_MAX_OHMS = 1e3
@@ -1031,5 +1032,16 @@ def import_tomachie_pdn(path, snap: BoardSnapshot,
                         base: Optional[PISetup] = None) -> Tuple[PISetup, List[str]]:
     """The setup described by a Tomachie ``.pdn.json`` on this board, and notes on what
     could not be placed."""
-    pdn = json.loads(Path(path).read_text(encoding="utf-8"))
-    return TomachiePdnImporter(pdn, snap, base).run()
+    path = Path(path)
+    if path.stat().st_size > MAX_FILE_BYTES:
+        raise PdnImportError(f"{path.name} is too large to be a power-tree file")
+    pdn = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(pdn, dict):
+        raise PdnImportError(f"{path.name} is not a {SCHEMA} file")
+    try:
+        return TomachiePdnImporter(pdn, snap, base).run()
+    except (AttributeError, TypeError, KeyError) as e:
+        # A field of the wrong kind (a list where an object belongs, say): the file is
+        # not one Tomachie wrote, or is damaged.
+        raise PdnImportError(f"{path.name} is not a valid {SCHEMA} file "
+                             f"({type(e).__name__}: {e})") from e

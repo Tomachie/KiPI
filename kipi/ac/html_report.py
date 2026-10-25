@@ -5,13 +5,14 @@ One ``.html`` file with:
 * an interactive impedance plot (Plotly: zoom, pan, hover, click a legend entry to hide a
   curve): |Z| at every probe, the targets, and each capacitor model on its own,
 * a board map of the rail's copper with the probes and the capacitors in the model,
+* the estimated transient response at each probe with a load step (#166),
 * the capacitor models, series links, sweep and mesh settings, and solver statistics.
 
 Plotly's JavaScript is embedded once, so the report works offline and can be shared as a
 single file. It uses the same layout and styling as the DC report.
 
 A ``.pdf`` path gets the same report printed (#119), with matplotlib images of the
-impedance plot and the board map in place of the interactive ones.
+impedance plot, the board map and the transient in place of the interactive ones.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ import numpy as np
 from kipi import fork
 from kipi.ac.model import caps_dict
 from kipi.ac.solver.fem import dielectric_summary
+from kipi.ac.transient import transients
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.naming import timestamp
 from kipi.dc.report.html import CSS, _e, _png, _table, _verdict, finish, maps_html, notes_section
@@ -82,6 +84,13 @@ def _hz(f: Optional[float]) -> str:
         if f >= scale * 0.9995:
             return f"{f / scale:.4g} {unit}"
     return f"{f:.4g} Hz"
+
+
+def _spice_tag(item) -> str:
+    """" (SPICE <subcircuit>)" after a capacitor model or link that uses one (#51)."""
+    if not getattr(item, "uses_spice", False):
+        return ""
+    return f" <span class='note'>(SPICE {_e(item.spice.subckt)})</span>"
 
 
 def _si(x: float, unit: str) -> str:
@@ -160,6 +169,75 @@ def _impedance_plot(result, models: List, div_id: str) -> str:
                        config={"displaylogo": False})
 
 
+def _transient_plot(result, trs: Dict, div_id: str) -> str:
+    """Each probe's load step (top) and the rail's estimated deviation from its DC value
+    (below), with the AC tolerance a flat target stands for, dashed."""
+    import plotly.graph_objects as go
+    import plotly.io as pio
+    from plotly.subplots import make_subplots
+
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.25, 0.75],
+                        vertical_spacing=0.04)
+    names = [c.name for c in result.probes]
+    for name, tr in trs.items():
+        k = names.index(name)
+        color = COLORS[k % len(COLORS)]
+        fig.add_trace(go.Scatter(x=tr.t, y=tr.i, name=f"{name} load step", legendgroup=name,
+                                 showlegend=False, line=dict(color=color, width=1.5),
+                                 hovertemplate=(f"{_e(name)}<br>%{{x:.4s}}s<br>%{{y:.4s}}A"
+                                                "<extra></extra>")), row=1, col=1)
+        fig.add_trace(go.Scatter(x=tr.t, y=tr.v, name=name, legendgroup=name,
+                                 line=dict(color=color, width=2),
+                                 hovertemplate=(f"{_e(name)}<br>%{{x:.4s}}s<br>%{{y:.4s}}V"
+                                                "<extra></extra>")), row=2, col=1)
+        allowed = result.probes[k].allowed_v()
+        if allowed:
+            for y in (allowed, -allowed):
+                fig.add_hline(y=y, line=dict(color=color, width=1, dash="dash"), row=2, col=1)
+    fig.update_xaxes(exponentformat="SI", ticksuffix="s", gridcolor="#e6e6e6")
+    fig.update_xaxes(title_text="Time", row=2, col=1)
+    fig.update_yaxes(exponentformat="SI", ticksuffix="A", title_text="Load step",
+                     gridcolor="#e6e6e6", row=1, col=1)
+    fig.update_yaxes(exponentformat="SI", ticksuffix="V", title_text="Rail deviation",
+                     gridcolor="#e6e6e6", zerolinecolor="#999", row=2, col=1)
+    fig.update_layout(height=520, margin=dict(l=70, r=20, t=20, b=50), plot_bgcolor="white",
+                      hovermode="closest", legend=dict(orientation="h", y=-0.12))
+    return pio.to_html(fig, include_plotlyjs=False, full_html=False, div_id=div_id,
+                       config={"displaylogo": False})
+
+
+def _transient_png(result, trs: Dict) -> str:
+    """The transient plot as an image, for the PDF."""
+    from matplotlib.figure import Figure
+    from matplotlib.ticker import EngFormatter
+
+    fig = Figure(figsize=(7.2, 4.4))
+    ax_i, ax_v = fig.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [1, 3]})
+    names = [c.name for c in result.probes]
+    for name, tr in trs.items():
+        k = names.index(name)
+        color = COLORS[k % len(COLORS)]
+        ax_i.plot(tr.t, tr.i, color=color, lw=1.2)
+        ax_v.plot(tr.t, tr.v, color=color, lw=1.4, label=name)
+        allowed = result.probes[k].allowed_v()
+        if allowed:
+            for y in (allowed, -allowed):
+                ax_v.axhline(y, color=color, lw=0.9, ls="--")
+    ax_v.axhline(0, color="#999", lw=0.6)
+    ax_v.xaxis.set_major_formatter(EngFormatter(unit="s"))
+    ax_i.yaxis.set_major_formatter(EngFormatter(unit="A"))
+    ax_v.yaxis.set_major_formatter(EngFormatter(unit="V"))
+    ax_v.set_xlabel("Time", fontsize=8)
+    ax_i.set_ylabel("Load step", fontsize=8)
+    ax_v.set_ylabel("Rail deviation", fontsize=8)
+    for ax in (ax_i, ax_v):
+        ax.tick_params(labelsize=7)
+        ax.grid(True, color="#e6e6e6", lw=0.5)
+    ax_v.legend(fontsize=7, ncol=3, loc="upper center", bbox_to_anchor=(0.5, -0.2),
+                frameon=False)
+    return _png(fig)
+
+
 def _rings(geom) -> List[np.ndarray]:
     polys = getattr(geom, "geoms", [geom])
     out = []
@@ -230,10 +308,11 @@ def _board_map(result, setup, snap: BoardSnapshot, div_id: str) -> str:
                 if m else "")
         traces.append(go.Scatter(
             x=[fp[r].position[0] for r in refs], y=[fp[r].position[1] for r in refs],
-            mode="markers", name=f"{name} ({len(refs)})",
+            mode="markers", name=f"{_e(name)} ({len(refs)})",
             marker=dict(size=8, color=COLORS[k % len(COLORS)], line=dict(width=0.5,
                                                                          color="#333")),
-            text=[f"{r} · {fp[r].value} · {fp[r].side}<br>model {name}: {desc}" for r in refs],
+            text=[f"{_e(r)} · {_e(fp[r].value)} · {_e(fp[r].side)}<br>model {_e(name)}: "
+                  f"{_e(desc)}" for r in refs],
             hovertemplate="%{text}<extra></extra>"))
     missing = [r for r in result.missing_caps if r in fp]
     if missing:
@@ -389,6 +468,7 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     s = setup.ac
     st = result.stats
+    trs = transients(result)
 
     # ---------------- summary
     parts.append(f"<h1>KiPI AC impedance report: {_e(result.rail)}</h1>"
@@ -396,7 +476,9 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
                  f"solved in {result.solve_s:.1f} s</div>")
     if not pdf:
         parts.append("<nav><a href='#probes'>Probes</a> <a href='#impedance'>Impedance</a> "
-                     "<a href='#map'>Board map</a> <a href='#caps'>Capacitors</a> "
+                     "<a href='#map'>Board map</a>"
+                     + (" <a href='#transient'>Transient</a>" if trs else "")
+                     + " <a href='#caps'>Capacitors</a> "
                      "<a href='#model'>Model</a>"
                      + (" <a href='#notes'>Notes</a>" if result.warnings or result.missing_caps
                         else "") + " <a href='#user-notes'>User notes</a></nav>")
@@ -465,6 +547,33 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
                  "merged." + ("" if pdf else " Hover a marker for the part; click a legend "
                               "entry to hide a group.") + "</p>")
 
+    # ---------------- transient
+    if trs:
+        info("Report: transient")
+        parts.append("<h2 id='transient'>Transient</h2>")
+        rows = []
+        for c in result.probes:
+            tr = trs.get(c.name)
+            if tr is None:
+                continue
+            allowed = c.allowed_v()
+            rows.append([_e(c.name), _si(tr.step_a, "A"),
+                         f"{c.slew_a_per_us:g} A/µs", _si(tr.t_rise_s, "s"),
+                         _si(tr.undershoot_v, "V"), _si(tr.overshoot_v, "V"),
+                         f"±{_si(allowed, 'V')}" if allowed else ""])
+        parts.append(_table(["Probe", "Load step", "Slew rate", "Rise time", "Undershoot",
+                             "Overshoot", "± target × ΔI"], rows))
+        parts.append(maps_html([_transient_png(result, trs)], pdf) if pdf
+                     else _transient_plot(result, trs, "trplot"))
+        parts.append("<p class='note'>An estimate of the rail's deviation from its DC value "
+                     "while each probe's load steps up and, once the rail has settled, back "
+                     "down: the open-loop PDN impedance above, with the VRM's loop closed at "
+                     f"its control loop bandwidth ({_hz(result.bandwidth_hz)}) by a typical "
+                     "proportional-integral compensation, not the converter's own. Undershoot: "
+                     "the largest dip below the DC value; overshoot: the largest rise above "
+                     "it. ± target × ΔI is the AC tolerance a flat target stands for "
+                     "(Z<sub>target</sub> = V<sub>AC</sub> / I<sub>step</sub>).</p>")
+
     # ---------------- capacitors
     parts.append("<h2 id='caps'>Capacitor models</h2>")
     rows = []
@@ -472,9 +581,9 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     for m, n in models:
         refs = sorted((r for r in result.caps if model_of.get(r) is m), key=_natural)
         srf = m.srf_hz()
-        row = [_e(m.name), _e(m.values_from_text()), _si(m.capacitance_f, "F"),
-               _si(m.esl_h, "H"), _si(m.esr_ohm, "Ω"), _hz(srf) if srf else "", str(n),
-               _e(", ".join(refs))]
+        row = [_e(m.name) + _spice_tag(m), _e(m.values_from_text()),
+               _si(m.capacitance_f, "F"), _si(m.esl_h, "H"), _si(m.esr_ohm, "Ω"),
+               _hz(srf) if srf else "", str(n), _e(", ".join(refs))]
         if bias:
             at = [bias[r] for r in refs if r in bias]
             row.insert(6, _srf_text(m, at))
@@ -486,6 +595,10 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
         head.insert(6, "SRF derated")
         head.insert(3, "C derated")
     parts.append(_table(head, rows, "caps"))
+    if any(m.uses_spice for m, _n in models):
+        parts.append("<p class='note'>A model marked SPICE takes each part's impedance from "
+                     "its SPICE model at every frequency; its C, ESL and ESR are fitted to "
+                     "it. A derating scales every capacitor in the SPICE model alike.</p>")
     deratings = getattr(result, "deratings", None) or []
     if deratings:
         # Which deratings the sweep settings applied, and why the others were not (#180).
@@ -511,9 +624,12 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     if links:
         parts.append("<h3>Series links</h3>" + _table(
             ["Link", "Side A", "Side B", "R", "ESL"],
-            [[_e(k.name), _e(f"{k.side_a.label()} · {k.side_a.net}"),
+            [[_e(k.name) + _spice_tag(k), _e(f"{k.side_a.label()} · {k.side_a.net}"),
               _e(f"{k.side_b.label()} · {k.side_b.net}"), _ohms(k.resistance),
               _si(k.esl_h, "H") if k.esl_h else ""] for k in links]))
+        if any(k.uses_spice for k in links):
+            parts.append("<p class='note'>A link marked SPICE takes its impedance from its "
+                         "SPICE model at every frequency; its R and ESL are fitted to it.</p>")
     ff = result.field_freqs
     parts.append("<h3>Sweep and mesh</h3>" + _table(["Setting", "Value"], [
         ["Sweep", f"{_hz(freqs[0])} to {_hz(freqs[-1])}, {len(freqs)} points "

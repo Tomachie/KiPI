@@ -394,6 +394,11 @@ To try it without a design of your own, open the example board in
   between splitting the current evenly over all pins and giving explicit **pin groups**,
   each with its own current (**Add pin group**, or **One group per pin**). Use groups when one
   part draws different currents on different rails or pins, e.g. a core and an I/O supply.
+* **Split across nets…** (under the list) shares one part's total current over several of
+  its supply nets, a load on each: e.g. when only a chip's total draw is known and some of
+  its pins are on a ferrite bead filtered net. Each net gets its pins' share (every pin
+  drawing the same) or an equal share. A net the part already has a load on gets that
+  load's current set; the others get a new load.
 * **Ground pins** (optional) include the ground return. KiPI superimposes all VRM and load return currents to form a comprehensive GND plane current model.
 * **Tolerance** is the PASS/FAIL limit: a min and a max, each optional, in % from the VRM
   target voltage (e.g. -3 % / +5 %), in volts from it (±V, e.g. -0.1 / +0.15 V) or in volts (e.g.
@@ -423,8 +428,10 @@ To try it without a design of your own, open the example board in
     - name: VCCINT
       pins: [F7, F9, H7]
       current_a: 1.2
-      tolerance: {min: -3, max: 3, unit: "%"}     # V, ±V or %
-      load_step: {step_a: 0.6, slew_a_per_us: 5, ac_tolerance_mv: 30}
+      tolerance: {min: -3, max: 3, unit: "%"}           # total: V, ±V or %
+      dc_tolerance: {min: -1.5, max: 1.5, unit: "%"}    # VRM accuracy + DC drop
+      ac_tolerance: {min: -0.03, max: 0.03, unit: "±V"} # ripple + transient: ±V or %
+      load_step: {step_a: 0.6, slew_a_per_us: 5}
   ```
 
 ![Load editor](docs/images/setup_loads.png)
@@ -438,7 +445,9 @@ the resistance is read from its value field: `10m`, `0.005`, `4k7`, `0R1`, `5 m�
 all work, and anything after the value (`1% 0603`) is ignored. You can still type your own.
 Nets joined this way are solved together as one rail, and each rail may hold only one VRM.
 A net with no connection to its VRM is reported, not guessed at. **ESL** is only used by the AC
-analysis. I squared R losses in series links are calculated. **In order to assign a series link, the nets on either side must both be defined as power nets in the net selection pane**. In practice, 0 ohm resistors are never possible; Check your jumper's datasheet for max DCR.
+analysis. **Import SPICE model…** uses the maker's SPICE model of the part (a ferrite bead's,
+say): AC takes the link's impedance from it at every frequency, keeping a bead's resistive
+peak, and DC its resistance at DC. Only passive R, L and C subcircuits are read. I squared R losses in series links are calculated. **In order to assign a series link, the nets on either side must both be defined as power nets in the net selection pane**. In practice, 0 ohm resistors are never possible; Check your jumper's datasheet for max DCR.
 
 **Solve tab**: every combined rail, with a checkbox. Untick the rails that are not modeled or
 routed yet to solve the rest; only the ticked rails are validated, and the choice is saved.
@@ -534,11 +543,11 @@ tab, Solve x of n will be displayed). Every rail is meshed and solved, the downs
 back towards the source, so each VRM's input current includes everything it feeds. Progress
 and solver residuals stream into the log; **Cancel** stops the run.
 
-Tick **Report** before solving to also write
-`<board>_kipi_report_<date>_<time>.html` next to the board (the time stamp keeps each
-solve's report rather than overwriting the last). It opens in your web browser when the solve finishes, and **Open report** opens it
-again later. Choose **PDF** beside it for a `.pdf` to print or attach instead: the same
-tables and maps, with the interactive 3D views in a web page attached inside the PDF
+Once there are results, after a solve or with saved results opened, click **Report** to
+write `<board>_kipi_report_<date>_<time>.html` of them next to the board (the time stamp
+keeps each report rather than overwriting the last). It opens in your web browser when it
+is written, and **Open report** opens it again later. Choose **PDF** beside it for a `.pdf` to print or attach instead: the same
+tables and maps (the layer maps one to a row, a layer's pair to a page), with the interactive 3D views in a web page attached inside the PDF
 (`<report>_3d.html`; its **3D Results View** link, or the paperclip beside it, opens it in
 your browser). Its User notes box is a form field:
 type in it in Acrobat, a web browser, Preview or most other PDF viewers and save the PDF to
@@ -602,7 +611,7 @@ tables sort the same way:
 | Tab | Shows |
 |---|---|
 | Loads | Each load's current, effective voltage, drop or boost, worst pin and PASS/FAIL. Double-click to show its group. |
-| VRMs | Output and input voltage, current and power, conversion loss, and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
+| VRMs | Output and input voltage, current and power, conversion loss, the largest drop on the rail it drives (mV and % of its target voltage), and PASS/FAIL against the output current limit, with a row per phase for multi-phase VRMs |
 | Series links | Current and loss in each series part  (I squared R losses)|
 | Vias | Every via and PTH barrel ranked by current. The **Current limit** for PASS/FAIL starts at 1 A, a placeholder: set your own, or 0 for none. Double-click a row to fly to it. |
 | Losses | Copper loss per group and layer, vias, series links and VRM conversion |
@@ -627,7 +636,9 @@ series links with DC mode (every VRM field can be edited in either mode) and add
 * **Capacitors tab**: RLC models (capacitance, ESL, ESR) for the decoupling capacitors, each
   shared by a group of identical parts. **Models from values** makes one model per capacitor
   value that has none yet, reading the capacitance from the value; enter the ESL and ESR
-  from the datasheet. The table lists every capacitor between ticked nets: tick parts to
+  from the datasheet, or **Import SPICE model…** to use the maker's model of the part. Its
+  subcircuit is saved in the setup, and the AC and Coupled Noise solves take each part's
+  impedance from it at every frequency, with C, ESL and ESR fitted to it. The table lists every capacitor between ticked nets: tick parts to
   assign them to the selected model, with **Tick same value**, **Tick same footprint**,
   **Tick same value + footprint**, **Tick shown** and **Untick shown** for many at once.
   The table shows each part's footprint, so 0402 and 0603 parts of one value can get
@@ -655,7 +666,7 @@ series links with DC mode (every VRM field can be edited in either mode) and add
   sits from the target voltage of the VRM driving it (solve the power tree first, or the
   button is disabled).
   Targets apply only above the rail's VRM **Control loop bandwidth**, which a rail needs
-  before it can be solved: the AC solve leaves
+  before it can be solved (a new VRM starts at 50 kHz): the AC solve leaves
   the VRM out of circuit (the open-loop PDN impedance, capacitive only), and below its bandwidth the
   converter's control loop is assumed to hold the rail. If the bandwidth is at or above the target frequency,
   the target across all swept frequencies are judged and the results say so. The method follows Smith et al.,
@@ -699,10 +710,16 @@ probe, with its target dashed in the same color. Click a curve to place a cursor
 use ←/→ (Shift: ×10) to move along the curve, ↑/↓ to change curve, and Esc or right-click to
 remove it. The **Board map** tab beside it shows the solve from above while it runs and
 after: the mesh of the rail and its ground, layer by layer, with the probes and the
-capacitors marked by model. The Info box shows the cursor's frequency, |Z|, phase, R and X, the reactance as an
+capacitors marked by model. The **Transient** tab estimates the rail's response at each
+probe that has a **Load step** and slew rate (set on the probe, or filled in by the target
+calculator): the undershoot when the load steps up and the overshoot when it steps back
+down. The VRM's loop is closed again from its control loop bandwidth with a typical
+compensation, so the slow part is an estimate, and the fast part comes from the solve.
+**20 MHz limit** shows it as a scope's bandwidth limit would. The Info box shows the cursor's frequency, |Z|, phase, R and X, the reactance as an
 equivalent L or C, PASS/FAIL against the target with the margin in dB at the cursor frequency, and every other
 probe's |Z| at that frequency. The results table gives each probe's minimum and worst |Z|
-(closest to, or furthest over, the target) and PASS/FAIL; the notes list the capacitors that
+(closest to, or furthest over, the target), its estimated undershoot and overshoot, and
+PASS/FAIL; the notes list the capacitors that
 were left out for having no model. Each rail keeps its last result, so switching **Rail** shows
 another rail's curves without solving again. **Export CSV…** writes |Z|, R and X at every
 frequency. **Save results…** writes every solved rail to a `.kipi-ac-results` file, which
@@ -711,9 +728,10 @@ JSON and arrays in a zip, safe to share.
 
 ![The Board map of the core rail's solve: the VCORE and GND mesh, the probe and the capacitors by model](docs/images/ac_board_map.png)
 
-Tick **Report** next to **Solve rail** to also write
-`<board>_<rail>_ac_report_<date>_<time>.html` next to the board after each solve. It opens in your web browser when the solve
-finishes, and **Open report** opens it again later. Choose **PDF** for a `.pdf` instead,
+Click **Report** next to **Solve rail** to write
+`<board>_<rail>_ac_report_<date>_<time>.html` of the shown rail's results next to the board,
+after its solve or with saved results opened. It opens in your web browser when it is
+written, and **Open report** opens it again later. Choose **PDF** for a `.pdf` instead,
 with images of the |Z| plot and the board map. Like the DC report, it is one
 portable file you can share. It has the probe table with margins, an interactive |Z|
 plot with the targets and each capacitor model's own curve, a board map of the rail's copper
@@ -806,7 +824,7 @@ Inductive noise comes from the hot loop's dI/dt: keep the loop small and over a 
 and route victims away from it, their vias too: a victim via beside the loop's vias couples
 to their vertical current. Common noise comes from the switching current's return:
 give the hot loop its own short ground return and keep the victim's driver and receiver
-grounds out of it. Tick **Report** for an HTML or PDF report after each solve; **Save
+grounds out of it. Click **Report** for an HTML or PDF report of the shown aggressor's results; **Save
 results…** writes a `.kipi-noise-results` file that **Open results…** reopens in this mode.
 
 ### Tips and troubleshooting
@@ -942,7 +960,7 @@ The tests also solve the example board and check that its committed setup still 
 | `kipi/dc/report/` | Self-contained HTML report (Plotly 3D, matplotlib maps), or a PDF of it (`kipi/core/pdf.py`) |
 | `kipi/dc/viz/` | DC result meshes: voltage, drop, current density, power (no Qt) |
 | `kipi/dc/gui/` | The PI setup and results panel |
-| `kipi/ac/` | AC analysis: PDN impedance over frequency. Capacitor and probe model, target impedance, the 2.5D two-face field solver and sweep (`solver/`), the HTML report (`html_report.py`), the board map data (`board_map.py`), the AC setup panel, impedance plot and Board map tab (`gui/`) |
+| `kipi/ac/` | AC analysis: PDN impedance over frequency. Capacitor and probe model, target impedance, the 2.5D two-face field solver and sweep (`solver/`), the HTML report (`html_report.py`), the board map data (`board_map.py`), the estimated transient (`transient.py`), the AC setup panel, impedance plot, Board map and Transient tabs (`gui/`) |
 | `kipi/noise/` | Coupled Noise analysis: the aggressor and victim model, the converter's waveforms as Fourier series (`waveforms.py`), the hot loop's parasitics (`parasitics.py`), capacitive and inductive coupling extraction (`extract/`), the victim's line network (`network.py`) and solve (`victims.py`), the nearby-net scan, the 3D coupling overlay (`viz.py`), the HTML report, the setup panel and Waveforms tab (`gui/`) |
 | `kipi/gui/` | PySide6 application shell shared by every mode: main window, mode switch, 3D viewer, worker threads, About and Help |
 | `docs/help.html` | The user guide opened by **Help**; a single offline HTML file |

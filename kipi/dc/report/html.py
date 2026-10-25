@@ -24,7 +24,7 @@ import html
 import io
 import math
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -32,7 +32,7 @@ from kipi import fork
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.stackup import summary as stackup_summary
 from kipi.core.naming import timestamp
-from kipi.dc.pi.tree import fmt_drop
+from kipi.dc.pi import vunits
 
 TRIANGLE_BUDGET = 60_000      # per group's 3D view
 VIEW_NOTE = ("Drag to rotate, scroll to zoom, double-click to reset; hover for values. The 3D "
@@ -65,10 +65,13 @@ def _ma(amps: Optional[float]) -> str:
     if amps is None:
         return ""
     return _num(amps * 1e3, ".4g" if abs(amps) < 1 else ".0f")
+class _Html(str):
+    """A table header already written as HTML."""
 
 
 def _table(headers: List[str], rows: List[List[str]], cls: str = "") -> str:
-    head = "".join(f"<th title='Click to sort'>{_e(h)}</th>" for h in headers)
+    head = "".join(f"<th title='Click to sort'>{h if isinstance(h, _Html) else _e(h)}</th>"
+                   for h in headers)
     body = "".join("<tr>" + "".join(f"<td>{c}</td>" for c in r) + "</tr>" for r in rows)
     return f'<table class="{cls}"><thead><tr>{head}</tr></thead><tbody>{body}</tbody></table>'
 
@@ -81,12 +84,67 @@ def _verdict(passed: Optional[bool], text: str = "") -> str:
     return f'<span class="pass">{label}</span>' if passed else f'<span class="fail">{label}</span>'
 
 
-def _png(fig) -> str:
+# A PDF report's layer maps (#184): one to a row, two to a page, drawn bigger and sharper
+# than the web page's. The box is in the 96 dpi pixels of the PDF's layout, the page's width
+# (A4 or Letter less its margins) by a little under half its height.
+PDF_MAP_DPI = 250                    # about 210 dpi on the page, once cropped
+PDF_MAP_SIZE = (7.0, 5.6)            # inches, about the box's size, so the text keeps its size
+PDF_MAP_BOX = (690, 440)
+
+
+def _png(fig, dpi: int = 110) -> str:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     FigureCanvasAgg(fig)
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight", facecolor="white")
+    fig.savefig(buf, format="png", dpi=dpi, bbox_inches="tight", facecolor="white")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+# A voltage in the unit the reader picks (#177): mV or % from the target voltage, or
+# volts. The web page has the value in each, one shown at a time; a PDF shows all three.
+VUNIT_KEYS = {vunits.MV: "mv", vunits.PCT: "pct", vunits.VOLTS: "v"}
+
+
+def _units(texts: Dict[str, str], pdf: bool) -> str:
+    """A cell's ``texts`` ({unit: text}): spans the unit selector picks between, or in a
+    PDF, the three on lines of their own with their units."""
+    if pdf:
+        return "<br>".join(f"{_e(t)} {_e(u)}" for u, t in texts.items() if t)
+    return "".join(f"<span class='vu vu-{VUNIT_KEYS[u]}'>{_e(t)}</span>"
+                   for u, t in texts.items())
+
+
+def _vcell(v: Optional[float], target: Optional[float], pdf: bool) -> str:
+    """The voltage ``v`` in each unit, from ``target``."""
+    return _units({u: vunits.show(v, target, u) for u, _ in vunits.UNITS}, pdf)
+
+
+def _vhead(name: str, pdf: bool) -> str:
+    """A column header whose unit follows the selector (a PDF's cells give their own)."""
+    if pdf:
+        return name
+    return _Html(f"{_e(name)} (" + "".join(f"<span class='vu vu-{VUNIT_KEYS[u]}'>{_e(u)}</span>"
+                                           for u, _ in vunits.UNITS) + ")")
+
+
+def vunit_selector() -> str:
+    """The web page's unit selector, in mV from the target until changed."""
+    opts = "".join(f"<option value='{VUNIT_KEYS[u]}'>{_e(label)}</option>"
+                   for u, label in vunits.UNITS)
+    return (f"<p class='vunit'><label><b>Voltages:</b> <select id='vunit'>{opts}</select>"
+            "</label> <span class='note'>From the target voltage, negative is a drop below "
+            "it and positive a boost above it.</span></p>")
+
+
+VUNIT_JS = r"""
+(function () {
+  var sel = document.getElementById("vunit");
+  if (!sel) return;
+  sel.addEventListener("change", function () {
+    document.documentElement.setAttribute("data-vunit", sel.value);
+  });
+})();
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -95,18 +153,20 @@ def _png(fig) -> str:
 
 def _layer_map(lr, values, cell: bool, title: str, cmap: str, unit: str,
                clip_pct: Optional[float] = None, outline=None,
-               v_ref: Optional[float] = None) -> str:
+               v_ref: Optional[float] = None, pdf: bool = False) -> str:
     """Top-down tripcolor of one layer (KiCad y down, drawn the same way as in KiCad).
 
     A voltage map passes its target voltage ``v_ref``. When its spread is so narrow that the
     colorbar would label ticks against an offset ("1e-5+3.2999", #145), it is redrawn as
     the drop from ``v_ref`` in V, mV or µV, the absolute range moving into the title.
-    Maps whose colorbar reads plainly are left as they are."""
+    Maps whose colorbar reads plainly are left as they are. A PDF's map (``pdf``) is drawn
+    bigger, at a higher resolution."""
     vals = np.asarray(values, dtype=float)
     finite = vals[np.isfinite(vals)]
     if len(finite) == 0:
         return ""
-    fig, cb = _draw_map(lr, vals, finite, cell, title, cmap, unit, clip_pct, outline)
+    size = PDF_MAP_SIZE if pdf else (5.2, 4.2)
+    fig, cb = _draw_map(lr, vals, finite, cell, title, cmap, unit, clip_pct, outline, size)
     if v_ref is not None and _has_offset(fig, cb):
         lo, hi = float(finite.min()), float(finite.max())
         rail = v_ref != 0
@@ -117,9 +177,10 @@ def _layer_map(lr, values, cell: bool, title: str, cmap: str, unit: str,
         label = (f"Drop from {v_ref:g} V ({prefix}V)" if rail
                  else f"Offset from 0 V ({prefix}V)")
         fig, cb = _draw_map(lr, shift, shift[np.isfinite(shift)], cell,
-                            f"{title}, {lo:.6f} to {hi:.6f} V", cmap, label, clip_pct, outline)
+                            f"{title}, {lo:.6f} to {hi:.6f} V", cmap, label, clip_pct, outline,
+                            size)
         cb.formatter.set_useOffset(False)
-    return _png(fig)
+    return _png(fig, PDF_MAP_DPI if pdf else 110)
 
 
 def _has_offset(fig, cb) -> bool:
@@ -130,11 +191,11 @@ def _has_offset(fig, cb) -> bool:
     return bool(getattr(fmt, "get_offset", lambda: "")())
 
 
-def _draw_map(lr, vals, finite, cell, title, cmap, unit, clip_pct, outline):
+def _draw_map(lr, vals, finite, cell, title, cmap, unit, clip_pct, outline, size=(5.2, 4.2)):
     from matplotlib.figure import Figure
     from matplotlib.tri import Triangulation
     pts, tris = lr.pts2, lr.tris
-    fig = Figure(figsize=(5.2, 4.2))
+    fig = Figure(figsize=size)
     ax = fig.add_subplot(111)
     tri = Triangulation(pts[:, 0], pts[:, 1], tris)
     vmin, vmax = float(finite.min()), float(finite.max())
@@ -164,20 +225,20 @@ def _draw_map(lr, vals, finite, cell, title, cmap, unit, clip_pct, outline):
     return fig, cb
 
 
-def _thermal_maps(th, snap: BoardSnapshot, outline) -> List[str]:
+def _thermal_maps(th, snap: BoardSnapshot, outline, pdf: bool = False) -> List[str]:
     """One map per copper layer of the result, on one color scale; a result without
-    layers is one board map."""
+    layers is one board map. A PDF's (``pdf``) are drawn bigger, at a higher resolution."""
     names = {cu.id: cu.name for cu in snap.stackup.copper}
     layers = [lid for lid in th.layers if lid in names] if len(th.layers) == len(th.temps)         else []
     lo, hi = float(np.nanmin(th.temps)), float(np.nanmax(th.temps))
     if not layers:
-        return [_thermal_map(th, outline, None, "Board temperature", lo, hi)]
-    return [_thermal_map(th, outline, lid, names[lid], lo, hi) for lid in layers]
+        return [_thermal_map(th, outline, None, "Board temperature", lo, hi, pdf)]
+    return [_thermal_map(th, outline, lid, names[lid], lo, hi, pdf) for lid in layers]
 
 
-def _thermal_map(th, outline, layer, title, vmin, vmax) -> str:
+def _thermal_map(th, outline, layer, title, vmin, vmax, pdf: bool = False) -> str:
     from matplotlib.figure import Figure
-    fig = Figure(figsize=(6.0, 4.8))
+    fig = Figure(figsize=PDF_MAP_SIZE if pdf else (6.0, 4.8))
     ax = fig.add_subplot(111)
     ext = [th.x[0], th.x[-1], th.y[-1], th.y[0]]
     m = ax.imshow(th.layer_temps(layer), extent=ext, cmap="inferno", origin="upper",
@@ -195,7 +256,7 @@ def _thermal_map(th, outline, layer, title, vmin, vmax) -> str:
     ax.tick_params(labelsize=7)
     cb = fig.colorbar(m, ax=ax, shrink=0.85)
     cb.set_label("°C", fontsize=8)
-    return _png(fig)
+    return _png(fig, PDF_MAP_DPI if pdf else 110)
 
 
 def _decimate(sheet, keep: float):
@@ -255,7 +316,7 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
             # thin triangles left by thinning at random, a patchwork of dark ones (#122).
             lighting=dict(ambient=1.0, diffuse=0.0, specular=0.0, roughness=1.0, fresnel=0.0),
             colorbar=dict(title="V", len=0.7),
-            hovertemplate=(f"{cu.name}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}"
+            hovertemplate=(f"{_e(cu.name)}<br>x %{{x:.2f}} mm<br>y %{{y:.2f}}"
                            "<br>V %{intensity:.5f}<extra></extra>")))
     if len(scene.via_segments):
         seg = scene.via_segments
@@ -295,6 +356,11 @@ th { background: #f0f0f0; } td:first-child, th:first-child { text-align: left; }
 .maps img { width: 520px; max-width: 100%; }
 .note { color: #666; font-size: 12px; }
 nav a { margin-right: 12px; }
+.vu { display: none; }
+html:not([data-vunit]) .vu-mv, html[data-vunit=mv] .vu-mv, html[data-vunit=pct] .vu-pct,
+html[data-vunit=v] .vu-v { display: inline; }
+.vunit { position: sticky; top: 0; background: #fafafa; padding: 6px 0; margin: 8px 0;
+         z-index: 2; }
 .layer-toggles { font-size: 13px; margin: 6px 0; }
 .layer-toggles label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
 details > summary { cursor: pointer; margin: 6px 0; }
@@ -442,9 +508,10 @@ SORT_JS = r"""
     var col = th.cellIndex, desc = th.getAttribute("data-sort") === "asc";
     table.querySelectorAll("thead th").forEach(function (h) { h.removeAttribute("data-sort"); });
     th.setAttribute("data-sort", desc ? "desc" : "asc");
+    var unit = document.documentElement.getAttribute("data-vunit") || "mv";
     var rows = Array.prototype.map.call(body.rows, function (r, i) {
-      var c = r.cells[col];
-      return {row: r, i: i, k: key(c ? c.textContent : "")};
+      var c = r.cells[col], shown = c && c.querySelector(".vu-" + unit);
+      return {row: r, i: i, k: key(shown ? shown.textContent : c ? c.textContent : "")};
     });
     rows.sort(function (a, b) {
       var blank = (a.k[0] === 2) - (b.k[0] === 2);
@@ -463,15 +530,45 @@ def report_name(board_stem: str, when: Optional[_dt.datetime] = None, fmt: str =
     return f"{board_stem}_kipi_report_{timestamp(when)}.{fmt}"
 
 
-def maps_html(images: List[str], pdf: bool, tags: Optional[List[tuple]] = None) -> str:
-    """Figures side by side: wrapped by the browser, two to a row on a PDF page. ``tags``
-    give each image's (3D view, layer), for the layer tickboxes (#181)."""
+def png_size(data_url: str) -> Optional[Tuple[int, int]]:
+    """(width, height) in pixels of a PNG ``data:`` URL, from its header; None if it is
+    not one."""
+    head = data_url.partition("base64,")[2][:44]
+    try:
+        raw = base64.b64decode(head + "=" * (-len(head) % 4))
+    except ValueError:
+        return None
+    if len(raw) < 24 or raw[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
+
+
+def _fit_width(image: str, box=PDF_MAP_BOX) -> int:
+    """The width to show ``image`` at on a PDF page so it fills ``box`` (w, h) without
+    overflowing it."""
+    size = png_size(image)
+    if not size or not size[1]:
+        return box[0]
+    return int(min(box[0], box[1] * size[0] / size[1]))
+
+
+def maps_html(images: List[str], pdf: bool, tags: Optional[List[tuple]] = None,
+              large: bool = False) -> str:
+    """Figures side by side: wrapped by the browser, two to a row on a PDF page, or with
+    ``large``, one to a row and two to a page (#184). ``tags`` give each image's (3D view,
+    layer), for the layer tickboxes (#181)."""
     tagged = [(m, t) for m, t in zip(images, tags or [None] * len(images)) if m]
     images = [m for m, _t in tagged]
     if not pdf:
         return "<div class='maps'>" + "".join(
             f"<figure data-plot='{_e(t[0])}' data-layer='{_e(t[1])}'><img src='{m}'></figure>"
             if t else f"<figure><img src='{m}'></figure>" for m, t in tagged) + "</div>"
+    if large:
+        # From the top of a page, so each page holds a pair: a layer's voltage and current
+        # density maps.
+        return "<table class='maps' style='page-break-before: always'>" + "".join(
+            f"<tr><td><img src='{m}' width='{_fit_width(m)}'></td></tr>" for m in images
+        ) + "</table>"
     width = 330 if len(images) > 1 else 440
     rows = [images[i:i + 2] for i in range(0, len(images), 2)]
     return "<table class='maps'>" + "".join(
@@ -500,7 +597,7 @@ def finish(path: Path, title: str, parts: List[str], css: str, pdf: bool,
         return write_pdf(f"<html><head><meta charset='utf-8'><title>{_e(title)}</title>"
                          f"</head><body>{body}</body></html>", path, title,
                          attachments=attachments)
-    path.write_text(page(title, body, css, SORT_JS + LAYERS_JS), encoding="utf-8")
+    path.write_text(page(title, body, css, SORT_JS + LAYERS_JS + VUNIT_JS), encoding="utf-8")
     return path
 
 
@@ -562,6 +659,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     nav.append("<a href='#user-notes'>User notes</a>")
     if not pdf:
         parts.append("<nav>" + " ".join(nav) + "</nav>")
+        parts.append(vunit_selector())
     s = setup.settings
     parts.append(f"<p class='note'>Mesh: max edge {s.max_edge_mm:g} mm, via grading "
                  f"{s.grading:g}, copper resistivity {s.rho_ohm_mm * 1e-3:.4g} Ω·m at 20 °C "
@@ -581,27 +679,29 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append("<h2 id='loads'>Loads</h2>")
     if hasattr(tree, "summary"):
         parts.append(f"<p><b>{_e(tree.summary())}</b></p>")
-    parts.append(_table(
-        ["Load", "Group", "I (A)", "Nominal (V)", "V effective (V)", "Drop / boost (mV)", "%",
-         "Worst pin (V)", "Worst pin (mV)", "Worst %", "Tolerance", "Margin (mV)",
-         "Pre-layout margin (mV)", "Unknowns may add (mA)", "Voltage at pins"],
-        [[_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
-          _num(l.v_effective, ".6f"), fmt_drop(l.drop, unit=""), _num(abs(l.drop_pct), ".3f"),
-          _num(l.v_worst, ".6f"), fmt_drop(l.drop_worst, unit=""),
-          _num(abs(l.drop_worst_pct), ".3f"),
-          _e(l.tolerance), _mv(l.margin_low), _mv(getattr(l, "copper_margin", None)),
-          _ma(getattr(l, "unknown_room_a", None)),
-          _verdict(l.passed, getattr(l, "answer", l.status))]
-         for l in tree.loads]))
-    parts.append("<p class='note'>Drop: below the VRM target voltage. Boost: above it, e.g. near a "
-                 "remote-sensed VRM's output pins. The worst pin is the one furthest from the "
-                 "target voltage either way. In range: every supply pin of the load, less its "
-                 "ground pins, is inside its voltage window at the currents solved; at known "
-                 "currents when a load on the same rail has a current not known. Margin: the "
-                 "lowest pin above the tolerance's low end. Pre-layout "
-                 "margin: what the copper could take, worked out from the datasheets before "
-                 "layout (imported). Unknowns may add: what the rail's loads whose current is "
-                 "not known may draw together before this load leaves its tolerance.</p>")
+
+    def load_row(l):
+        cells = {u: vunits.load_cells(l, u) for u, _ in vunits.UNITS}
+        return [_e(l.name), _e(l.group), _num(l.current), _num(l.nominal, ".5g"),
+                *[_units({u: cells[u][k] for u in cells}, pdf) for k in range(5)],
+                _mv(getattr(l, "copper_margin", None)), _ma(getattr(l, "unknown_room_a", None)),
+                _verdict(l.passed, getattr(l, "answer", l.status))]
+
+    parts.append(_table(["Load", "Group", "I (A)", "Target (V)",
+                         *[_vhead(n, pdf) for n in vunits.LOAD_COLUMNS],
+                         "Pre-layout margin (mV)", "Unknowns may add (mA)", "Voltage at pins"],
+                        [load_row(l) for l in tree.loads]))
+    parts.append("<p class='note'>Each load's mean voltage and its lowest and highest supply "
+                 "pins (less the ground pins), "
+                 + ("each in mV and % from the target voltage and in volts. " if pdf else "")
+                 + "From the target, negative is a drop below it and positive a boost above "
+                 "it, e.g. near a remote-sensed VRM's output pins. The margin is how far the "
+                 "pins are inside the tolerance, negative when outside. A load passes when "
+                 "every pin is within its tolerance; in range at known currents when a load "
+                 "on the same rail has a current not known. Pre-layout margin: what the "
+                 "copper could take, worked out from the datasheets before layout "
+                 "(imported). Unknowns may add: what the rail's loads whose current is not "
+                 "known may draw together before this load leaves its tolerance.</p>")
     headroom = getattr(tree, "headroom", [])
     if headroom:
         parts.append("<h3>Headroom: what the currents not known may add</h3>" + _table(
@@ -618,23 +718,31 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      "it at the costliest unknown), its ground return counted where it has "
                      "ground pins. The VRM holds what it held.</p><ul>"
                      + "".join(f"<li>{_e(h.sentence())}</li>" for h in headroom) + "</ul>")
-    pg = [[_e(l.name), _e(n), _num(a), _num(vm, ".6f"), _num(vmin, ".6f"), _num(vmax, ".6f")]
+    pg = [[_e(l.name), _e(n), _num(a), _vcell(vm, l.nominal, pdf), _vcell(vmin, l.nominal, pdf),
+           _vcell(vmax, l.nominal, pdf)]
           for l in tree.loads for n, a, vm, vmin, vmax in l.pin_groups]
     if pg:
         parts.append("<h3>Load pin groups</h3>" +
-                     _table(["Load", "Pin group", "I (A)", "V mean", "V lowest pin",
-                             "V highest pin"], pg))
+                     _table(["Load", "Pin group", "I (A)", _vhead("Mean", pdf),
+                             _vhead("Lowest pin", pdf), _vhead("Highest pin", pdf)], pg))
     parts.append("<h2 id='vrms'>VRMs</h2>")
     parts.append(_table(
-        ["VRM", "Type", "Group", "V set", "Load line (mΩ)", "V target", "V out", "V sense",
-         "V gnd sense", "I out (A)",
-         "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)", "I limit (A)", "Result"],
+        ["VRM", "Type", "Group", "V set", "Load line (mΩ)", "V target", _vhead("V out", pdf),
+         "V sense", "V gnd sense", "I out (A)",
+         "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)", _vhead("Rail lowest", pdf),
+         "I limit (A)", "Result"],
         [[_e(v.name), _e(v.kind), _e(v.group), _num(v.v_set, ".5g"),
-          _num(v.load_line_mohm or None, "g"), _num(v.v_target, ".5f"), _num(v.v_out, ".5f"),
+          _num(v.load_line_mohm or None, "g"), _num(v.v_target, ".5f"),
+          _vcell(v.v_out, ref, pdf),
           _num(v.v_sense, ".5f"), _num(v.v_ground_sense, ".5f"), _num(v.i_out),
           _num(v.v_in, ".5f"), _num(v.i_in), _num(v.p_out), _num(v.p_in), _num(v.p_loss),
+          _vcell(None if d is None else ref - d, ref, pdf),
           _num(v.current_limit_a, "g"), _verdict(v.passed)]
-         for v in tree.vrms]))
+         for v in tree.vrms for d, _pct in [tree.rail_drop(v)]
+         for ref in [v.v_set if tree.rail_target(v) is None else tree.rail_target(v)]]))
+    parts.append("<p class='note'>Rail lowest: the lowest voltage anywhere on the copper of "
+                 "the rail the VRM drives. V out and it are from the rail's target voltage, "
+                 "the target V set less the load line's droop.</p>")
     phases = [[_e(v.name), str(p.index), _num(p.v_out, ".5f"), _num(p.i_out), _num(p.v_in, ".5f"),
                _num(p.i_in), _num(p.p_loss)] for v in tree.vrms for p in v.phases]
     if phases:
@@ -662,12 +770,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
             title = f"<b>{_e(name)}</b>: {len(rows)} pin(s)"
             parts.append(
                 (f"<h3>{title}</h3>" if pdf else f"<details><summary>{title}</summary>") +
-                _table(["Terminal", "Role", "Pin", "x (mm)", "y (mm)", "V", "Drop / boost (mV)",
-                        "%", "I (mA)", "I is"],
+                _table(["Terminal", "Role", "Pin", "x (mm)", "y (mm)", _vhead("V", pdf),
+                        "I (mA)", "I is"],
                        [[_e(r.terminal), _e(r.role),
                          _e(f"{r.part}.{r.pin}" if r.part else r.pin), _num(r.x, ".3f"),
-                         _num(r.y, ".3f"), _num(r.v, ".6f"), fmt_drop(r.deviation, unit=""),
-                         _num(abs(100.0 * r.deviation / r.nominal), ".3f") if r.nominal else "",
+                         _num(r.y, ".3f"), _vcell(r.v, r.nominal, pdf),
                          _num(None if r.current is None else r.current * 1e3, ".4g"),
                          _e(r.current_is)] for r in rows]) +
                 ("" if pdf else "</details>"))
@@ -677,8 +784,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      "negative is delivered into it (a VRM output, or a DC connection's far "
                      "side). VRM output pin currents are solved; a load's current is shared "
                      "equally by its pins, as the solver applies it, and a DC connection's by "
-                     "the pins on each side. Drop and boost are from the VRM target voltage (0 V "
-                     "for a ground).</p>")
+                     "the pins on each side. V is from the VRM target voltage (0 V for a "
+                     "ground), or in volts.</p>")
     else:
         parts.append("<p class='note'>These results were saved before KiPI kept each pin "
                      "(0.7.2); solve again to list them.</p>")
@@ -740,7 +847,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
             parts.append("<p class='note'>The hottest solved copper on each layer. "
                          + (f"Limits: {lim}; overall {_verdict(verdict)}." if lim
                             else "No temperature limits were set.") + "</p>")
-        parts.append(maps_html(_thermal_maps(th, snap, outline), pdf))
+        parts.append(maps_html(_thermal_maps(th, snap, outline, pdf), pdf, large=True))
         if th.dielectrics:
             from kipi.dc.thermal.materials import coating_k
             coat = [[_e(c.name), _num(c.thickness_mm, ".3f"),
@@ -788,30 +895,27 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
             area = float(f.tri_area[sel].sum())
             j = lr.tri_j[np.isfinite(lr.tri_j)]
             rows.append([_e(names.get(lid, lid)), _num(area, ".1f"),
-                         _num(v.min() if len(v) else None, ".6f"),
-                         _num(v.max() if len(v) else None, ".6f"),
-                         _num(max(scene.v_ref - v.min(), 0) * 1e3 if len(v) else None, ".3f"),
-                         _num(max(v.max() - scene.v_ref, 0) * 1e3 if len(v) else None, ".3f"),
+                         _vcell(float(v.min()) if len(v) else None, scene.v_ref, pdf),
+                         _vcell(float(v.max()) if len(v) else None, scene.v_ref, pdf),
                          _num(np.percentile(j, 99.5) if len(j) else None, ".3g"),
                          _num(j.max() if len(j) else None, ".3g"),
                          _num(float(f.tri_power[sel].sum()) * 1e3, ".3f")])
-        below, above = (("Max drop (mV)", "Max boost (mV)") if g.kind == "rail"
-                        else ("Max below 0 V (mV)", "Max above 0 V (mV)"))
-        parts.append(_table(["Layer", "Copper (mm²)", "V min", "V max", below, above,
-                             "|J| p99.5 (A/mm²)", "|J| max", "Loss (mW)"], rows))
-        if g.kind == "rail":
-            parts.append(f"<p class='note'>Drop and boost are measured from the "
-                         f"{scene.v_ref:g} V target voltage.</p>")
+        parts.append(_table(["Layer", "Copper (mm²)", _vhead("V min", pdf),
+                             _vhead("V max", pdf), "|J| p99.5 (A/mm²)", "|J| max",
+                             "Loss (mW)"], rows))
+        parts.append(f"<p class='note'>V min and V max are from the {scene.v_ref:g} V "
+                     + ("target voltage" if g.kind == "rail" else "ground reference")
+                     + ", or in volts.</p>")
         maps, tags = [], []
         vmin, vmax = scene.ranges["voltage"]
         for lid, lr in scene.layers.items():
             lname = names.get(lid, str(lid))
             maps.append(_layer_map(lr, lr.node_v, False, f"{lname}: voltage", "turbo", "V",
-                                   outline=outline, v_ref=scene.v_ref))
+                                   outline=outline, v_ref=scene.v_ref, pdf=pdf))
             maps.append(_layer_map(lr, lr.tri_j, True, f"{lname}: current density", "inferno",
-                                   "A/mm²", clip_pct=99.5, outline=outline))
+                                   "A/mm²", clip_pct=99.5, outline=outline, pdf=pdf))
             tags += [(f"plot{gi}", lname)] * 2
-        parts.append(maps_html(maps, pdf, tags))
+        parts.append(maps_html(maps, pdf, tags, large=True))
         parts.append("<p class='note'>Current-density maps clip at the 99.5th percentile; pad "
                      "corners are singular and would otherwise wash out the map.</p>")
 

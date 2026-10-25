@@ -697,3 +697,15 @@ def test_a_rail_behind_a_placed_output_gets_its_series_part_and_keeps_its_loads(
                    or "U1's output, placed with another rail it feeds" in n for n in notes)
         assert "U2" in [l.name for l in setup.loads]          # +3V3's load is kept
         assert not any("already drive" in n for n in notes)
+
+
+@pytest.mark.parametrize("text", ["[]", '{"schema": "tomachie-pdn", "schema_version": 1, '
+                                        '"rails": ["VIN"]}',
+                                  '{"schema": "tomachie-pdn", "schema_version": 1, '
+                                  '"rails": [{"name": "VIN", "source": []}]}'])
+def test_a_malformed_file_is_refused_not_a_crash(tmp_path, text):
+    """A file with fields of the wrong kind says it is not valid (#137)."""
+    path = tmp_path / "bad.pdn.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(PdnImportError):
+        import_tomachie_pdn(path, board())

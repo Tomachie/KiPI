@@ -67,6 +67,7 @@ TEMP_CURVES = {
 TEMPERATURE_SOURCES = ("none", "fixed", "thermal")
 
 if TYPE_CHECKING:                       # PinRef lives in the setup model, which imports us
+    from kipi.core.model.spice import SpiceRef
     from kipi.dc.pi.model import PinRef
 
 
@@ -137,6 +138,13 @@ class CapModel:
         if self.doubt:
             said += " - questionable"
         return said
+    # The part's SPICE model (#51): with it in use, the impedance is the model's, and the
+    # three values above are fitted to it.
+    spice: Optional["SpiceRef"] = None
+
+    @property
+    def uses_spice(self) -> bool:
+        return self.spice is not None and self.spice.use
 
     @property
     def dc_bias(self) -> bool:
@@ -184,7 +192,12 @@ class CapModel:
         return max(1.0 - loss, 0.0)
 
     def impedance(self, omega):
-        """Complex impedance at angular frequency ``omega`` (scalar or array)."""
+        """Complex impedance at angular frequency ``omega`` (scalar or array). From a SPICE
+        model, any derating of the capacitance (a copy with less of it) scales each of the
+        model's capacitors alike."""
+        if self.uses_spice:
+            fitted = self.spice.values.get("capacitance_f") or self.capacitance_f
+            return self.spice.impedance(omega, self.capacitance_f / fitted if fitted else 1.0)
         return self.esr_ohm + 1j * omega * self.esl_h + 1.0 / (1j * omega * self.capacitance_f)
 
     def srf_hz(self) -> Optional[float]:
@@ -210,10 +223,80 @@ class Probe:
     # Where the target came from ("" when not recorded): an imported file's step and rise
     # time, the maker's own target, or "entered" once the user changes it.
     target_from: str = ""
+    # The device's load step and its slew rate, for the estimated transient response
+    # (#166); None when not set.
+    step_a: Optional[float] = None
+    slew_a_per_us: Optional[float] = None
+    # A die port of a package model (#53): the package's name and the port's number. Such
+    # a probe has no place on the board; ``rail`` and ``ground`` are kept as the package
+    # part's pins on that port's nets (kipi.ac.package.sync_die_probes), which put it on
+    # its rail.
+    package: str = ""
+    die_port: int = 0
+
+    @property
+    def on_die(self) -> bool:
+        return bool(self.package)
 
     def target_mask(self) -> Optional[List[Tuple[float, float]]]:
         """The custom mask's points, sorted by frequency, when it is in use."""
         return sorted(self.target_points) if self.target_custom and self.target_points             else None
+
+
+# What a package model's port connects to (#53): the board, through the package part's
+# pins; a die probe; or nothing, left open or shorted.
+PCB, DIE, OPEN, SHORT = "pcb", "die", "open", "short"
+PORT_ROLES = (PCB, DIE, OPEN, SHORT)
+
+
+@dataclass
+class PackagePort:
+    """One port of a package model, by its number in the file (from 1). On the PCB, its
+    plus side is the part's pins on ``net`` (``pins``, or every one) and its reference side
+    those on ``ground_net``; a die port's nets say which rail and ground it is on."""
+    number: int
+    name: str = ""
+    role: str = OPEN
+    net: str = ""
+    pins: List[str] = field(default_factory=list)
+    ground_net: str = ""
+    ground_pins: List[str] = field(default_factory=list)
+
+    @property
+    def label(self) -> str:
+        plain = f"Port {self.number}"
+        return f"{plain} ({self.name})" if self.name and self.name != plain else plain
+
+
+@dataclass
+class PackageModel:
+    """A package PI model (#53): an N-port Touchstone file, kept whole in the setup, on
+    the board part ``ref``."""
+    name: str
+    ref: str = ""
+    touchstone: str = ""                # the file's text
+    n_ports: Optional[int] = None       # from a Touchstone 1 file's name (.sNp)
+    file: str = ""                      # the file it came from, for the user to see
+    ports: List[PackagePort] = field(default_factory=list)
+
+    def network(self):
+        from kipi.core.model.touchstone import parse
+        return parse(self.touchstone, self.n_ports)
+
+    def port(self, number: int) -> Optional[PackagePort]:
+        return next((p for p in self.ports if p.number == number), None)
+
+    @staticmethod
+    def from_dict(d: dict) -> "PackageModel":
+        return PackageModel(
+            str(d["name"]), str(d.get("ref", "")), str(d.get("touchstone", "")),
+            d.get("n_ports"), str(d.get("file", "")),
+            [PackagePort(int(p["number"]), str(p.get("name", "")),
+                         p.get("role", OPEN) if p.get("role") in PORT_ROLES else OPEN,
+                         str(p.get("net", "")), [str(x) for x in p.get("pins", [])],
+                         str(p.get("ground_net", "")),
+                         [str(x) for x in p.get("ground_pins", [])])
+             for p in d.get("ports", [])])
 
 
 @dataclass
@@ -239,7 +322,7 @@ class ACSettings:
     # Last rail (VRM name) and ground net chosen for a solve.
     rail: str = ""
     ground: str = ""
-    html_report: bool = False             # write a report after each rail's solve
+    html_report: bool = False             # unused: reports are written on demand (#185)
     report_format: str = "html"           # "html" or "pdf" (#119)
     # Derate the capacitor models that estimate DC bias (#74); off: every model as entered.
     dc_bias: bool = True

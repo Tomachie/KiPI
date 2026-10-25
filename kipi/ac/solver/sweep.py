@@ -6,6 +6,8 @@
    interpolated onto the full sweep (PCHIP on log f, real and imaginary parts).
 3. At each sweep frequency the parts terminate their ports, and the impedance at each
    probe is Z_pp − Z_pE (Z_EE + diag Z_e)⁻¹ Z_Ep (the other probes stay open).
+4. Package models (#53) join at their balls' ports, and their die probes are solved
+   through them (:mod:`kipi.ac.package`).
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from kipi.ac import package as pkgs
 from kipi.ac.bias import apply_derating, dc_volts, part_temperatures, temperature_source
 from kipi.ac.board_map import ACMap, MapMesh, build_map
 from kipi.ac.checks import ground_nets, rail_caps, rail_nets, validate_ac
@@ -24,9 +27,8 @@ from kipi.ac.solver.fem import ACError, ACStats, ACSystem, PortDef
 from kipi.ac.target import judged_from, target_at
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import NULL, ProgressReporter
-from kipi.dc.pi.model import PISetup
+from kipi.dc.pi.model import PinRef, PISetup
 from kipi.dc.solver import pads_for
-from kipi.dc.solver.setup import SHORT_OHMS
 
 
 @dataclass
@@ -40,6 +42,9 @@ class ProbeCurve:
     # The VRM's control loop bandwidth when the target applies only above it (None: the
     # whole target applies; see kipi.ac.target.judged_from).
     above_hz: Optional[float] = None
+    # The probe's load step and its slew rate, for the estimated transient (#166).
+    step_a: Optional[float] = None
+    slew_a_per_us: Optional[float] = None
 
     @property
     def mag(self) -> np.ndarray:
@@ -71,6 +76,21 @@ class ProbeCurve:
             else:
                 i = np.flatnonzero(sel)[int(np.argmax(self.mag[sel] / t[sel]))]
         return float(self.mag[i]), float(freqs[i])
+
+    def transient(self, freqs: np.ndarray, bandwidth_hz: Optional[float]):
+        """The estimated response to the probe's load step
+        (:func:`kipi.ac.transient.transient`); None without a step, slew rate or VRM
+        bandwidth."""
+        from kipi.ac.transient import transient
+        slew = self.slew_a_per_us * 1e6 if self.slew_a_per_us else None
+        return transient(freqs, self.z, bandwidth_hz, self.step_a, slew)
+
+    def allowed_v(self) -> Optional[float]:
+        """The AC tolerance the flat target implies, target |Z| times the load step
+        (Z_target = V_AC / I_step); None without both."""
+        if self.target_points or not (self.target_ohm and self.step_a):
+            return None
+        return self.target_ohm * self.step_a
 
     def passed(self, freqs: np.ndarray) -> Optional[bool]:
         t = self.target_at(freqs)
@@ -122,15 +142,19 @@ def fmt_hz(f: float) -> str:
     return f"{f:.4g} Hz"
 
 
+OPEN_KINDS = ("probe", "pkg")             # ports left open by the parts: probes, package balls
+
+
 def element_impedance(port: PortDef, omega: np.ndarray) -> np.ndarray:
     if port.kind == "cap":
         return port.element.impedance(omega)
-    k = port.element                       # a series link
-    return k.resistance + 1j * omega * (k.esl_h or 0.0) + 0 * omega
+    return port.element.impedance(omega)   # a series link
 
 
 def build_ports(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str):
-    """Ports, merged short links, and notes for the rail driven by ``vrm_name``."""
+    """Ports, merged short links, notes and the package models joining the solve
+    (:class:`kipi.ac.package.PackageUse`) for the rail driven by ``vrm_name``. Die probes
+    have no port: they are solved through their packages' balls, ports of kind "pkg"."""
     vrm = next(v for v in setup.vrms if v.name == vrm_name)
     rail = rail_nets(setup, vrm, gnd)
     grounds = ground_nets(setup, vrm, gnd)
@@ -138,11 +162,22 @@ def build_ports(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str):
     ports: List[PortDef] = []
     probes = [p for p in setup.probes if p.rail.net in rail]
     for p in probes:
-        ports.append(PortDef(p.name, "probe", pads(p.rail), pads(p.ground), p))
+        if not p.on_die:
+            ports.append(PortDef(p.name, "probe", pads(p.rail), pads(p.ground), p))
+    uses, notes = pkgs.uses(setup, snap, set(rail), grounds, probes)
+    for use in uses:
+        k = use.model
+        for b in use.balls:
+            plus = pads(PinRef(k.ref, b.net, b.pins))
+            minus = pads(PinRef(k.ref, b.ground_net, b.ground_pins))
+            if not (plus and minus):
+                raise ACError(f"Package {k.name}: {b.label} has no pads of {k.ref} on "
+                              f"{b.net if not plus else b.ground_net}")
+            ports.append(PortDef(f"{k.name} {b.label}", "pkg", plus, minus, (k, b)))
     caps, missing = rail_caps(snap, setup, rail, grounds)
     for ref, model, _net, a, b in caps:
         ports.append(PortDef(ref, "cap", a, b, model))
-    shorts, links, notes = [], [], []
+    shorts, links = [], []
     inside = set(rail) | grounds
     for k in setup.links:
         on = (k.side_a.net in inside, k.side_b.net in inside)
@@ -152,12 +187,12 @@ def build_ports(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str):
             notes.append(f"Series link {k.name} leads off the rail to "
                          f"{k.side_b.net if on[0] else k.side_a.net}; left out")
             continue
-        if k.resistance <= SHORT_OHMS and not k.esl_h:
+        if k.is_short():
             shorts.append((pads(k.side_a), pads(k.side_b)))
         else:
             ports.append(PortDef(k.name, "link", pads(k.side_a), pads(k.side_b), k))
             links.append(k.name)
-    return rail, ports, shorts, [c[0] for c in caps], missing, links, notes
+    return rail, ports, shorts, [c[0] for c in caps], missing, links, notes, uses
 
 
 def _interpolate(f_field: np.ndarray, zb: np.ndarray, freqs: np.ndarray) -> np.ndarray:
@@ -177,7 +212,7 @@ def _interpolate(f_field: np.ndarray, zb: np.ndarray, freqs: np.ndarray) -> np.n
 def terminate(zb: np.ndarray, freqs: np.ndarray, ports: List[PortDef]) -> np.ndarray:
     """Impedance at each probe port (columns), with every part on its port."""
     probe_idx = [i for i, p in enumerate(ports) if p.kind == "probe"]
-    elem_idx = [i for i, p in enumerate(ports) if p.kind != "probe"]
+    elem_idx = [i for i, p in enumerate(ports) if p.kind not in OPEN_KINDS]
     out = np.zeros((len(freqs), len(probe_idx)), complex)
     omega = 2 * np.pi * freqs
     ze = (np.stack([element_impedance(ports[i], omega) for i in elem_idx], axis=1)
@@ -197,7 +232,7 @@ def terminate(zb: np.ndarray, freqs: np.ndarray, ports: List[PortDef]) -> np.nda
 
 def _elements(freqs: np.ndarray, ports: List[PortDef]):
     """The indices of the ports that hold parts and their impedances (F, E)."""
-    idx = [i for i, p in enumerate(ports) if p.kind != "probe"]
+    idx = [i for i, p in enumerate(ports) if p.kind not in OPEN_KINDS]
     omega = 2 * np.pi * freqs
     ze = (np.stack([element_impedance(ports[i], omega) for i in idx], axis=1)
           if idx else np.zeros((len(freqs), 0)))
@@ -237,6 +272,38 @@ def element_currents(zb: np.ndarray, freqs: np.ndarray, ports: List[PortDef],
     return E, out
 
 
+def _with_packages(zi, freqs, ports, uses, setup, notes, progress):
+    """The impedance at every board probe, then every die probe, with the package models
+    joined at their balls (:func:`kipi.ac.package.connect`); and the die probes, as
+    :class:`PortDef` with no pads."""
+    probe_idx = [i for i, p in enumerate(ports) if p.kind == "probe"]
+    ball_idx = [i for i, p in enumerate(ports) if p.kind == "pkg"]
+    idx = probe_idx + ball_idx
+    zr = terminate_transfer(zi, freqs, ports, idx, idx)
+    by_port = {(p.package, p.die_port): p for p in setup.probes if p.on_die}
+    ys, n_balls, dies = [], [], []
+    for use in uses:
+        why = pkgs.check_coverage(use, float(freqs[0]), float(freqs[-1]))
+        if why:
+            notes.append(why)
+            progress.warn(why)
+        try:
+            ys.append(use.y_at(freqs))
+        except ValueError as e:
+            raise ACError(f"Package {use.model.name}: {e}") from None
+        n_balls.append(len(use.balls))
+        dies += [PortDef(by_port[(use.model.name, d.number)].name, "probe", [], [],
+                         by_port[(use.model.name, d.number)]) for d in use.dies]
+    progress.info(f"Package models: {', '.join(u.model.name for u in uses)}; "
+                  f"{len(ball_idx)} PCB port(s), {len(dies)} die probe(s)")
+    try:
+        z = pkgs.connect(zr, len(probe_idx), pkgs.block_diag(ys, n_balls), len(ball_idx))
+    except np.linalg.LinAlgError:
+        raise ACError("The package models cannot be joined to the board (a singular "
+                      "network): check their port connections") from None
+    return z, dies
+
+
 def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
              progress: ProgressReporter = NULL, dc_result=None) -> ACResult:
     """Sweep the rail driven by ``vrm_name`` against ``gnd``. ``dc_result``, the last DC
@@ -247,7 +314,8 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
     if errors:
         raise ACError("Setup problems:\n- " + "\n- ".join(errors))
     s = setup.ac
-    rail, ports, shorts, caps, missing, links, notes = build_ports(snap, setup, vrm_name, gnd)
+    rail, ports, shorts, caps, missing, links, notes, uses = build_ports(snap, setup,
+                                                                        vrm_name, gnd)
     for n in notes:
         progress.warn(n)
     vrm = next(v for v in setup.vrms if v.name == vrm_name)
@@ -268,17 +336,22 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
                                           temp_text)
     for n in bias_notes:
         progress.info(n)
+    # Die probes (#53) are marked on their package's part.
+    die_names = [p.name for p in setup.probes if p.on_die and any(
+        u.model.name == p.package and any(d.number == p.die_port for d in u.dies)
+        for u in uses)]
+    n_die = len(die_names)
     progress.info(f"Rail {vrm_name}: {', '.join(sorted(rail))} against {ground}; "
                   f"{len(caps)} capacitor(s) with models, {len(missing)} without, "
                   f"{len(links)} series link(s), "
-                  f"{sum(p.kind == 'probe' for p in ports)} probe(s)")
+                  f"{sum(p.kind == 'probe' for p in ports) + n_die} probe(s)")
     if missing:
         progress.warn(f"{len(missing)} capacitor(s) between the rail and {ground} have no model "
                       f"and are left out: {', '.join(missing[:20])}"
                       f"{'…' if len(missing) > 20 else ''}")
     # The board map, handed to the GUI as it fills: the parts now, the mesh once meshed.
     board_map = build_map(snap, setup, vrm_name, rail, ground, caps, missing,
-                          [p.name for p in ports if p.kind == "probe"])
+                          [p.name for p in ports if p.kind == "probe"] + die_names)
     progress.partial(board_map)
     system = ACSystem(snap, sorted(rail), grounds, ports, shorts, setup.settings, s, progress,
                       temperature=temperature)
@@ -310,8 +383,12 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
     progress.info(f"Field solves done in {system.stats.times['field']:.2f} s")
 
     with progress.timed(f"Sweep: {len(freqs)} frequencies"):
-        z = terminate(_interpolate(f_field, zb, freqs), freqs, ports)
-    probe_ports = [p for p in ports if p.kind == "probe"]
+        zi = _interpolate(f_field, zb, freqs)
+        if uses:
+            z, die_probes = _with_packages(zi, freqs, ports, uses, setup, notes, progress)
+        else:
+            z, die_probes = terminate(zi, freqs, ports), []
+    probe_ports = [p for p in ports if p.kind == "probe"] + die_probes
     bandwidth = vrm.bandwidth_khz * 1e3 if vrm.bandwidth_khz else None
     curves = []
     for i, p in enumerate(probe_ports):
@@ -322,7 +399,7 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
             notes.append(f"Probe {p.name}: {why}")
             progress.warn(notes[-1])
         curves.append(ProbeCurve(p.name, z[:, i], pr.target_ohm, pr.target_hz,
-                                 pr.target_mask(), above))
+                                 pr.target_mask(), above, pr.step_a, pr.slew_a_per_us))
     if bandwidth:
         progress.info(f"Targets apply above the {vrm_name} control loop bandwidth, "
                       f"{fmt_hz(bandwidth)} (open-loop PDN impedance)")
@@ -331,6 +408,20 @@ def solve_ac(snap: BoardSnapshot, setup: PISetup, vrm_name: str, gnd: str,
         verdict = {None: "", True: " PASS", False: " FAIL"}[c.passed(freqs)]
         progress.info(f"  {c.name}: |Z| {np.min(c.mag) * 1e3:.3g} to {np.max(c.mag) * 1e3:.4g} mΩ; "
                       f"worst {zmax * 1e3:.4g} mΩ at {fmax / 1e6:.4g} MHz{verdict}")
+        if not (c.step_a and c.slew_a_per_us):
+            continue
+        if not bandwidth:
+            notes.append(f"Probe {c.name}: no transient estimate, since {vrm_name} has no "
+                         "control loop bandwidth to close its loop with")
+            progress.warn(notes[-1])
+            continue
+        tr = c.transient(freqs, bandwidth)
+        progress.info(f"  {c.name}: a {c.step_a:g} A load step dips about "
+                      f"{tr.undershoot_v * 1e3:.4g} mV; its release rises about "
+                      f"{tr.overshoot_v * 1e3:.4g} mV (estimate)")
+        for note in tr.notes:
+            notes.append(f"Probe {c.name}: {note}")
+            progress.warn(notes[-1])
     return ACResult(rail=vrm_name, rail_nets=sorted(rail), ground=ground, freqs=freqs,
                     probes=curves, field_freqs=f_field, caps=caps, missing_caps=missing,
                     links=links, plane_capacitance_f=system.total_plane_capacitance,

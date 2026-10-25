@@ -186,6 +186,26 @@ def test_dc_report_as_pdf(dc, tmp_path, printed):
     assert x1 - x0 > 400 and y1 - y0 == pytest.approx(pdf.NOTES_HEIGHT_PT, abs=12)
 
 
+def test_the_dc_pdf_maps_are_two_to_a_page_and_sharp(dc, tmp_path, printed):
+    import re
+    from kipi.dc.report.html import PDF_MAP_BOX, png_size
+    tree, scenes, snap, s = dc
+    write_report(tmp_path / "r.pdf", tree, scenes, snap, s)
+    html, = printed
+    maps = re.findall(r"<tr><td><img src='(data:image/png;base64,[^']+)' width='(\d+)'>", html)
+    assert len(maps) >= 2 * len(tree.groups)
+    for src, width in maps:
+        w, h = png_size(src)
+        shown = int(width)
+        assert shown <= PDF_MAP_BOX[0] and shown * h / w <= PDF_MAP_BOX[1] + 1
+        assert w >= 2.0 * shown                   # about 200 dpi on the page, not 96
+    assert html.count("<table class='maps' style='page-break-before: always'>") >= len(
+        tree.groups)
+    # Two boxes, one above the other, on a Letter or A4 page less its margins (96 dpi).
+    printable_in = min(11.0, 297 / 25.4) - 2 * pdf.PAGE_MARGIN_MM / 25.4
+    assert 2 * (PDF_MAP_BOX[1] + 4) / 96 < printable_in
+
+
 def test_ac_report_as_pdf(ac, tmp_path, printed):
     result, snap, s = ac
     path = write_ac_report(tmp_path / "r.pdf", result, snap, s)
@@ -261,28 +281,41 @@ def test_qt_failures_become_pdf_errors(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("mode", ["dc", "ac"])
-def test_panel_report_option(mode, ac, dc):
+def test_panel_report_button(mode, ac, dc):
+    # The Report button writes a report of the shown results on demand (#185): only once
+    # there are results, in the format picked beside it.
     if mode == "dc":
         from kipi.dc.gui.pi_panel import PIPanel
         tree, scenes, snap, s = dc
-        s.html_report, s.report_format = True, "pdf"
+        s.report_format = "pdf"
         p = PIPanel()
         p.set_board(snap, s)
         settings = s
+        show = lambda: p.show_results(tree, next(iter(tree.groups)))       # noqa: E731
+        clear, shown = p.clear_results, ()
     else:
         from kipi.ac.gui.panel import ACPanel
         result, snap, s = ac
-        s.ac.html_report, s.ac.report_format = True, "pdf"
+        s.ac.report_format = "pdf"
         p = ACPanel()
         p.set_board(snap, s)
         p.set_nets(["+3V3", "GND"])
         settings = s.ac
+        show = lambda: p.show_result(result)                               # noqa: E731
+        clear, shown = p._clear_table, (result,)
+    asked = []
+    p.report_requested.connect(lambda *a: asked.append(a))
     opt = p.report_option
-    assert opt.chk.isChecked() and opt.fmt() == "pdf" and opt.cmb.isEnabled()
+    assert opt.fmt() == "pdf" and opt.cmb.isEnabled() and not opt.btn.isEnabled()
+    show()
+    assert opt.btn.isEnabled()
     opt.cmb.setCurrentIndex(opt.cmb.findData("html"))
-    assert settings.report_format == "html"
-    opt.chk.setChecked(False)
-    assert not settings.html_report and not opt.cmb.isEnabled()
+    assert settings.report_format == "html" and not asked
+    opt.btn.click()
+    assert asked == [(*shown, "html")]
+    clear()
+    assert not opt.btn.isEnabled()
+    p.close()
 
 
 def test_another_reader_fills_the_notes_and_keeps_them(dc, tmp_path):

@@ -48,8 +48,10 @@ from kipi.gui.load_model_dialogs import (
 )
 from kipi.gui.report_option import ReportOption
 from kipi.gui.sortable import make_sortable, reset_sort, set_row, sorted_rows
+from kipi.gui.spice_dialog import LINK, import_spice, part_values, spice_text
 from kipi.gui.tooltip_art import add_text, art_tip
 from kipi.gui.unit_spin import UnitSpinBox
+from kipi.dc.pi import vunits
 from kipi.dc.pi.tree import fmt_drop
 from kipi.dc.viz.results import FIELDS, scale_decimals
 
@@ -86,17 +88,17 @@ class RangeRow(QWidget):
     values, or clears them where that needs the nominal voltage and it is unknown."""
     changed = Signal()
 
-    def __init__(self, nominal: Callable[[], Optional[float]], parent=None):
+    def __init__(self, nominal: Callable[[], Optional[float]], parent=None,
+                 units=(VOLTS, DELTA_VOLTS, PERCENT)):
         super().__init__(parent)
         self._nominal = nominal
         self._quiet = False
         self.min = _optional_volts()
         self.max = _optional_volts()
         self.unit = QComboBox()
-        self.unit.addItem("V", VOLTS)
-        self.unit.addItem("±V", DELTA_VOLTS)
-        self.unit.addItem("%", PERCENT)
-        self._unit = VOLTS                      # the unit the values are in
+        for u in units:
+            self.unit.addItem(u, u)
+        self._unit = units[0]                   # the unit the values are in
         h = QHBoxLayout(self)
         h.setContentsMargins(0, 0, 0, 0)
         h.addWidget(QLabel("min"))
@@ -126,6 +128,9 @@ class RangeRow(QWidget):
         quiet, self._quiet = self._quiet, True
         try:
             self._unit = range_unit(pct, dv)
+            if self.unit.findData(self._unit) < 0:      # a unit this row does not offer
+                self._unit, lo, hi = self.unit.itemData(0), None, None
+            pct = self._unit == PERCENT
             self.unit.setCurrentIndex(self.unit.findData(self._unit))
             step = {PERCENT: 1.0, DELTA_VOLTS: 0.01}.get(self._unit, 0.1)
             for s in (self.min, self.max):
@@ -986,6 +991,10 @@ class LoadEditor(_Editor):
         self.ground = self._picker(optional=True)
         # Tolerance, in % or volts from the rail's target voltage, or in volts.
         self.tol = RangeRow(self._rail_nominal)
+        # Optional DC and AC shares of it (#174), saved for later use. AC is a swing about
+        # the DC voltage, so only from nominal.
+        self.dc_tol = RangeRow(self._rail_nominal)
+        self.ac_tol = RangeRow(self._rail_nominal, units=(DELTA_VOLTS, PERCENT))
         f.addRow("Name", self.name)
         f.addRow("Supply pins", self.supply)
         f.addRow("Current split", self.mode)
@@ -1003,11 +1012,16 @@ class LoadEditor(_Editor):
         f.addRow("Total", self.lbl_total)
         f.addRow("Ground pins", self.ground)
         f.addRow("Tolerance", self.tol)
+        f.addRow("DC tolerance", self.dc_tol)
+        f.addRow("AC tolerance", self.ac_tol)
         # Drawings under the tooltips (#116), the field's part picked out.
         art = {self.mode: ("current_split",), self.current: ("current_split", "equal"),
                self.tol: ("tolerance", "min", "max"), self.tol.min: ("tolerance", "min"),
                self.tol.max: ("tolerance", "max"),
                self.tol.unit: ("tolerance", "volts", "dv", "pct")}
+        for row, part in ((self.dc_tol, "dc"), (self.ac_tol, "ac")):
+            for w in (row, *row.fields()):
+                art[w] = ("tol_split", part)
         for w, text in (
                 (self.name, "A name for this load, used in the results tables"),
                 (self.supply, "The pins the load draws its current from"),
@@ -1033,12 +1047,24 @@ class LoadEditor(_Editor):
                                 "the rail.\n%: in % from that target voltage."
                                 "\nSwitching converts the values when that VRM is known.")):
             tip(f, w, text, art.get(w))
+        dc_text = ("Optional, for a part that gives its tolerance in two shares: the DC "
+                   "share, where the pin's steady voltage may sit, from the VRM's accuracy "
+                   "and the copper's DC drop together. In V, or ±V or % from the VRM "
+                   "target voltage. Saved with the setup; no solve uses it yet.")
+        ac_text = ("Optional, for a part that gives its tolerance in two shares: the AC "
+                   "share, how far ripple and load transients may swing the pin about its "
+                   "steady voltage. In ±V or % from it. Saved with the setup; the AC target "
+                   "calculator can copy it, but no solve uses it.")
+        for row, text in ((self.dc_tol, dc_text), (self.ac_tol, ac_text)):
+            for w in (row, *row.fields()):
+                tip(f, w, text, art[w])
         self.groups.setToolTip(art_tip(
             "Pin groups: an optional name, the pin numbers (e.g. 15,28) and the current into "
             "those pins. Click a column header to sort by it.", "current_split", "groups"))
         make_sortable(self.groups, self._sort_groups, columns=(0, 1, 2))
         self._watch(self.name, self.current, self.current_max, self.mode)
-        self.tol.changed.connect(self._store)
+        for row in (self.tol, self.dc_tol, self.ac_tol):
+            row.changed.connect(self._store)
         self.mode.currentIndexChanged.connect(self._mode_rows)
         self._gb_widgets = (self.btn_group, self.btn_each)
         self._legend()
@@ -1047,7 +1073,8 @@ class LoadEditor(_Editor):
     def _mode_rows(self, *_):
         grouped = self.mode.currentData() == "groups"
         self._mark({self.name: REQUIRED, self.supply: REQUIRED, self.mode: REQUIRED,
-                    self.current: REQUIRED, self.ground: OPTIONAL, self.tol: OPTIONAL})
+                    self.current: REQUIRED, self.ground: OPTIONAL, self.tol: OPTIONAL,
+                    self.dc_tol: OPTIONAL, self.ac_tol: OPTIONAL})
         self.form.setRowVisible(self.current, not grouped)
         self.form.setRowVisible(self.current_max, not grouped)
         self.form.setRowVisible(self.groups, grouped)
@@ -1134,6 +1161,8 @@ class LoadEditor(_Editor):
         self.mode.setCurrentIndex(1 if l.groups else 0)
         self.ground.set_value(l.ground)
         self.tol.set_values(l.tol_min, l.tol_max, l.tol_pct, l.tol_dv)
+        self.dc_tol.set_values(l.dc_tol_min, l.dc_tol_max, l.dc_tol_pct, l.dc_tol_dv)
+        self.ac_tol.set_values(l.ac_tol_min, l.ac_tol_max, l.ac_tol_pct, l.ac_tol_dv)
         self.lbl_total.setText(f"{l.total_current():.4g} A")
         self._mode_rows()
 
@@ -1173,6 +1202,10 @@ class LoadEditor(_Editor):
                 self._show(self.ground, gnd)
         l.tol_min, l.tol_max = self.tol.values()
         l.tol_pct, l.tol_dv = self.tol.pct(), self.tol.dv()
+        l.dc_tol_min, l.dc_tol_max = self.dc_tol.values()
+        l.dc_tol_pct, l.dc_tol_dv = self.dc_tol.pct(), self.dc_tol.dv()
+        l.ac_tol_min, l.ac_tol_max = self.ac_tol.values()
+        l.ac_tol_pct, l.ac_tol_dv = self.ac_tol.pct(), self.ac_tol.dv()
         self.lbl_total.setText(f"{l.total_current():.4g} A")
 
 
@@ -1215,6 +1248,17 @@ class LinkEditor(_Editor):
         row.addWidget(self.btn_esl_package)
         row.addWidget(self.btn_esl_bead)
         f.addRow("Estimate ESL", est)
+        # Or both values from the part's SPICE model (#51).
+        self.btn_spice = QPushButton("Import SPICE model…", self)
+        self.btn_spice.clicked.connect(self._from_spice)
+        f.addRow("SPICE model", self.btn_spice)
+        self.chk_spice = QCheckBox("Use the SPICE model's impedance")
+        self.chk_spice.toggled.connect(self._spice_toggled)
+        f.addRow(self.chk_spice)
+        self.lbl_spice = QLabel()                   # which model, and whether it is used
+        self.lbl_spice.setWordWrap(True)
+        self.lbl_spice.setStyleSheet("color: #999;")
+        f.addRow(self.lbl_spice)
         self.lbl_esl = QLabel()                     # where the last estimate came from
         self.lbl_esl.setWordWrap(True)
         self.lbl_esl.setStyleSheet("color: #999;")
@@ -1223,7 +1267,8 @@ class LinkEditor(_Editor):
         # Drawings under the tooltips (#116): the part as a DCR and an ESL in series.
         art = {self.a: ("series_link", "a"), self.b: ("series_link", "b"),
                self.r: ("series_link", "r"), self.esl: ("series_link", "l"),
-               self.btn_esl_package: ("series_link", "l"), self.btn_esl_bead: ("bead_z", "l")}
+               self.btn_esl_package: ("series_link", "l"), self.btn_esl_bead: ("bead_z", "l"),
+               self.btn_spice: ("series_link", "r", "l")}
         for w, text in (
                 (self.name, "A name for this part, used in the results tables"),
                 (self.a, "The part's pins on one net"),
@@ -1248,7 +1293,18 @@ class LinkEditor(_Editor):
                  "Work out the ESL of a ferrite bead from its impedance at one frequency, "
                  "read off its datasheet's curve. Below its peak a bead is an inductor, "
                  "|Z| = √(DCR² + (2πf·L)²); at and above the peak it is a resistor, so a "
-                 "point well below the peak gives the inductance best.")):
+                 "point well below the peak gives the inductance best."),
+                (self.btn_spice,
+                 "Use the part's SPICE model, a .SUBCKT of resistors, inductors and "
+                 "capacitors from its maker: a ferrite bead's, say, with its resistive peak. "
+                 "It is saved with the setup, and the AC and Coupled Noise solves take the "
+                 "part's impedance from it at every frequency. The DCR (which the DC solve "
+                 "uses) is the model's resistance at DC, and the ESL its inductance at "
+                 "100 kHz, low on a bead's inductive slope, for the tables and reports."),
+                (self.chk_spice,
+                 "Take the impedance from the imported SPICE model. Untick to use the DCR "
+                 "and ESL as you enter them; the model is kept, and ticking again puts its "
+                 "fitted values back.")):
             tip(f, w, text, art.get(w))
         hint = QLabel("A part in series between two nets (sense resistor, ferrite, fuse, "
                       "load switch or diode). For a diode, side A is the anode; enter its "
@@ -1292,12 +1348,53 @@ class LinkEditor(_Editor):
             self._estimated(f"ESL from the bead's {dlg.z.value():g} Ω at "
                             f"{dlg.freq.value():g} MHz: {dlg.esl_h * 1e9:.3g} nH")
 
+    def _from_spice(self):
+        k = self.obj
+        if k is None:
+            return
+        refs = dict.fromkeys(r.ref for r in (k.side_a, k.side_b) if r is not None)
+        got = import_spice(self, LINK, [k.name, *part_values(self.panel.snapshot, refs)])
+        if got is None:
+            return
+        k.spice = got[0]
+        self._fitted(k)
+
+    def _spice_toggled(self, on: bool):
+        k = self.obj
+        if self._loading or k is None or k.spice is None:
+            return
+        k.spice.use = on
+        if on:
+            self._fitted(k)
+        else:
+            self._spice_fields(k)
+            self.changed.emit()
+
+    def _fitted(self, k: DcLink):
+        """Put the values fitted to ``k``'s SPICE model in it and in the fields."""
+        k.resistance = k.spice.values.get("resistance", k.resistance)
+        k.esl_h = k.spice.values.get("esl_h")
+        self.load(k)
+        self.changed.emit()
+
+    def _spice_fields(self, k: DcLink):
+        """The SPICE model's line, and the DCR and ESL locked while it is in use."""
+        self.chk_spice.setVisible(k.spice is not None)
+        self.lbl_spice.setVisible(k.spice is not None)
+        self.chk_spice.setChecked(k.uses_spice)
+        self.lbl_spice.setText(spice_text(k.spice) if k.spice else "")
+        free = not k.uses_spice
+        self.r.setEnabled(free)
+        for w in (self.esl, self.btn_esl_package, self.btn_esl_bead):
+            w.setEnabled(free and self.mode == "ac")
+
     def _estimated(self, text: str):
         self.lbl_esl.setText(text)
         self.lbl_esl.setVisible(True)
 
     def _load(self, k: DcLink):
         self.lbl_esl.setVisible(False)
+        self._spice_fields(k)
         self.name.setText(k.name)
         self.a.set_value(k.side_a)
         self.b.set_value(k.side_b)
@@ -1653,6 +1750,7 @@ class PIPanel(QWidget, PartSelection):
     # name, and whether the user picked it; ("", "", False) for none (#96).
     part_selected = Signal(str, str, bool)
     export_requested = Signal(str)         # "csv", "vtk" or "results"
+    report_requested = Signal(str)         # a report of the shown results, "html" or "pdf"
     setup_changed = Signal()               # any edit to the setup
 
     def __init__(self, parent=None):
@@ -1674,6 +1772,14 @@ class PIPanel(QWidget, PartSelection):
         self.load_list.buttons.addWidget(model_button(
             self, "load", self.apply_load_model, self.add_loads_from_model,
             lambda: export_model(self, self.setup, self.snapshot)))
+        # One part's total current over several of its nets (#182).
+        b_split = QPushButton("Split across nets…", self)
+        b_split.setToolTip(art_tip(
+            "Share one part's total current out over several of its supply nets, as a "
+            "load on each: e.g. when only a chip's total draw is known and some of its "
+            "pins are on a ferrite bead filtered net", "split_nets", "nets"))
+        b_split.clicked.connect(lambda: self.split_load_across_nets())
+        self.load_list.buttons.addWidget(b_split)
         self.tabs.addTab(self.vrm_list, "VRMs")
         self.tabs.addTab(self.load_list, "Loads")
         self.tabs.addTab(self.link_list, "Series links")
@@ -1716,8 +1822,8 @@ class PIPanel(QWidget, PartSelection):
         self.cmb_corner.currentIndexChanged.connect(
             lambda *_: setattr(self.setup, "corner", self.cmb_corner.currentData()))
         self.report_option = ReportOption("3D view, per-layer maps and tables",
-                                          self._report_changed, self)
-        self.chk_report = self.report_option.chk
+                                          self.report_requested.emit, self._report_changed,
+                                          self)
         self.btn_report = QPushButton("Open report", self)
         self.btn_report.setToolTip("Open the last report in your browser or PDF viewer")
         self.btn_report.setVisible(False)
@@ -1777,16 +1883,23 @@ class PIPanel(QWidget, PartSelection):
                                     "solved")
         lr.addWidget(self.lbl_summary)
         self.res_tabs = QTabWidget(g_res)
-        self.tbl_loads = self._table(["Load", "Group", "I (A)", "V eff (V)",
-                                      "Drop / boost (mV)", "Worst pin (mV)", "Worst %",
-                                      "Tolerance", "Voltage at pins", "Current",
-                                      "Margin (mV)", "Pre-layout margin (mV)",
-                                      "Unknowns may add (mA)"], sortable=True)
-        self.tbl_loads.setToolTip("Drop: below the VRM target voltage. Boost: above it, e.g. "
-                                  "near a remote-sensed VRM's output pins. The worst pin is the "
-                                  "one furthest from the target voltage either way. Unknowns "
-                                  "may add: what the rail's loads whose current is not known "
-                                  "may draw together before this load leaves its tolerance.")
+        # The results' voltages in volts, or in mV or % from the target voltage (#177).
+        self.cmb_vunit = QComboBox(g_res)
+        for unit, label in vunits.UNITS:
+            self.cmb_vunit.addItem(label, unit)
+        self.cmb_vunit.setToolTip(
+            "Show the voltages in the Loads and VRMs tables in mV from the target voltage "
+            "(the VRM's), in % of it from the target, or in volts. From the target, negative "
+            "is a drop below it and positive a boost above it.")
+        self.cmb_vunit.currentIndexChanged.connect(self._vunit_changed)
+        self.res_tabs.setCornerWidget(self.cmb_vunit)
+        self.tbl_loads = self._table(self._load_headers(), sortable=True)
+        self.tbl_loads.setToolTip(
+            "Each load's mean voltage, its lowest and highest supply pins (less the ground "
+            "pins), its tolerance and its margin: how far its pins are inside the tolerance, "
+            "negative when outside. A load passes when every pin is within its tolerance. "
+            "Unknowns may add: what the rail's loads whose current is not known may draw "
+            "together before this load leaves its tolerance.")
         self.tbl_headroom = self._table(["Rail", "Known (A)", "Tightest load", "Margin (mV)",
                                          "Not known", "They may add (mA)", "Limited by",
                                          "Costliest (mV per A)"], sortable=True)
@@ -1797,11 +1910,12 @@ class PIPanel(QWidget, PartSelection):
             "load leaves its tolerance - a bound however the current is shared, worst case "
             "all of it at the costliest unknown, its ground return counted where it has "
             "ground pins. The VRM holds what it held.")
-        self.tbl_vrms = self._table(["VRM", "Type", "V out", "I out (A)", "V in", "I in (A)",
-                                     "P in (W)", "Loss (W)", "I limit (A)", ""], sortable=True)
-        self.tbl_vrms.setToolTip("Each VRM's solved output and input, conversion loss, and "
-                                 "PASS/FAIL against its output current limit; a row per phase "
-                                 "under a multi-phase VRM")
+        self.tbl_vrms = self._table(self._vrm_headers(), sortable=True)
+        self.tbl_vrms.setToolTip("Each VRM's solved output and input, conversion loss, the "
+                                 "lowest voltage anywhere on the copper of the rail it drives "
+                                 "(the ground's own drop not included), and PASS/FAIL against "
+                                 "its output current limit; a row per phase under a "
+                                 "multi-phase VRM")
         self.tbl_links = self._table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)",
                                        "Rated (A)", "Current against rating"],
                                       sortable=True)
@@ -1830,8 +1944,8 @@ class PIPanel(QWidget, PartSelection):
         self.report_path = path
         self.btn_report.setVisible(path is not None)
 
-    def _report_changed(self, on: bool, fmt: str):
-        self.setup.html_report, self.setup.report_format = on, fmt
+    def _report_changed(self, fmt: str):
+        self.setup.report_format = fmt
 
     def _open_report(self):
         if self.report_path:
@@ -2323,7 +2437,7 @@ class PIPanel(QWidget, PartSelection):
             wdg.blockSignals(True)
             (wdg.setChecked if isinstance(wdg, QCheckBox) else wdg.setValue)(val)
             wdg.blockSignals(False)
-        self.report_option.set_value(setup.html_report, setup.report_format)
+        self.report_option.set_value(setup.report_format)
         self._thermal_changed()
         self.setEnabled(True)
         self._refresh_pickers()
@@ -2397,6 +2511,36 @@ class PIPanel(QWidget, PartSelection):
         return Load(_unique(ref or "LOAD1", [x.name for x in self.setup.loads]), supply, 0.1,
                     ground=guess_ground_pins(self.snapshot, self.setup, self._nets, supply))
 
+    def split_load_across_nets(self, ref: Optional[str] = None, dialog=None):
+        """Share a part's total current over the supply nets the user ticks, as a load on
+        each (#182). ``dialog`` stands in for the dialog's run in tests."""
+        from kipi.dc.gui.split_load import SplitLoadDialog
+        from kipi.dc.pi.split import existing_load
+        if self.snapshot is None:
+            return
+        parts: Dict[str, str] = {}
+        for net in self._nets:
+            for r, value, _ in parts_on_net(self.snapshot, net):
+                parts.setdefault(r, value)
+        current = self.load_list.current()
+        ref = ref or (current.supply.ref if current is not None else None)
+        dlg = SplitLoadDialog(self.snapshot, self.setup, sorted(parts.items()), self._nets,
+                              ref, self)
+        if not (dialog(dlg) if dialog else dlg.exec()):
+            return
+        ref = dlg.ref()
+        for net, amps in dlg.chosen().items():
+            load = existing_load(self.setup, ref, net)
+            if load is None:
+                supply = PinRef(ref, net)
+                load = Load(_unique(f"{ref} {net}", [x.name for x in self.setup.loads]),
+                            supply, amps, ground=guess_ground_pins(
+                                self.snapshot, self.setup, self._nets, supply))
+                self.setup.loads.append(load)
+            load.current, load.groups = amps, []
+        self.load_list.reload()
+        self.load_list.changed.emit()
+
     def apply_load_model(self, model=None):
         """Apply a load model file (or ``model``) to the loads the user ticks."""
         model = model or open_model(self)
@@ -2459,10 +2603,11 @@ class PIPanel(QWidget, PartSelection):
     @staticmethod
     def _describe_link(k: DcLink) -> str:
         r = "short" if k.resistance <= 0 else f"{k.resistance * 1e3:g} mΩ"
+        kind = f", SPICE {k.spice.subckt}" if k.uses_spice else ""
         if k.diode_vf:                                  # a diode, anode on side A
             r = f"diode {k.diode_vf:g} V + {k.resistance * 1e3:g} mΩ"
-            return f"{k.name}: {k.side_a.net} → {k.side_b.net} ({r})"
-        return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r})"
+            return f"{k.name}: {k.side_a.net} → {k.side_b.net} ({r}{kind})"
+        return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r}{kind})"
 
     # ------------------------------------------------------------------ results
     def set_busy(self, busy: bool, queued: bool = False):
@@ -2477,6 +2622,8 @@ class PIPanel(QWidget, PartSelection):
         self._tree = None
         if hasattr(self, "btn_export"):
             self.btn_export.setEnabled(False)
+        if hasattr(self, "report_option"):
+            self.report_option.set_available(False)
         for t in (self.tbl_loads, self.tbl_vrms, self.tbl_links, self.tbl_vias, self.tbl_losses,
                   self.tbl_temps):
             t.setRowCount(0)
@@ -2493,28 +2640,50 @@ class PIPanel(QWidget, PartSelection):
                                "<br><br>To solve the other nets first, untick the net group "
                                "with the problem in the Solve tab.")
 
-    def show_results(self, tree, initial_group: str):
-        for t in (self.tbl_loads, self.tbl_headroom, self.tbl_vrms, self.tbl_links):
-            reset_sort(t)                         # new results show in their natural order
+    def vunit(self) -> str:
+        """The unit the results tables show voltages in (#177)."""
+        return self.cmb_vunit.currentData() or vunits.DEFAULT
+
+    def _load_headers(self) -> List[str]:
+        u = self.vunit() if hasattr(self, "cmb_vunit") else vunits.DEFAULT
+        return ["Load", "Group", "I (A)",
+                *[vunits.header(n, u) for n in vunits.LOAD_COLUMNS], "Voltage at pins",
+                "Current", "Pre-layout margin (mV)", "Unknowns may add (mA)"]
+
+    def _vrm_headers(self) -> List[str]:
+        u = self.vunit() if hasattr(self, "cmb_vunit") else vunits.DEFAULT
+        return ["VRM", "Type", vunits.header("V out", u), "I out (A)", "V in", "I in (A)",
+                "P in (W)", "Loss (W)", vunits.header("Rail lowest", u), "I limit (A)", ""]
+
+    def _vunit_changed(self, *_):
+        self.tbl_loads.setHorizontalHeaderLabels(self._load_headers())
+        self.tbl_vrms.setHorizontalHeaderLabels(self._vrm_headers())
+        if getattr(self, "_tree", None) is not None:
+            self._fill_loads_vrms(self._tree)
+
+    def _fill_loads_vrms(self, tree):
+        """The Loads and VRMs tables, their voltages in the chosen unit."""
+        u = self.vunit()
+        for t in (self.tbl_loads, self.tbl_headroom, self.tbl_vrms):
+            reset_sort(t)
+        key = lambda text: (text, float(text) if text else None)  # noqa: E731
         t = self.tbl_loads
         t.setRowCount(len(tree.loads))
         self.lbl_summary.setText(tree.summary() if hasattr(tree, "summary") else "")
         for r, l in enumerate(tree.loads):
-            status = getattr(l, "answer", l.verdict)
-            v_eff = "" if math.isnan(l.v_effective) else f"{l.v_effective:.5f}"
-            # Drop and boost sort as one signed value: largest boost ... largest drop.
-            set_row(t, r, [l.name, l.group, f"{l.current:.4g}", v_eff,
-                           (fmt_drop(l.drop, unit=""), l.drop * 1e3),
-                           (fmt_drop(l.drop_worst, unit=""), l.drop_worst * 1e3),
-                           ("" if math.isnan(l.drop_worst_pct)
-                            else f"{abs(l.drop_worst_pct):.3f}", l.drop_worst_pct),
-                           l.tolerance, status, getattr(l, "basis", ""),
-                           _mv_cell(l.margin_low), _mv_cell(getattr(l, "copper_margin", None)),
+            mean, low, high, tol, margin = vunits.load_cells(l, u)
+            set_row(t, r, [l.name, l.group, f"{l.current:.4g}", key(mean), key(low),
+                           key(high), tol, key(margin), getattr(l, "answer", l.verdict),
+                           getattr(l, "basis", ""),
+                           _mv_cell(getattr(l, "copper_margin", None)),
                            _ma_cell(getattr(l, "unknown_room_a", None))])
             color = (("#ffb040" if l.status else None) if l.passed is None
                      else ("#60d060" if l.passed else "#ff6060"))
             if color:
                 t.item(r, 8).setForeground(QColor(color))
+            m = vunits.margin(l)
+            if m is not None and m < 0:
+                t.item(r, 7).setForeground(QColor("#ff6060"))
         headroom = getattr(tree, "headroom", [])
         t = self.tbl_headroom
         t.setRowCount(len(headroom))
@@ -2524,27 +2693,37 @@ class PIPanel(QWidget, PartSelection):
                            f"{h.costliest} ({h.per_amp_v * 1e3:.4g})" if h.costliest else ""])
             if h.binding_a is not None and h.binding_a <= 0:
                 t.item(r, 5).setForeground(QColor("#ff6060"))
-        f = lambda x, fmt: "" if x is None else format(x, fmt)
+        f = lambda x, fmt: "" if x is None else format(x, fmt)  # noqa: E731
         t = self.tbl_vrms
         t.setRowCount(sum(1 + len(v.phases) for v in tree.vrms))
         r = 0
         for v in tree.vrms:                       # each VRM, then a row per phase under it
             kind = v.kind if not v.phases else f"{v.kind}, {len(v.phases)} phases"
             status = "" if v.passed is None else ("PASS" if v.passed else "FAIL")
-            set_row(t, r, [v.name, kind, f"{v.v_out:.5f}", f"{v.i_out:.4g}", f(v.v_in, ".5f"),
-                           f(v.i_in, ".4g"), f(v.p_in, ".4g"), f(v.p_loss, ".4g"),
+            target = tree.rail_target(v)
+            drop, _pct = tree.rail_drop(v)         # the rail's largest drop (#188)
+            ref = v.v_set if target is None else target
+            lowest = None if drop is None else ref - drop
+            set_row(t, r, [v.name, kind, key(vunits.show(v.v_out, ref, u)), f"{v.i_out:.4g}",
+                           f(v.v_in, ".5f"), f(v.i_in, ".4g"), f(v.p_in, ".4g"),
+                           f(v.p_loss, ".4g"), key(vunits.show(lowest, ref, u)),
                            f(v.current_limit_a, "g"), status])
             if v.passed is not None:
-                t.item(r, 9).setForeground(QColor("#60d060" if v.passed else "#ff6060"))
+                t.item(r, 10).setForeground(QColor("#60d060" if v.passed else "#ff6060"))
             parent = r
             for p in v.phases:
                 r += 1
-                set_row(t, r, [f"    phase {p.index}", "", f"{p.v_out:.5f}", f"{p.i_out:.4g}",
-                               f(p.v_in, ".5f"), f(p.i_in, ".4g"), f(p.p_in, ".4g"),
-                               f(p.p_loss, ".4g")], parent_row=parent, sub=p.index)
+                set_row(t, r, [f"    phase {p.index}", "", vunits.show(p.v_out, ref, u),
+                               f"{p.i_out:.4g}", f(p.v_in, ".5f"), f(p.i_in, ".4g"),
+                               f(p.p_in, ".4g"), f(p.p_loss, ".4g")],
+                        parent_row=parent, sub=p.index)
                 for c in range(t.columnCount()):
                     t.item(r, c).setForeground(QColor("#a0a0a0"))
             r += 1
+
+    def show_results(self, tree, initial_group: str):
+        reset_sort(self.tbl_links)                # new results show in their natural order
+        self._fill_loads_vrms(tree)
         rows = [(g.name, s) for g in tree.groups.values() for s in g.result.fields.series]
         ratings = {k.name: k for k in getattr(tree, "link_ratings", [])}
         self.tbl_links.setRowCount(len(rows))
@@ -2607,6 +2786,7 @@ class PIPanel(QWidget, PartSelection):
         self._fill_losses()
         self._fill_thermal()
         self.btn_export.setEnabled(True)
+        self.report_option.set_available(True)
         self.res_tabs.setCurrentWidget(self.tbl_loads)
 
     def _row_to_group(self, row, _col):

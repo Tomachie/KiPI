@@ -164,6 +164,7 @@ ol.steps > li { margin-bottom: 6px; }
         <li><a href="#ac-vrms">VRMs and series links</a></li>
         <li><a href="#ac-caps">Capacitors</a></li>
         <li><a href="#ac-probes">Probes and targets</a></li>
+        <li><a href="#ac-packages">Package models</a></li>
         <li><a href="#ac-calc">Target calculator</a></li>
         <li><a href="#ac-bandwidth">Targets and the VRM bandwidth</a></li>
         <li><a href="#ac-sweep">Sweep</a></li>
@@ -174,6 +175,7 @@ ol.steps > li { margin-bottom: 6px; }
       <ol>
         <li><a href="#ac-plot">Impedance plot and cursor</a></li>
         <li><a href="#ac-map">Board map</a></li>
+        <li><a href="#ac-transient">Transient</a></li>
         <li><a href="#ac-table">Results table</a></li>
         <li><a href="#ac-report">AC report</a></li>
         <li><a href="#ac-reading">Reading the curve</a></li>
@@ -312,7 +314,9 @@ and probes already set up. From a development checkout run</p>
 <figure><img src="images/overview.png" alt="KiPI main window with nets on the left, the board in 3D and the PI setup on the right">
 <figcaption>The main window in DC mode.</figcaption></figure>
 <p>The Board, setup and Log panels are dock widgets: drag their title bars to move them or
-float them in their own windows.</p>
+float them in their own windows. A floating panel has its own minimize and maximize
+buttons, and <b>F11</b> (with the panel clicked) toggles it full screen. Double-click its
+title bar, or drag it onto the main window, to dock it again.</p>
 <h4>Starting KiPI</h4>
 <ul>
   <li><b>Plugin or standalone.</b> Started from the KiPI button in KiCad's PCB editor, KiPI
@@ -732,6 +736,8 @@ tooltip names its key. On macOS, <b>Ctrl</b> is the <b>Command</b> key.</p>
   <tr><td><b>F5</b></td><td class="wrap"><b>Reload</b>, or <b>Load from KiCad</b></td></tr>
   <tr><td><b>Ctrl+S</b></td><td class="wrap"><b>Save snapshot…</b></td></tr>
   <tr><td><b>F12</b></td><td class="wrap"><b>Screenshot…</b></td></tr>
+  <tr><td><b>F11</b></td><td class="wrap">Full screen and back for the Board, setup or Log
+    panel you last clicked in, which floats it first</td></tr>
   <tr><td><b>Ctrl+Shift+O</b></td><td class="wrap"><b>Open results…</b></td></tr>
   <tr><td><b>Ctrl+L</b></td><td class="wrap">The <a href="#stackup">Stackup window</a></td></tr>
   <tr><td><b>Ctrl+T</b></td><td class="wrap">The <b>Power tree</b></td></tr>
@@ -958,8 +964,22 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
     +0.15 V) or in <b>V</b> (e.g. 3.135 to 3.465 V). Either
     may be left "not set". PASS if every supply pin is within it. Switching the unit
     converts the values when a VRM drives the load's rail.</td></tr>
+  <tr><td>DC tolerance, AC tolerance</td><td class="wrap">Optional, for a part that gives its
+    tolerance in two shares as well as in total: the DC share, where the pin's steady voltage
+    may sit (the VRM's accuracy and the copper's DC drop together), in the same units as
+    the tolerance; and the AC share, how far ripple and load transients may swing it from
+    there, in <b>±V</b> or <b>%</b>. They are saved with the setup for a later analysis, and
+    the AC target calculator can copy the AC one; no solve reads them, and PASS still follows
+    the tolerance above.</td></tr>
 </table>
 <figure><img src="images/setup_loads.png" alt="The load editor"><figcaption>The load editor.</figcaption></figure>
+<p><b>Split across nets…</b> under the list shares one part's total current over several of
+its supply nets, as a load on each: for when only the part's total draw is known and some of
+its pins are on a net of their own, behind a ferrite bead say. Pick the part, give its total
+current and tick the nets (its grounds are left out). <b>Equal per pin</b> gives each net its
+pins' share of the total; <b>Equal per net</b> the same to each. A net the part already has a
+load on gets that load's current set (its pin groups are cleared); the others get a new load,
+with the part's ground pins.</p>
 <h4 id="load-models">Load models</h4>
 <p>A <b>load model</b> is a part's supplies in a YAML file of their own: for each
 supply its pins, current or pin groups, tolerance and heat, and for the AC analysis its
@@ -979,8 +999,9 @@ AC Probes list) has:</p>
     keeps them all.</li>
 </ul>
 <p>On the Probes list the same menu sets targets: the model's flat target or custom points,
-or one from its load step, slew rate and AC tolerance, as the target calculator works it out
-(without an AC tolerance, the tighter side of the DC tolerance of the rail's VRM voltage).
+or one from its load step and slew rate, as the target calculator works it out, with the
+tighter side of the supply's AC tolerance (without one, of its total tolerance of the rail's
+VRM voltage).
 A model file, by hand:</p>
 <pre>kipi_load_model: 1
 part: XC7A35T-1CSG324C
@@ -989,10 +1010,15 @@ supplies:
     pins: [F7, F9, H7]
     ground_pins: [A1, A10]
     current_a: 1.2              # or pin_groups: [{name: core, pins: [F7], current_a: 0.8}, ...]
-    tolerance: {min: -3, max: 3, unit: "%"}     # V, ±V or %
+    tolerance: {min: -3, max: 3, unit: "%"}     # total: V, ±V or %
+    dc_tolerance: {min: -1.5, max: 1.5, unit: "%"}     # VRM accuracy + DC drop: V, ±V or %
+    ac_tolerance: {min: -0.03, max: 0.03, unit: "±V"}  # ripple + transient: ±V or %
     target: {ohm: 0.01, up_to_hz: 50.0e6}      # or {points: [[1.0e3, 0.01], [1.0e8, 0.1]]}
-    load_step: {step_a: 0.6, slew_a_per_us: 5, ac_tolerance_mv: 30}</pre>
-<p>Every key but <code>name</code> is optional.</p>
+    load_step: {step_a: 0.6, slew_a_per_us: 5}</pre>
+<p>Every key but <code>name</code> is optional. <code>dc_tolerance</code> and
+<code>ac_tolerance</code> are a load's <b>DC tolerance</b> and <b>AC tolerance</b>. Models
+from before 0.9.2 gave the AC tolerance as <code>ac_tolerance_mv</code> in
+<code>load_step</code>; that is still read, as that many mV either way.</p>
 </div>
 </details>
 
@@ -1021,6 +1047,23 @@ nets that are not grounds, if there is one.</p>
     bead acts as a resistor, so a point there (such as the 100 MHz headline figure of many
     beads) overstates the inductance.</li>
 </ul>
+<p><b>Import SPICE model…</b> uses the part's SPICE model from its maker, a ferrite bead's
+say. Pick its subcircuit from the file; the dialog shows the values fitted to it before you
+accept. The subcircuit is saved in the setup. With <b>Use the SPICE model's impedance</b>
+ticked, the AC and Coupled Noise solves take the link's impedance from the model at every
+frequency, so a bead keeps its resistive peak. The DCR and ESL are then fitted to it and
+locked: the DCR is its resistance at DC (which the DC solve uses), and the ESL its
+inductance at 100 kHz, low on a bead's inductive slope. Untick to use the values as you
+type them; the model is kept.</p>
+<p><b>What KiPI reads from a SPICE file.</b> A two-pin <code>.SUBCKT</code> of resistors,
+inductors and capacitors, which is how makers model capacitors, resistors and ferrite beads.
+It may call other subcircuits in the same file, use <code>.param</code> values and
+arithmetic, and use LTspice's <code>Rser</code>, <code>Lser</code>, <code>Rpar</code> and
+<code>Cpar</code>. 0 V sources (current probes) are read as shorts. Anything else (diodes,
+transistors, controlled or behavioral sources, coupled inductors) is refused with the
+element named, and <code>.include</code> lines are not followed. The file is only read,
+never run. Models of switching regulators and other active parts are not for this; give a
+VRM or load its own values instead.</p>
 <p>The nets a link joins are solved together as one group, so a group can only hold one
 VRM. A load pin with no copper path to its VRM is reported, not guessed at (see
 <a href="#ts-no-path">Loads not connected by copper</a>).</p>
@@ -1112,9 +1155,10 @@ limits grade the last solve straight away when you change them.</p>
 <p><b>Solve all</b> saves the setup, meshes every ticked net group and solves the power tree.
 It is disabled while there are problems (listed in red). If you click it while the 3D view is
 still building nets, the solve is queued and starts as soon as that finishes.</p>
-<p>Tick <b>Report</b> before solving to also write
-<code>&lt;board&gt;_kipi_report_&lt;date&gt;_&lt;time&gt;.html</code> next to the board; the
-time stamp keeps each solve's report instead of overwriting the last one. It opens in your web browser when the solve finishes, and
+<p>Once there are results, after a solve or with saved results opened, click
+<b>Report</b> to write <code>&lt;board&gt;_kipi_report_&lt;date&gt;_&lt;time&gt;.html</code>
+of them next to the board; the time stamp keeps each report instead of overwriting the
+last one. It opens in your web browser when it is written, and
 <b>Open report</b> opens it again later. The report is a single offline file with every
 table, an interactive 3D view of each net group, per-layer statistics and maps, and the
 temperature map. Over each 3D view, a tickbox per copper layer (and one for the vias)
@@ -1197,13 +1241,20 @@ scale, a minimum of zero or below falls back to four decades below the maximum.<
 <details open id="dc-tables">
 <summary>Results tables <span class="hint">click a header to sort; again to reverse</span></summary>
 <div class="body">
+<p>The <b>Voltages</b> list beside the tabs picks how the Loads and VRMs tables show their
+voltages: in <b>mV from target</b> (the default), in <b>% from target</b> or in <b>Volts</b>.
+The target is the regulated voltage of the VRM driving the rail. From the target, negative is
+a drop below it and positive a boost above it. The web report has the same list at its top;
+a PDF report shows each voltage in all three.</p>
 <table>
   <tr><th>Tab</th><th>Columns and use</th></tr>
-  <tr><td><b>Loads</b></td><td class="wrap">Current, effective voltage (supply − ground),
-    average drop/boost, worst pin, worst %, tolerance and verdict. Double-click a row to show
-    its group.</td></tr>
-  <tr><td><b>VRMs</b></td><td class="wrap">V/I out, V/I in, input power, conversion loss,
-    current limit and PASS/FAIL; a gray row per phase under multi-phase VRMs.</td></tr>
+  <tr><td><b>Loads</b></td><td class="wrap">Current; the mean effective voltage (supply −
+    ground); the lowest and highest supply pins; the tolerance; the <b>margin</b>, how far the
+    pins are inside the tolerance (negative when outside, in red); and the verdict.
+    Double-click a row to show its group.</td></tr>
+  <tr><td><b>VRMs</b></td><td class="wrap">V out, I out, V/I in, input power, conversion loss,
+    the rail's lowest voltage anywhere on its copper, current limit and PASS/FAIL; a gray row
+    per phase under multi-phase VRMs.</td></tr>
   <tr><td><b>Series links</b></td><td class="wrap">Resistance, current and power in each
     part.</td></tr>
   <tr><td><b>Vias</b></td><td class="wrap">Every via and PTH barrel, highest current first. The
@@ -1255,8 +1306,9 @@ scale, a minimum of zero or below falls back to four decades below the maximum.<
     pins. Compare it with the regulated voltage, not the raw plane voltage.</li>
   <li>A supply plane reading <em>above</em> its regulated voltage is normal with remote sense or when
     ground return is solved; see <a href="#dc-concepts">drop and boost</a>.</li>
-  <li><b>Worst pin</b> is the one furthest from the regulated voltage; with many pins, one far pin can
-    fail a load whose average looks fine.</li>
+  <li>The <b>lowest and highest pins</b> are what pass or fail a load; with many pins, one far
+    pin can fail a load whose mean looks fine. The <b>margin</b> says how close the nearer
+    one is to its tolerance.</li>
   <li>The color scale covers the whole result; type a minimum and maximum under it to look
     closer.</li>
   <li>Losses are I²R in the copper; VRM conversion loss is the difference between input and
@@ -1361,6 +1413,17 @@ are required.</p>
   <tr><td>ESL</td><td class="wrap">The part's own inductance (datasheet), not including
     mounting.</td></tr>
   <tr><td>ESR</td><td class="wrap">Per part.</td></tr>
+  <tr><td><b>Import SPICE model…</b></td><td class="wrap">Uses the part's SPICE model from its
+    maker (see below). Pick its subcircuit from the file; the dialog shows the values fitted
+    to it before you accept. The subcircuit is saved in the setup, so the setup file carries
+    it. With <b>Use the SPICE model's impedance</b> ticked, the AC and Coupled Noise solves
+    take each part's impedance from the model at every frequency, which follows a ladder
+    model's shape where a series RLC cannot. The capacitance, ESL and ESR are then fitted
+    to it and locked, for the tables and reports: C and ESL from its reactance 30 times
+    below and above its self-resonance, and ESR its resistance at resonance. DC bias, aging,
+    temperature and tolerance scale every capacitor in the model alike. Untick to use the
+    values as you type them; the model is kept, and ticking again puts its fitted values
+    back.</td></tr>
   <tr><td>Voltage rating</td><td class="wrap">The part's rated DC voltage. Class II ceramics
     (X5R, X7R, X6S…) lose capacitance with DC voltage; with a rating, each part's capacitance
     is derated by the DC voltage across it: what the last DC solve found across its pads, or
@@ -1430,6 +1493,10 @@ are required.</p>
   <tr><td>Custom points</td><td class="wrap">Frequency/|Z| corner points, joined by straight
     lines on the log-log plot. Below the first point the first |Z| holds, above the last the
     last holds. <b>Add point</b> adds one a decade above the last; ✕ removes one.</td></tr>
+  <tr><td>Load step (ΔI) / Load step slew rate</td><td class="wrap">Optional. How far and how
+    fast the device's current steps. With both, and the VRM's control loop bandwidth, the
+    solve estimates the rail's <a href="#ac-transient">transient response</a> at this probe.
+    The calculator fills them in, and so does a load model with a load step.</td></tr>
 </table>
 <p><b>From DC load</b> adds a probe on the same supply and ground pins as a DC load picked from
 its dropdown. The dropdown also lists the input of every LDO and switcher, one entry per phase
@@ -1439,6 +1506,38 @@ device does.</p>
 once, adds a model's probes for the parts ticked, or exports a part's model.</p>
 <p>A rail can have several probes, e.g. one per device; they are all solved together and each
 sees the others as open circuits.</p>
+<p><b>From package model…</b> reads a device's <a href="#ac-packages">package model</a> and
+adds probes on its die.</p>
+</div>
+</details>
+
+<details id="ac-packages">
+<summary>Packages tab <span class="hint">package PI models, for probes on the die</span></summary>
+<div class="body">
+<p>Vendors give a device's package as an N-port Touchstone file (<code>.sNp</code>): ports
+on the package balls, where it meets the board, and ports on the die. <b>Add</b> (or
+<b>From package model…</b> in the Probes tab) reads one, Touchstone 1 or 2 with S, Y or Z
+data, and asks which board part it is the package of. The whole file is kept in the setup
+file. Port names found in the file's comments (<code>! Port[1] = VCCINT_BGA</code>) connect
+the ports: a port named for one of the part's nets goes to that net, on the die if its name
+says so (<i>die</i>, <i>bump</i>), else to the PCB. <b>Connect ports by their names</b>
+does that again.</p>
+<p>In the ports table, each port connects to:</p>
+<ul>
+  <li><b>PCB pins</b>: the part's pins on its <b>Net</b> (the <b>Pins</b> listed, or every
+    one) against its pins on the <b>Ground net</b>. The solve joins the package to the board
+    there.</li>
+  <li><b>Die probe</b>: a probe in the Probes tab, named after the port, on the rail of its
+    net. It has no place on the board: its impedance is looked into at the die, through the
+    package. Its targets and load step are set like any probe's. Removing it leaves the port
+    open.</li>
+  <li><b>Open</b> or <b>Shorted</b>: left unconnected, or shorted to its reference.</li>
+</ul>
+<p>The package also loads the board's own probes, which see its die through the balls. PCB
+ports on another rail are left open when this rail is solved. Outside the file's frequency
+range the model is held at its first and last frequency, and the solve says so. The
+Coupled Noise mode shows a die probe's ripple at the part's pins, without the
+package.</p>
 </div>
 </details>
 
@@ -1480,6 +1579,10 @@ whole range, and a note in the results says so.</p>
     tolerance: ± its tighter side, from the voltage of the VRM feeding it (2 % for
     -2 % / +5 %). A DC tolerance is the whole budget, and the DC drop
     uses up part of it, so lower the value if the AC part is smaller.</li>
+  <li><b>Copy AC tolerance from DC load</b> fills it from the load's own <b>AC
+    tolerance</b>, where it has one (it is greyed out otherwise): ± its tighter side. That
+    is already the swing allowed about the DC voltage, so there is no DC drop or VRM accuracy
+    to subtract from it.</li>
   <li><b>Subtract DC drop at the load</b> takes the DC drop the copper causes at the
     selected load's own pins off the AC voltage tolerance, so what is left is the budget for
     the transient. It reads the last DC solve: its effective voltage there (supply pins minus
@@ -1504,7 +1607,9 @@ whole range, and a note in the results says so.</p>
 </ul>
 <p>Then Z<sub>target</sub> = V<sub>AC</sub> / ΔI, flat up to f<sub>target</sub> = 1 / (π ·
 t<sub>rise</sub>), with t<sub>rise</sub> = ΔI / slew rate. <b>Use for probe</b> fills the probe's
-target fields; the inputs are remembered for next time. The target applies above the VRM's
+target fields and its load step (for the <a href="#ac-transient">transient</a>); the
+inputs are remembered for next time, and a probe that has a load step opens the calculator
+with it. The target applies above the VRM's
 control loop bandwidth (<a href="#ac-bandwidth">Targets and the VRM bandwidth</a>).</p>
 <p>The target impedance method was introduced by L. D. Smith,
 R. E. Anderson, D. W. Forehand, T. J. Pelc and T. Roy, "<a href="https://doi.org/10.1109/6040.784476">Power
@@ -1595,11 +1700,11 @@ dielectric <b>Loss tangent</b> and <b>Default εr</b> from the
 nets with grounds first, defaulting to the VRM's ground pins' net. <b>Solve rail</b> saves the
 setup and runs the sweep; problems that stop it are listed in red above. The log shows the
 field solves as they go.</p>
-<p>Tick <b>Report</b> next to <b>Solve rail</b> to also write
+<p>Click <b>Report</b> next to <b>Solve rail</b> to write
 <code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code> (or, with
-<b>PDF</b> chosen, <code>.pdf</code>) next to the board after each rail's solve;
-the report opens when the rail finishes solving, and <b>Open report</b> opens
-the shown rail's report again later. See <a href="#ac-report">AC report</a>.</p>
+<b>PDF</b> chosen, <code>.pdf</code>) of the shown rail's results next to the board, once
+it is solved or its saved results are opened; the report opens when it is written, and
+<b>Open report</b> opens the shown rail's report again later. See <a href="#ac-report">AC report</a>.</p>
 <p>Each rail keeps its last result: switch <b>Rail</b> to look at another rail's curves
 without solving again. If you change the rail while a solve is running, the result is kept
 for its own rail and the notes say so.</p>
@@ -1661,6 +1766,46 @@ saved results keep it. Results saved by KiPI before 0.7.2 have no map.</p>
 </div>
 </details>
 
+<details open id="ac-transient">
+<summary>Transient <span class="hint">the estimated response to each probe's load step</span></summary>
+<div class="body">
+<p>The <b>Transient</b> tab estimates what the rail does at each probe that has a
+<b>Load step</b> and <b>slew rate</b>: the load steps up by ΔI, holds until the rail has
+settled, and steps back down. The top plot is the load current. The lower plot is the
+rail's deviation from its DC value: the <b>undershoot</b> when the load steps up and the
+<b>overshoot</b> when it steps back down. Each probe's step is worked out on its own, with
+the other probes drawing nothing extra. A circle marks each peak, and the legend gives them
+in mV. Dashed lines at ± target |Z| × ΔI show the AC tolerance a flat target stands for
+(Z<sub>target</sub> = V<sub>AC</sub> / ΔI).</p>
+<p>How it is worked out: the AC solve gives the <b>open-loop</b> impedance, with the VRM out of
+circuit, and a step into that alone would never recover. So the converter's loop is closed
+again from its <b>Control loop bandwidth</b>: the VRM drives the rail from its voltage error
+with a typical proportional-integral compensation, crossing over at the bandwidth with
+about 60° of phase margin. Above the bandwidth the rail sees the PDN's own impedance; at DC
+the loop holds it exactly (the DC solve gives the DC value). The load current's spectrum
+times that closed-loop impedance, back in time, is the response. Only the bandwidth comes
+from your setup, so treat the result as an estimate. The converter's real compensation,
+its output impedance and any load-line will change the slow part, while the fast part
+(ESL, plane and via inductance, capacitor resonances) comes from the solve. A linear model
+mirrors itself, so the overshoot on release matches the undershoot on the step.</p>
+<table>
+  <tr><th>Control</th><th>Does</th></tr>
+  <tr><td><b>20 MHz limit</b></td><td class="wrap">Shows the rail as an oscilloscope with its
+    20 MHz bandwidth limit on would: through a single pole, 3 dB down at 20 MHz. Fast spikes
+    and ringing shrink to what such a measurement sees, and so do the figures in the
+    legend. The results table and the report keep the full bandwidth.</td></tr>
+  <tr><td>Toolbar</td><td class="wrap">Zoom to a rectangle, pan, step back and forward, home.
+    The fast edges last nanoseconds and the loop's recovery tens of microseconds, so zoom in
+    to see the spikes.</td></tr>
+  <tr><td>Hover</td><td class="wrap">The time, and each probe's load current and deviation
+    there.</td></tr>
+</table>
+<p>A probe with a load step but no VRM bandwidth gets no estimate, and a note says so. A
+note also flags a load step that rises faster than the time step or the sweep covers,
+and a rail that has not settled before the load steps back down.</p>
+</div>
+</details>
+
 <details open id="ac-table">
 <summary>Results table and notes</summary>
 <div class="body">
@@ -1671,6 +1816,9 @@ saved results keep it. Results saved by KiPI before 0.7.2 have no map.</p>
     or furthest over, the target (within the target's frequency range). Without one: the
     highest |Z| in the sweep.</td></tr>
   <tr><td>Target</td><td class="wrap">The flat level, or the custom mask's range.</td></tr>
+  <tr><td>Undershoot / Overshoot</td><td class="wrap">For a probe with a load step: the
+    estimated dip when its load steps up and rise when it steps back down, at full
+    bandwidth (see <a href="#ac-transient">Transient</a>).</td></tr>
   <tr><td>Verdict</td><td class="wrap"><span class="pass">PASS</span> if |Z| is at or below the
     target everywhere it applies.</td></tr>
 </table>
@@ -1690,9 +1838,9 @@ under its VRM in <b>Rail</b>. Rails whose VRM is no longer in the setup are left
 <details id="ac-report">
 <summary>AC report</summary>
 <div class="body">
-<p>With <b>Report</b> ticked, each rail's solve also writes
-<code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code> next to the
-board; the time stamp keeps every solve's report. Like the DC report, it is a single offline file you can email. It holds:</p>
+<p><b>Report</b> writes
+<code>&lt;board&gt;_&lt;rail&gt;_ac_report_&lt;date&gt;_&lt;time&gt;.html</code> of the shown
+rail's results next to the board; the time stamp keeps every report. Like the DC report, it is a single offline file you can email. It holds:</p>
 <ul>
   <li>a summary and the probe table: pins, minimum and worst |Z|, the target, the margin in dB
     at the worst point (positive passes), PASS/FAIL, and an overall verdict;</li>
@@ -1703,6 +1851,9 @@ board; the time stamp keeps every solve's report. Like the DC report, it is a si
   <li>a board map seen from the top: the board outline, the rail's copper on every layer
     merged, the probes as stars and each capacitor colored by its model. Capacitors left out
     for having no model show as grey crosses;</li>
+  <li>for probes with a load step, the transient: a table of each load step, its slew rate
+    and rise time, the undershoot and overshoot and ± target × ΔI, and the plot of the load
+    current and the rail's deviation;</li>
   <li>the capacitor models (C, ESL, ESR, self-resonance, how many parts and which), the series
     links, the sweep, mesh and copper settings, and the solver's size, backend and time;</li>
   <li>notes: capacitors left out and any warnings.</li>
@@ -1929,8 +2080,8 @@ it sets how far from the aggressor's parts the scan looks, from 0.5 mm to 500 mm
 shows how many signal nets are inside; it is the same value as Scan radius in Settings.
 Scan and a chosen victim
 work together: name the nets you know, scan for the ones you do not.</p>
-<p>Tick <b>Report</b> to write <code>&lt;board&gt;_&lt;aggressor&gt;_noise_report_&lt;date&gt;_&lt;time&gt;.html</code>
-(or <code>.pdf</code>) next to the board after each solve: the victims against their
+<p>Click <b>Report</b> to write <code>&lt;board&gt;_&lt;aggressor&gt;_noise_report_&lt;date&gt;_&lt;time&gt;.html</code>
+(or <code>.pdf</code>) of the shown aggressor's results next to the board: the victims against their
 margins, the aggressor's parasitics, its waveforms, each victim's noise by mechanism, the
 scan's estimates and the notes. <b>Open report</b> opens it again. <b>Save results…</b> writes every solved aggressor to a
 <code>.kipi-noise-results</code> file that <b>Open results…</b> reopens in this mode.</p>
@@ -2123,8 +2274,8 @@ them a model or confirm they really do not belong on this rail.</p>
     snapshot…</b>, or with <b>Open…</b> in standalone KiPI, without KiCad or your design
     files.</li>
   <li>Keep <code>&lt;board&gt;.kipi-setup.yml</code> in version control next to the board.</li>
-  <li>Tick <b>HTML report</b> for a single file you can email: it needs nothing but a
-    browser.</li>
+  <li>Click <b>Report</b> with <b>HTML</b> chosen for a single file you can email: it needs
+    nothing but a browser.</li>
   <li><b>Export ▾ → Save results…</b> (DC) or <b>Save results…</b> (AC) lets you reopen a
     long solve later with <b>Open results…</b>.</li>
 </ul>
@@ -2163,7 +2314,7 @@ them a model or confirm they really do not belong on this rail.</p>
     earlier, as Python pickles, which can run code; KiPI asks before it opens one, and they
     are deprecated.</td></tr>
   <tr><td><code>*_noise_report_*.html</code>, <code>.pdf</code></td><td class="wrap">Coupled
-    Noise report, written after a solve with Report ticked</td></tr>
+    Noise report, written with the Report button</td></tr>
   <tr><td><code>*.kipi-noise-results</code></td><td class="wrap">Saved Coupled Noise results,
     every solved aggressor (Save results… / Open results… in Coupled Noise mode)</td></tr>
   <tr><td><code>*.kipi-ac-results</code></td><td class="wrap">Saved AC results, every rail
