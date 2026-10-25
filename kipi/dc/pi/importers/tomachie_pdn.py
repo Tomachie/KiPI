@@ -214,6 +214,30 @@ class TomachiePdnImporter:
                               f"({', '.join(out.pins)})")
         return out
 
+    def _behind_placed_output(self, name: str, src: dict, out) -> bool:
+        """True (and its series parts added) when this rail is a regulator output already
+        placed for another rail, reached through the series parts of its output path (a
+        current-sense shunt between a regulator's output and the rail it feeds): the rail
+        is that output's, behind those parts, and keeps its loads."""
+        path = src.get("output_path") or []
+        if out is None or not any(v.output and v.output.net == out.net for v in self.setup.vrms):
+            return False
+        if not path:
+            # The same output under its own name, placed first through another rail's
+            # path: its loads are that output's.
+            if self.idx.board_net(name) != out.net:
+                return False
+            self.notes.append(f"Rail {name}: {src.get('refdes')}'s output, placed with "
+                              "another rail it feeds")
+            return True
+        if not path_to_rail(path, out.net, name):
+            return False                    # its series parts lead elsewhere: a wrong file
+        self._output_path(src.get("refdes", ""), src, name, in_loop=False)
+        parts = ", ".join(p.get("refdes", "?") for p in path)
+        self.notes.append(f"Rail {name}: fed from {src.get('refdes')}'s output {out.net} "
+                          f"through {parts}")
+        return True
+
     def _off_its_net(self, name: str, src: dict, out) -> bool:
         """True (and said) when the file is wrong about this rail's source: the source pins
         it names are on another board net than the source's output net, or they already
@@ -317,6 +341,8 @@ class TomachiePdnImporter:
                 continue
             v = self._voltage(r)
             out = self._source_pins(src, f"{src.get('refdes')} output")
+            if self._behind_placed_output(name, src, out):
+                continue
             if self._off_its_net(name, src, out):
                 continue
             if v is None or out is None or reg is None:

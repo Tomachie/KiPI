@@ -671,3 +671,29 @@ def test_the_worst_case_runs_a_board_input_at_its_minimum_through_its_cable():
     assert v_typ == pytest.approx(12.0, abs=1e-6)
     assert v_worst == pytest.approx(11.4 - 0.25 * i, abs=1e-6)
     assert any("cable allowance: J1 VIN 250 mΩ" in w for w in worst.warnings)
+
+
+def test_a_rail_behind_a_placed_output_gets_its_series_part_and_keeps_its_loads():
+    """One regulator output named as two rails, the second behind a series part (a
+    current-sense shunt): the part becomes a DC connection, in either order of the rails."""
+    pdn = copy.deepcopy(PDN)
+    behind = {"name": "nRESET", "voltage": {"nominal": 3.3, "basis": "user"},
+              "source": {"role": "regulator", "refdes": "U1", "pins": ["U1_2"],
+                         "output_net": "+3V3",
+                         "output_path": [{"refdes": "R99", "class": "resistor",
+                                          "value": "10m", "net_in": "+3V3",
+                                          "net_out": "nRESET", "resistance_ohm": 0.01,
+                                          "datasheet_figures": []}]},
+              "loads": [], "offboard_pins": []}
+    pdn["rails"][1]["source"]["output_path"] = []
+    for rails in (pdn["rails"] + [behind], [pdn["rails"][0], behind, pdn["rails"][1]]):
+        p = dict(pdn, rails=rails)
+        setup, notes = run(p)
+        assert [v.name for v in setup.vrms if v.kind != "source"] in (["U1 +3V3"],
+                                                                      ["U1 nRESET"])
+        # Its series part is taken up (this test board has no R99 pads to link it with).
+        assert any(n.startswith("R99: series part between +3V3 and nRESET") for n in notes)
+        assert any("fed from U1's output +3V3 through R99" in n
+                   or "U1's output, placed with another rail it feeds" in n for n in notes)
+        assert "U2" in [l.name for l in setup.loads]          # +3V3's load is kept
+        assert not any("already drive" in n for n in notes)
