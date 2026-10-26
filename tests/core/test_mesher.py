@@ -69,3 +69,20 @@ def test_steiner_cap_stops_runaway_refinement():
             "segments": np.array([[0, 1], [1, 2], [2, 3], [3, 0]])}
     with pytest.raises(M.MeshCapHit):
         M._triangulate(data, "pq28a0.0001Q", cap=50)
+
+
+def test_a_pad_outline_is_clipped_the_same_with_the_edge_band_built_once():
+    """The polygon's edge band is built once for all its pad outlines (a plane with
+    thousands of holes rebuilt it per pad: minutes); the clipped outline is the same, and
+    an outline whose box misses the polygon changes nothing."""
+    from shapely.geometry import Point, box
+    from kipi.core.mesh.mesher import CONSTRAINT_CLEARANCE_MM, _clip_constraint, mesh_polygon
+    plane = box(0, 0, 20, 10).difference(Point(15, 5).buffer(1.0))
+    pad = box(2, 2, 4, 3).boundary
+    edge = plane.boundary
+    band = edge.buffer(CONSTRAINT_CLEARANCE_MM, quad_segs=2)
+    assert _clip_constraint(pad, plane).equals(_clip_constraint(pad, plane, edge, band))
+    far = box(50, 50, 51, 51).boundary
+    a = mesh_polygon(plane, [pad], 0.5, 28.0)
+    b = mesh_polygon(plane, [pad, far], 0.5, 28.0)
+    assert len(a[1]) == len(b[1]) and len(a[0]) == len(b[0])

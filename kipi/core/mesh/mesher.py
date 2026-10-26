@@ -140,21 +140,30 @@ def pslg_problems(verts: np.ndarray, segs: np.ndarray, tol: float = NODING_GRID_
 CONSTRAINT_CLEARANCE_MM = 0.01
 
 
-def _clip_constraint(line: BaseGeometry, poly: Polygon) -> Optional[BaseGeometry]:
+def _clip_constraint(line: BaseGeometry, poly: Polygon, edge: Optional[BaseGeometry] = None,
+                     near_edge: Optional[BaseGeometry] = None) -> Optional[BaseGeometry]:
     """The part of ``line`` inside ``poly``, kept clear of the polygon's edges.
 
     Pieces within CONSTRAINT_CLEARANCE_MM of an edge are removed (they would run almost
     on top of it), and each remaining end that stops near an edge is extended straight
     to that edge, so a pad outline still meets the copper boundary exactly but always
-    crosses it rather than running alongside it.
+    crosses it rather than running alongside it. ``edge`` and ``near_edge`` (the
+    polygon's boundary and the band within the clearance of it) are built once per
+    polygon by the caller when it clips many lines: on a plane with thousands of holes
+    the band takes far longer to build than any one line takes to clip.
     """
     from shapely.geometry import LineString as _LS
     from shapely.ops import nearest_points
 
     tol = CONSTRAINT_CLEARANCE_MM
-    edge = poly.boundary
+    if edge is None:
+        edge = poly.boundary
+    if near_edge is None:
+        near_edge = edge.buffer(tol, quad_segs=2)
     inner = shapely.intersection(line, poly)
-    inner = shapely.difference(inner, edge.buffer(tol, quad_segs=2))
+    if inner.is_empty:
+        return None
+    inner = shapely.difference(inner, near_edge)
     parts = []
     for part in shapely.get_parts(inner):
         if part.geom_type not in ("LineString", "LinearRing") or part.length < tol:
@@ -202,8 +211,16 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
     receives notes when the mesher has to fall back.
     """
     warn = warn or (lambda _t: None)
-    clipped_constraints = [g for g in (_clip_constraint(c, poly) for c in constraints)
-                           if g is not None]
+    # Only the pad outlines whose box meets the polygon's; its edge band built once.
+    x0, y0, x1, y1 = poly.bounds
+    near = [c for c in constraints
+            if not (c.bounds[0] > x1 or c.bounds[2] < x0 or c.bounds[1] > y1 or c.bounds[3] < y0)]
+    clipped_constraints = []
+    if near:
+        edge = poly.boundary
+        near_edge = edge.buffer(CONSTRAINT_CLEARANCE_MM, quad_segs=2)
+        clipped_constraints = [g for g in (_clip_constraint(c, poly, edge, near_edge)
+                                           for c in near) if g is not None]
     holes = [Polygon(r).representative_point() for r in poly.interiors if len(r.coords) >= 4]
 
     def first_pass(with_constraints: bool):
