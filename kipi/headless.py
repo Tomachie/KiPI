@@ -104,22 +104,27 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         for k, v in COARSE_AC.items():
             setattr(setup.ac, k, v)
 
+    # The worst case first, let go once written; then the typical, kept for the AC sweeps'
+    # DC bias. Holding both at once doubled the peak (a 4 GB cap stopped the second).
     cases, typ, mesh_cache, dc_error = [], None, {}, None
-    for corner in ("typ", "max"):
+    for corner in ("max", "typ"):
         setup.corner = corner
         progress.stage(f"DC, {pdn_results.CASE_NAMES[corner]} case")
         try:
             tree = solve_tree(snap, setup, progress, mesh_cache=mesh_cache)
         except Exception as e:  # noqa: BLE001 - said in the file; out of memory above all
-            dc_error = _failure(e)
+            dc_error = f"{pdn_results.CASE_NAMES[corner]} case: {_failure(e)}"
             progress.message(f"DC not solved: {dc_error}")
-            break
-        cases.append(pdn_results.dc_case(tree, setup, corner))
-        cases[-1]["peak_memory_gb"] = _gb(limits.peak_memory_gb())
+            gc.collect()
+            continue
+        case = pdn_results.dc_case(tree, setup, corner)
+        case["peak_memory_gb"] = _gb(limits.peak_memory_gb())
+        cases.insert(0 if corner == "typ" else len(cases), case)
         progress.message(tree.summary())
         if corner == "typ":
-            typ = tree                  # its DC bias for the AC sweeps; the worst case's
-        del tree                        # solution is let go once written
+            typ = tree
+        del tree
+        gc.collect()
 
     setup.corner = "typ"
     rails = []
