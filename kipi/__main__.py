@@ -159,9 +159,19 @@ def _run_live(instance) -> int:
     return run(source=source, tool=InstalledKiCad(source), instance=instance)
 
 
+def runs_headless(argv) -> bool:
+    """Whether the command line asks for no window (--solve, --dump). Such a run stays in
+    this process: relaunched on KiPI.exe it would exit 0 at once while the work went on
+    in a process its caller does not know, its output discarded."""
+    return any(a in ("--solve", "--dump") or a.startswith(("--solve=", "--dump="))
+               for a in argv)
+
+
 if __name__ == "__main__":
     # Windows, started windowed (the launcher): on to KiPI.exe, so Task Manager shows KiPI
-    # rather than Python (#124).
-    from kipi.launcher.named_exe import relaunch
-    code = relaunch(["-m", "kipi", *sys.argv[1:]])
+    # rather than Python (#124). Not for a run with no window.
+    code = None
+    if not runs_headless(sys.argv[1:]):
+        from kipi.launcher.named_exe import relaunch
+        code = relaunch(["-m", "kipi", *sys.argv[1:]])
     sys.exit(main() if code is None else code)
