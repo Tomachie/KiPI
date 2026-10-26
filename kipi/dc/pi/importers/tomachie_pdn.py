@@ -10,8 +10,9 @@ current. What maps where:
 * a rail sourced by a regulator -> an ``ldo`` / ``smps`` VRM whose input pins are the
   regulator's pins on its input rail (the file also lists those as a load of the input
   rail; that entry is not imported, because KiPI derives a VRM's input current itself).
-  An isolated converter is a switcher: its input power is its output power over its
-  efficiency, plus its no-load current;
+  An isolated converter is an ``isolated`` VRM: its input power is its output power over
+  its efficiency, plus its no-load current; its ground pins are its output side's 0 V
+  reference and its input ground pins its input side's return;
 * a part in series between rails, and a switcher's inductor -> a DC connection;
 * a load switch (a regulator entry of type ``load_switch``: it passes its input to its
   output and regulates nothing) -> a DC connection from its input pins to its output
@@ -54,13 +55,15 @@ from kipi.dc.pi.importers.tomachie_ac import (
     MODULE_NO_STEP, STEP_BECAUSE, defaults_notes, doubt_notes, fill_cap_model, load_rise, load_step,
     maker_target, vrm_bandwidth_khz,
 )
-from kipi.dc.solver.setup import DIODE_MIN_OHMS
+
 from kipi.dc.pi.importers.pdn_figures import (
     amps, curve_points, dc_resistance, forward_drop, number, rated_current,
 )
 from kipi.dc.pi.model import (
-    DcLink, Load, PinRef, PISetup, Vrm, group_name, net_groups, volts_to_pct,
+    GROUND_REF_KINDS, SWITCHING_KINDS, DcLink, Load, PinRef, PISetup, Vrm, group_name,
+    net_groups, volts_to_pct,
 )
+from kipi.dc.pi.diode_curve import DIODE_MIN_OHMS, diode_ref
 
 # A part on a rail by a signal pin only (detect, enable, reference): 0 A, not a load.
 # "signal_pin_only" since Tomachie 7710456a; "not_a_supply" in files written before.
@@ -72,7 +75,7 @@ MAX_FILE_BYTES = 64 << 20       # a power-tree file is kilobytes; this is not on
 SOURCE_ROLES = ("board_input", "battery", "generator")
 # A resistor joining two ground nets above this carries no DC to speak of (a shield's 1M).
 GROUND_LINK_MAX_OHMS = 1e3
-VRM_KIND = {"linear": "ldo", "switching": "smps", "isolated": "smps"}
+VRM_KIND = {"linear": "ldo", "switching": "smps", "isolated": "isolated"}
 
 
 
@@ -334,7 +337,7 @@ class TomachiePdnImporter:
                               "switching; modeled as an ideal source, drawing nothing from "
                               "its input rail")
             return "source", 1.0
-        if kind == "smps" and eff is None:
+        if kind in SWITCHING_KINDS and eff is None:
             self.notes.append(f"{reg['refdes']} ({rail}): efficiency not read from its "
                               "datasheet; solved lossless, so its input current and the rail "
                               "feeding it are understated")
@@ -371,6 +374,12 @@ class TomachiePdnImporter:
                                   "as an ideal source")
                 kind = "source"
             ground, out_ground = self._regulator_grounds(reg, r, kind)
+            input_ground = None
+            if kind == "isolated":
+                if out_ground is None:
+                    kind = "smps"          # its output returns as if on its input's ground
+                else:
+                    ground, input_ground = out_ground, ground
             bandwidth_khz, bw_basis = vrm_bandwidth_khz(reg)
             if bw_basis == "estimated":
                 how = (reg.get("ac") or {}).get("bandwidth", {}).get("from", "")
@@ -383,13 +392,13 @@ class TomachiePdnImporter:
                                        vin_max=_volts(reg.get("input_voltage_max")),
                                        # Its datasheet's rated output current.
                                        current_limit_a=amps(reg.get("max_output_current")),
-                                       ground=ground, output_ground=out_ground,
+                                       ground=ground, input_ground=input_ground,
                                        bandwidth_khz=bandwidth_khz,
                                        levels=self.rail_levels.get(name, []),
                                        **self._accuracy(r, reg["refdes"])))
             if vin is not None:
                 self._input_filter(reg)
-            self._output_path(reg["refdes"], src, name, in_loop=kind == "smps")
+            self._output_path(reg["refdes"], src, name, in_loop=kind in SWITCHING_KINDS)
 
     def _accuracy(self, rail: dict, ref: str) -> dict:
         """The VRM's DC accuracy in volts from the rail's ``regulator_band``: the band at
@@ -552,6 +561,7 @@ class TomachiePdnImporter:
                                        else None,
                                        diode_vf=forward_v or 0.0, diode_vf_max=forward_v_max,
                                        esl_h=esl_h, vf_curve=vf_curve, rated_current_a=rated_a))
+        diode_ref(self.setup.links[-1])       # a diode: its model from the datasheet's
 
     def _ground_links(self):
         """The parts joining one ground net to another (a common-mode choke's return
@@ -973,8 +983,7 @@ class TomachiePdnImporter:
         there to an ideal ground instead, named once."""
         groups = net_groups(self.setup)
         referenced = {groups[v.ground.net] for v in self.setup.vrms
-                      if v.kind == "source" and v.ground}
-        referenced |= {groups[v.output_ground.net] for v in self.setup.vrms if v.output_ground}
+                      if v.kind in GROUND_REF_KINDS and v.ground}
         ideal = set()
         for x in [*self.setup.vrms, *self.setup.loads]:
             if x.ground and groups[x.ground.net] not in referenced:

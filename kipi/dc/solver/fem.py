@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """2.5D DC conduction: P1 finite elements on each copper sheet, plated barrels between
 layers, voltage sources and current loads on pads.
 
@@ -30,9 +29,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.core.progress import NULL, ProgressReporter
 from kipi.core.solver.spd import SpdSolver
 from kipi.core.temperature import at as temperature_at
-from kipi.dc.solver.setup import (
-    DIODE_MIN_OHMS, REF_TEMP_C, SHORT_OHMS, NetProblem, SolveSettings,
-)
+from kipi.dc.solver.setup import REF_TEMP_C, SHORT_OHMS, NetProblem, SolveSettings
 from kipi.dc.solver.via_barrel import barrel_copper_area, rule_for
 
 class SolveError(RuntimeError):
@@ -56,7 +53,11 @@ class SeriesElement:
     node_a: int        # merged unknowns of side A and side B
     node_b: int
     g: Optional[float]  # siemens; None when the part is a short (sides merged)
-    voltage_drop: float = 0.0  # a diode's drop from A to B: I = g (V_A - V_B - voltage_drop)
+    voltage_drop: float = 0.0
+    # A multi-pin part's piece (#193): the merged unknowns of its side groups and the
+    # conductance matrix between them (``g`` is then None and no short is meant).
+    nodes: Optional[List[int]] = None
+    gmat: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -83,6 +84,9 @@ class Solution:
     source_pad_current: Dict[str, List[float]] = field(default_factory=dict)
     # Optional loads' pads with no copper path to a source, which draw nothing (#88).
     dead_pads: Dict[str, List[str]] = field(default_factory=dict)
+    # The voltage source in series with each part's resistance, side A to B: its fixed
+    # drop, or what a diode's operating point needs (#191).
+    series_drop: Dict[str, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -167,8 +171,11 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
             raise SolveError(f"Series part pads have no meshed copper: {missing}")
         return np.concatenate([pad_groups[p] for p in pads])
     for link in problem.series:
+        if link.conductance is not None:            # each group of sides is one node
+            groups.extend(side_nodes(pads) for pads in link.groups)
+            continue
         a, b = side_nodes(link.pads_a), side_nodes(link.pads_b)
-        if link.resistance <= SHORT_OHMS and not link.voltage_drop:
+        if link.resistance <= SHORT_OHMS:
             groups.append(np.concatenate([a, b]))
         else:
             groups.extend([a, b])
@@ -222,13 +229,21 @@ def assemble(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem):
 
     series: List[SeriesElement] = []
     for i, link in enumerate(problem.series):
+        if link.conductance is not None:
+            nodes = [int(merged_of[pad_groups[pads[0]][0]]) for pads in link.groups]
+            gm = np.asarray(link.conductance, dtype=float)
+            series.append(SeriesElement(i, link.name, nodes[0], nodes[min(1, len(nodes) - 1)],
+                                        None, 0.0, nodes, gm))
+            rows = np.concatenate([rows, np.repeat(nodes, len(nodes))])
+            cols = np.concatenate([cols, np.tile(nodes, len(nodes))])
+            data = np.concatenate([data, gm.ravel()])
+            continue
         na = int(merged_of[pad_groups[link.pads_a[0]][0]])
         nb = int(merged_of[pad_groups[link.pads_b[0]][0]])
-        r = max(link.resistance, DIODE_MIN_OHMS) if link.voltage_drop else link.resistance
-        if r <= SHORT_OHMS or na == nb:
-            series.append(SeriesElement(i, link.name, na, nb, None))
+        if link.resistance <= SHORT_OHMS or na == nb:
+            series.append(SeriesElement(i, link.name, na, nb, None, link.voltage_drop))
             continue
-        g = 1.0 / r
+        g = 1.0 / link.resistance
         series.append(SeriesElement(i, link.name, na, nb, g, link.voltage_drop))
         rows = np.concatenate([rows, [na, nb, na, nb]])
         cols = np.concatenate([cols, [na, nb, nb, na]])
@@ -325,19 +340,24 @@ class LinearSystem:
         self.K_fd = self.K[self.free][:, self.fixed_idx].tocsr()
         with progress.timed("Factorizing"):
             self.factor = SpdSolver(A, problem.settings, progress, self.stats, previous)
+        # Diodes (#191): the free voltages each one's series source moves, per volt. A
+        # diode's drop is then found on its own I-V curve (see _diode_drops) without
+        # factorizing again.
+        self.free_index = {int(node): i for i, node in enumerate(self.free)}
+        self.diodes = [e for e in self.series
+                       if e.g is not None and problem.series[e.link].curve is not None]
+        self.diode_unit = [self.factor.solve(self._drop_rhs({e.link: 1.0}), progress)
+                           for e in self.diodes]
+        self.diode_v = np.zeros(len(self.diodes))       # the last solve's, to start from
+        self.diode_started = False
         self.setup_s = time.perf_counter() - t0
         for w in self.warnings:
             progress.warn(w)
 
     def solve(self, voltages: Optional[Dict[str, float]] = None,
               currents: Optional[Dict[str, float]] = None,
-              progress: ProgressReporter = NULL,
-              forward_v: Optional[Dict[str, float]] = None) -> Solution:
-        """Solve with per-source voltages, per-load currents and per-diode forward
-        voltages (defaults: the problem's). A forward voltage is on the right-hand side
-        only, so changing it needs no new factorization."""
-        fwd = {e.name: e.voltage_drop for e in self.series}
-        fwd.update(forward_v or {})
+              progress: ProgressReporter = NULL) -> Solution:
+        """Solve with per-source voltages and per-load currents (defaults: the problem's)."""
         t0 = time.perf_counter()
         prob = self.problem
         volts = {s.name: s.voltage for s in prob.sources}
@@ -356,13 +376,6 @@ class LinearSystem:
             for pid in pads:
                 f[self.pad_unknown[pid]] -= share
 
-        # A conducting diode: I = g (V_A - V_B - forward_v), so g x forward_v enters at A
-        # and leaves at B on the right-hand side.
-        for e in self.series:
-            if e.g is not None and fwd[e.name]:
-                f[e.node_a] += e.g * fwd[e.name]
-                f[e.node_b] -= e.g * fwd[e.name]
-
         # Solve for u = V - v_ref rather than V itself. Drops are ~1e-4 of the rail
         # voltage, so with absolute volts the source term would dominate the right-hand
         # side and a relative residual tolerance would say little about the drop.
@@ -371,17 +384,32 @@ class LinearSystem:
         for name, us in self.source_unknowns.items():
             u_fixed[us] = volts[name] - v_ref
         rhs = f[self.free] - self.K_fd @ u_fixed[self.fixed_idx]
+        # A series part's voltage source is in series with its resistance, oriented from
+        # side A to side B; it is added with opposite signs at its terminals.
+        drops = {e.link: e.voltage_drop for e in self.series if e.g is not None}
+        for e in self.diodes:
+            drops[e.link] = 0.0
+        rhs += self._drop_rhs(drops)
         with progress.timed("Solving"):
             x = self.factor.solve(rhs, progress)
 
         u_all = np.full(self.nm, np.nan)
         u_all[self.fixed_idx] = u_fixed[self.fixed_idx]
         u_all[self.free] = x
+        if self.diodes:
+            for e, vd, unit in zip(self.diodes, self._diode_drops(u_all), self.diode_unit):
+                drops[e.link] = vd
+                x = x + vd * unit
+            u_all[self.free] = x
         v = u_all + v_ref
 
         # Current each source delivers = net current flowing out of its fixed unknowns.
         # K annihilates constants on each connected piece, so using u avoids cancellation.
         flow = self.K @ np.nan_to_num(u_all) - f
+        for e in self.series:
+            if e.g is not None and drops[e.link]:
+                flow[e.node_a] -= e.g * drops[e.link]
+                flow[e.node_b] += e.g * drops[e.link]
         source_current = {name: float(flow[us].sum())
                           for name, us in self.source_unknowns.items()}
         # Per pad: pads that touch share one unknown, and so share its current.
@@ -391,11 +419,13 @@ class LinearSystem:
             source_pad_current[src.name] = [float(flow[u]) / us.count(u) for u in us]
         series_current = {}
         for e in self.series:
-            if e.g is None:
+            if e.gmat is not None:                      # into side A's group
+                series_current[e.name] = float(e.gmat[0] @ np.nan_to_num(u_all[e.nodes]))
+            elif e.g is None:
                 series_current[e.name] = float("nan")   # a short: current not resolved
             else:
                 series_current[e.name] = float(e.g * (u_all[e.node_a] - u_all[e.node_b]
-                                                      - fwd[e.name]))
+                                                      - drops[e.link]))
         stats = dict(self.stats)
         stats["solve_s"] = self.setup_s + time.perf_counter() - t0
         return Solution(problem=prob, mesh=self.mesh, node_v=v[self.merged_of],
@@ -406,10 +436,109 @@ class LinearSystem:
                         tri_rho_factor=self.rho_factor, layer_rho=self.layer_rho,
                         source_voltage=volts, load_current=amps,
                         source_pad_current=source_pad_current,
-                        dead_pads={k: list(v) for k, v in self.dead_pads.items()})
+                        dead_pads={k: list(v) for k, v in self.dead_pads.items()},
+                        series_drop={e.name: drops[e.link] for e in self.series
+                                     if e.g is not None})
+
+    def _drop_rhs(self, drops: Dict[int, float]) -> np.ndarray:
+        """The right-hand side of series parts' voltage sources, ``drops`` volts by link."""
+        rhs = np.zeros(len(self.free))
+        for e in self.series:
+            vd = drops.get(e.link, 0.0)
+            if e.g is None or not vd:
+                continue
+            if e.node_a in self.free_index:
+                rhs[self.free_index[e.node_a]] += e.g * vd
+            if e.node_b in self.free_index:
+                rhs[self.free_index[e.node_b]] -= e.g * vd
+        return rhs
+
+    def _diode_drops(self, u0: np.ndarray) -> List[float]:
+        """Each diode's series source for the copper solved with them at 0 V (``u0``).
+
+        The copper is linear, so the voltages across the diodes are U = U0 + S·Vs, with S
+        from the unit solves and Vs the sources. Each diode's resistance R carries
+        (U - Vs)/R, which must be its current I(U): Newton's method on U, a small dense
+        system, then Vs = U - R·I(U)."""
+        n = len(self.diodes)
+
+        def across(u_free_or_all, full: bool):
+            out = np.empty(n)
+            for k, e in enumerate(self.diodes):
+                if full:
+                    out[k] = u_free_or_all[e.node_a] - u_free_or_all[e.node_b]
+                else:
+                    a = self.free_index.get(e.node_a)
+                    b = self.free_index.get(e.node_b)
+                    out[k] = ((u_free_or_all[a] if a is not None else 0.0)
+                              - (u_free_or_all[b] if b is not None else 0.0))
+            return out
+
+        u_base = across(u0, True)
+        s = np.column_stack([across(unit, False) for unit in self.diode_unit])
+        g = np.array([e.g for e in self.diodes])
+        curves = [self.problem.series[e.link].curve for e in self.diodes]
+
+        def residual(v):
+            iv = [c(x) for c, x in zip(curves, v)]
+            i = np.array([a for a, _ in iv])
+            gd = np.array([b for _, b in iv])
+            f = v - u_base - s @ (v - i / g)
+            jac = np.eye(n) - s @ (np.eye(n) - np.diag(gd / g))
+            return f, jac, i
+
+        v = self.diode_v.copy()
+        if not self.diode_started:
+            # The first solve starts each diode where it carries what the copper sends
+            # through it as a plain resistor, not at 0 V: a steep junction has no slope
+            # there, and with fixed-current loads Newton's step then has no direction.
+            v = np.array([_volts_at(c, max(ub * gk, 0.0)) for c, ub, gk in
+                          zip(curves, u_base, g)])
+            self.diode_started = True
+        f, jac, i = residual(v)
+        for _ in range(300):
+            if np.max(np.abs(f)) < 1e-10:
+                break
+            try:
+                step = -np.linalg.solve(jac, f)
+            except np.linalg.LinAlgError:
+                step = -f
+            big = np.max(np.abs(step))
+            if big > 0.1:                       # junctions are exponential: small steps
+                step *= 0.1 / big
+            norm = np.max(np.abs(f))
+            for _half in range(30):
+                f2, jac2, i2 = residual(v + step)
+                if np.max(np.abs(f2)) < norm or big <= 1e-9:
+                    break
+                step *= 0.5
+            v = v + step
+            f, jac, i = f2, jac2, i2
+        else:
+            names = ", ".join(e.name for e in self.diodes)
+            raise SolveError(f"No DC operating point for the diode(s) {names} on "
+                             f"{self.problem.net}: is one reverse biased, with a load beyond "
+                             "it and no other supply?")
+        self.diode_v = v
+        return list(v - i / g)
 
 
 def solve(snap: BoardSnapshot, mesh: NetMesh, problem: NetProblem,
           progress: ProgressReporter = NULL) -> Solution:
     """One-shot solve with the problem's own source voltages and load currents."""
     return LinearSystem(snap, mesh, problem, progress).solve(progress=progress)
+
+
+def _volts_at(curve, amps: float) -> float:
+    """The voltage at which the diode ``curve`` (volts -> (amps, slope)) carries ``amps``
+    from anode to cathode, by bisection between 0 V and 10 V; 0 V for no current."""
+    if amps <= 0:
+        return 0.0
+    lo, hi = 0.0, 10.0
+    for _ in range(60):
+        mid = 0.5 * (lo + hi)
+        if curve(mid)[0] < amps:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)

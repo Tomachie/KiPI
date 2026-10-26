@@ -1,4 +1,3 @@
-# Portions Copyright (c) 2026 Tomachie LLC.
 """What to solve: sources, loads, series parts and numerical settings.
 
 A problem covers one *extended net*: one or more nets joined by series parts (sense
@@ -11,7 +10,7 @@ node (its pads tied together).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from kipi.dc.solver.via_barrel import ViaRule, default_via_rules
 
@@ -44,15 +43,21 @@ class SeriesLink:
     pads_a: List[str]
     pads_b: List[str]
     resistance: float       # ohms; at or below SHORT_OHMS the two sides are merged
-    # volts, oriented from side A to side B (diode model; 0: not a diode). It is solved
-    # conducting, as voltage_drop + I x resistance; the sides are never merged.
-    voltage_drop: float = 0.0
+    voltage_drop: float = 0.0  # volts, oriented from side A to side B
+    # A diode's current from side A to side B at a voltage across it, and its slope (#191):
+    # the solve finds the voltage where the copper carries that current. ``resistance``
+    # is then only how the part is split between the matrix and the right-hand side; any
+    # positive value gives the same answer.
+    curve: Optional[Callable[[float], Tuple[float, float]]] = None
+    # A multi-pin part's piece joining sides at DC (#193): the pads of each group of its
+    # sides shorted together (side A's group first), and the conductance matrix between
+    # the groups, siemens, its rows summing to zero. ``pads_a`` and ``pads_b`` are then its
+    # first two groups' pads and ``resistance`` the resistance between them, for reports.
+    groups: Optional[List[List[str]]] = None
+    conductance: Optional[Any] = None
 
 
 SHORT_OHMS = 1e-9
-# The slope a diode with no stated slope resistance is solved with: small against any
-# rail's copper, large enough to keep the system well conditioned.
-DIODE_MIN_OHMS = 1e-3
 
 
 @dataclass
@@ -133,4 +138,6 @@ class NetProblem:
         for s in self.series:
             ids.extend(s.pads_a)
             ids.extend(s.pads_b)
+            for pads in s.groups or ():             # a multi-pin part's other sides
+                ids.extend(pads)
         return list(dict.fromkeys(ids))

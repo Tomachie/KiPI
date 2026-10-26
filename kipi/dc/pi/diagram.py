@@ -24,7 +24,8 @@ from typing import Dict, List, Tuple
 from kipi.core.model.nets import is_ground_name
 from kipi.dc.pi.model import PISetup, net_groups
 
-VRM_KIND_LABELS = {"source": "Source", "ldo": "LDO", "smps": "Switcher"}
+VRM_KIND_LABELS = {"source": "Source", "ldo": "LDO", "smps": "Switcher",
+                   "isolated": "Isolated converter"}
 
 
 @dataclass
@@ -33,7 +34,7 @@ class Block:
     kind: str                       # "vrm", "rail", "link", "load", "cap"
     title: str
     lines: List[str] = field(default_factory=list)
-    vrm_kind: str = ""              # VRMs: "source", "ldo" or "smps"
+    vrm_kind: str = ""              # VRMs: "source", "ldo", "smps" or "isolated"
     tip: str = ""
     amps: float = 0.0               # loads: the current drawn
     column: int = 0
@@ -77,6 +78,8 @@ def _ground_nets(setup: PISetup) -> set:
         for ph in v.all_phases():
             if ph.ground:
                 grounds.add(ph.ground.net)
+        if v.input_ground:
+            grounds.add(v.input_ground.net)
         for sp in v.all_sense_points():
             if sp.ground_sense:
                 grounds.add(sp.ground_sense.net)
@@ -120,7 +123,7 @@ def build_diagram(setup: PISetup, snapshot=None) -> Diagram:
         bid = f"vrm:{v.name}"
         kind = v.kind if v.kind in VRM_KIND_LABELS else "source"
         lines = [f"{si(v.voltage, 'V')} out"]
-        if kind == "smps":
+        if kind in ("smps", "isolated"):
             lines.append(f"η {v.efficiency * 100:.3g} %")
         if v.phases:
             lines.append(f"{len(v.phases) + 1} phases")
@@ -131,6 +134,8 @@ def build_diagram(setup: PISetup, snapshot=None) -> Diagram:
         tip = [f"{VRM_KIND_LABELS[kind]} {v.name}: output on {v.output.ref} ({v.output.net})"]
         if v.input:
             tip.append(f"input on {v.input.ref} ({v.input.net})")
+        if kind == "isolated" and v.ground:
+            tip.append(f"output ground {v.ground.net}, its own")
         if v.mesh_sense:
             tip.append(f"mesh remote sense at {len(v.all_sense_points())} points")
         elif v.sense:
@@ -142,15 +147,17 @@ def build_diagram(setup: PISetup, snapshot=None) -> Diagram:
 
     links = []
     for k in setup.links:
-        if all(n in grounds or is_ground_name(n) for n in (k.side_a.net, k.side_b.net)):
-            continue                    # a net tie between grounds: no power flows
-        bid = f"link:{k.name}"
-        lines = [si(k.resistance, "Ω") if k.resistance else "short"]
-        if k.esl_h:
-            lines.append(f"ESL {si(k.esl_h, 'H')}")
-        d.blocks[bid] = Block(bid, "link", k.name, lines,
-                              tip=f"Series link {k.name}: {k.side_a.net} ↔ {k.side_b.net}")
-        links.append((bid, rail(k.side_a.net), rail(k.side_b.net)))
+        # A multi-pin part (#193) is a block per pair of nets it joins at DC.
+        pairs = [(a, b) for a, b in k.joins()
+                 if not all(n in grounds or is_ground_name(n) for n in (a, b))]
+        for i, (a, b) in enumerate(pairs):      # none: a net tie between grounds
+            bid = f"link:{k.name}" + (f":{i}" if i else "")
+            lines = [si(k.resistance, "Ω") if k.resistance else "short"]
+            if k.esl_h:
+                lines.append(f"ESL {si(k.esl_h, 'H')}")
+            d.blocks[bid] = Block(bid, "link", k.name, lines,
+                                  tip=f"Series link {k.name}: {a} ↔ {b}")
+            links.append((bid, rail(a), rail(b)))
 
     for l in setup.loads:
         bid = f"load:{l.name}"

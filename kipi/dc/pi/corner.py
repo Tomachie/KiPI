@@ -173,15 +173,22 @@ def resolve(setup):
             l.current, info.basis[l.name] = _pick(worst, l.name, l.current, l.current_max,
                                                   info)
         l.current_max = None
-    for k in out.links:
+    from kipi.dc.pi.diode_curve import diode_ref, stated_diodes
+    for k in stated_diodes(out.links):
+        # A diode stated by its datasheet: its model at the corner's forward drop. The
+        # curve is typical: the worst case lifts it as much as the drop.
         if k.diode_vf:
-            typical = k.diode_vf
-            k.diode_vf, _ = _pick(worst, f"DC connection {k.name} forward voltage",
-                                   k.diode_vf, k.diode_vf_max, info)
-            k.diode_vf_max = None
-            if k.vf_curve and k.diode_vf != typical:
-                # The curve is typical: the worst case lifts it as much as the line.
-                k.vf_curve = [[i, v + k.diode_vf - typical] for i, v in k.vf_curve]
+            vf, _ = _pick(worst, f"DC connection {k.name} forward voltage", k.diode_vf,
+                          k.diode_vf_max, info)
+            if k.vf_curve and vf != k.diode_vf:
+                k.vf_curve = [[i, v + vf - k.diode_vf] for i, v in k.vf_curve]
+            k.diode_vf = vf
+        diode_ref(k)
+        k.diode_vf_max = k.resistance_max = None
+    diodes = {id(k) for k in out.links if k.is_diode}
+    for k in out.links:
+        if id(k) in diodes:
+            continue                    # its model holds its resistance
         if worst and k.resistance_max is None and k.resistance == 0:
             continue                    # a short stays a short: nothing to warn about
         k.resistance, _ = _pick(worst, f"DC connection {k.name}", k.resistance,

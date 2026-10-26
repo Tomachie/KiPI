@@ -495,7 +495,7 @@ def test_an_isolated_converter_holds_its_output_ground_at_its_own_pins():
     snap = isolated_board()
     setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), snap).run()
     u1 = by_name(setup.vrms, "U1 +3V3")
-    assert (u1.ground.net, u1.output_ground.net) == ("GND", "GND_ISO")
+    assert (u1.kind, u1.ground.net, u1.input_ground.net) == ("isolated", "GND_ISO", "GND")
     assert by_name(setup.loads, "U2").ground.net == "GND_ISO"
     assert not validate(setup)
     assert not any("ideal ground" in n for n in notes)

@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Tomachie LLC.
-"""A diode in series (#161): a DC connection with a forward voltage, solved conducting as
-its forward drop plus the current times its slope resistance."""
+"""A diode in series (#161): a DC connection with a forward voltage, solved from a diode
+model of its drop and slope resistance (#191), within a few millivolts of the drop plus
+the current times the slope; with its datasheet curve, on the curve itself."""
 
 import sys
 from pathlib import Path
@@ -32,7 +33,7 @@ def _load(setup):
 
 def test_the_load_sits_one_forward_drop_lower():
     plain, diode = _load(_setup()), _load(_setup(forward_v=0.45))
-    assert diode.v_supply == pytest.approx(plain.v_supply - 0.45, abs=1e-6)
+    assert diode.v_supply == pytest.approx(plain.v_supply - 0.45, abs=0.01)
 
 
 def test_the_diode_current_and_loss():
@@ -40,14 +41,14 @@ def test_the_diode_current_and_loss():
     link = next(s for g in tree.groups.values() for s in g.result.fields.series
                 if s.name == "FB1")
     assert link.current == pytest.approx(1.0, rel=1e-6)
-    assert link.power == pytest.approx(1.0 * (0.45 + 1.0 * 0.05), rel=1e-6)
+    assert link.power == pytest.approx(1.0 * (0.45 + 1.0 * 0.05), rel=0.02)
 
 
 def test_worst_case_takes_the_maximum_forward_voltage():
     s = _setup(forward_v=0.45, forward_v_max=0.55)
     typ = _load(s)
     s.corner = "max"
-    assert _load(s).v_supply == pytest.approx(typ.v_supply - 0.10, abs=1e-6)
+    assert _load(s).v_supply == pytest.approx(typ.v_supply - 0.10, abs=2e-3)
 
 
 def test_a_diode_round_trips_through_the_setup_file():
@@ -103,3 +104,17 @@ def test_a_curve_round_trips_through_the_setup_file():
     s = _setup(forward_v=0.684)
     s.links[0].vf_curve = CURVE
     assert PISetup.from_dict(s.to_dict()).links[0].vf_curve == CURVE
+
+
+def test_a_curve_gives_the_diode_a_model_for_ac():
+    """The DC solve is on the curve itself; AC takes the diode's small-signal values from
+    a model fitted to it, and a saved setup keeps both."""
+    from kipi.dc.pi.diode_curve import CURVE_SOURCE, diode_ref, fit_curve
+    s = _setup(forward_v=0.684)
+    s.links[0].vf_curve = CURVE
+    diode_ref(s.links[0])
+    assert s.links[0].is_diode and s.links[0].spice.file == CURVE_SOURCE
+    i_s, n, rs = fit_curve(CURVE)
+    assert i_s > 0 and n > 1 and rs > 0
+    back = PISetup.from_dict(s.to_dict()).links[0]
+    assert back.is_diode and back.vf_curve == CURVE

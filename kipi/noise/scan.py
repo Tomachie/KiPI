@@ -11,8 +11,8 @@ candidate. Each is ranked by a quick estimate of the noise it picks up:
   net's own capacitance Cg (each trace's 2πε/p11 and the receiver's) through it: over an
   edge of t = ΔV/(dV/dt), v = Cm·R·dV/dt·(1 − e^(−t/τ)), τ = R·(Cm + Cg). A low R gives
   Cm·R·dV/dt; an undriven net (#158) the charge divider ΔV·Cm/(Cm + Cg);
-* **inductive**: the EMF the capacitor loops induce along its traces, with the full
-  inductive model (it is cheap), its peak over a period.
+* **inductive**: the EMF the capacitor loops induce along its traces, with the inductive
+  model on the parts of each loop carrying most of its current, its peak over a period.
 
 The nets with the highest estimates are then solved in full, as victims of the scan's
 type and logic level (:func:`kipi.noise.model.scan_victim`), every mechanism included.
@@ -27,6 +27,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from kipi.core.model.board import BoardSnapshot
+from kipi.core.progress import NULL, ProgressReporter
 from kipi.dc.pi.model import PISetup
 from kipi.noise.extract.capacitive import split_tracks
 from kipi.noise.extract.inductive import loop_sources, victim_emf
@@ -90,8 +91,9 @@ def _height_over_plane(stack, layer: int) -> float:
 
 
 def estimate(snap: BoardSnapshot, setup: PISetup, agg, wf, layouts,
-             nets: Dict[str, float]) -> List[ScanRow]:
-    """The quick estimate for each candidate net, largest first."""
+             nets: Dict[str, float], progress: ProgressReporter = NULL) -> List[ScanRow]:
+    """The quick estimate for each candidate net, largest first, reported to ``progress``
+    about ten times along."""
     import shapely
     from kipi.core.geometry.copper import net_layer_copper
     s = setup.noise
@@ -110,11 +112,16 @@ def estimate(snap: BoardSnapshot, setup: PISetup, agg, wf, layouts,
     t_edge = swing / dvdt if dvdt > 0 else 0.0
     v = scan_victim(s, "")
     r = 1.0 / sum(1.0 / x for x in (v.driver_ohm, v.receiver_ohm, v.termination_ohm) if x)
-    sources = loop_sources(layouts, wf)
+    sources = loop_sources(layouts, wf, estimate=True)
     freqs = wf.freqs()
     er = setup.ac.default_er
     rows = []
-    for net, dist in nets.items():
+    every = max(1, math.ceil(len(nets) / 10))
+    for i, (net, dist) in enumerate(nets.items()):
+        progress.check_cancel()
+        if i % every == 0:
+            progress.info(f"  Scan: net {i + 1}/{len(nets)}, {net}")
+        progress.fraction(i / max(len(nets), 1))
         segs = split_tracks(snap, net, max(s.segment_mm, 1.0))
         cm = 0.0
         cg = v.receiver_pf * 1e-12

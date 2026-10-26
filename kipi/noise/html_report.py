@@ -84,6 +84,101 @@ def _img(pdf: bool, src: str) -> str:
     return f"<p><img src='{src}' style='max-width:100%'></p>"
 
 
+MAP_FLOOR = 1e-2               # the field map leaves out what is under this share of its peak
+MAP_ZOOM_AREA = 4.0            # a board this many times the map's area gets a zoomed view too
+MAP_MAX_LABELS = 60            # more top-side parts than this in a view go unlabelled
+
+
+def _rings(polys):
+    for poly in polys:
+        for ring in [poly.outline, *poly.holes]:
+            if len(ring) >= 2:
+                yield np.asarray(list(ring) + [ring[0]], float)
+
+
+def _draw_top(ax, snap, view, labels: bool = True):
+    """The board outline and its top side as KiCad draws it: pads and silkscreen, the
+    parts' references where there are few enough to read."""
+    from matplotlib.collections import LineCollection, PolyCollection
+    ax.add_collection(LineCollection(list(_rings(snap.outline or [])), colors="#333",
+                                     linewidths=1.0, zorder=4))
+    top = snap.stackup.copper[0].id if snap.stackup.copper else None
+    pads = [np.asarray(poly.outline, float) for pad in snap.pads
+            for poly in pad.shapes.get(top, []) if len(poly.outline) >= 3]
+    if pads:
+        ax.add_collection(PolyCollection(pads, facecolors="#c9a227", edgecolors="#8a6d12",
+                                         linewidths=0.3, alpha=0.55, zorder=3))
+    silk = list(_rings((getattr(snap, "silkscreen", None) or {}).get("top", [])))
+    if silk:
+        ax.add_collection(LineCollection(silk, colors="#444", linewidths=0.4, alpha=0.8,
+                                         zorder=4))
+    x0, x1, y0, y1 = view
+    parts = [f for f in snap.footprints if f.side == "top"
+             and x0 <= f.position[0] <= x1 and y0 <= f.position[1] <= y1]
+    if labels and len(parts) <= MAP_MAX_LABELS:
+        for f in parts:
+            ax.annotate(f.reference, f.position, ha="center", va="center", fontsize=6,
+                        color="#1a1a8a", zorder=6)
+
+
+def _field_map_png(fmap, spots, snap, height_mm: float) -> str:
+    """The near-field map over the board's top side (KiCad's y down): each point's
+    strongest harmonic, the hotspots numbered as in their table. A converter small on its
+    board gets a second, zoomed view beside the whole board."""
+    from matplotlib.colors import LogNorm
+    from matplotlib.figure import Figure
+    vals = np.asarray(fmap.values, float)
+    peak = float(vals.max()) if vals.size else 0.0
+    mx0, my0, mx1, my1 = fmap.bounds
+    ny, nx = vals.shape
+    gx, gy = np.meshgrid(np.linspace(mx0, mx1, nx), np.linspace(my0, my1, ny))
+    # The zoomed view: where the field is within a tenth of its peak, and some room.
+    near = vals >= 0.1 * peak if peak > 0 else np.ones(vals.shape, bool)
+    pad = 0.5 * max(gx[near].max() - gx[near].min(), gy[near].max() - gy[near].min(), 4.0)
+    fbox = (max(gx[near].min() - pad, mx0), min(gx[near].max() + pad, mx1),
+            max(gy[near].min() - pad, my0), min(gy[near].max() + pad, my1))
+    rings = list(_rings(snap.outline or []))
+    if rings:
+        pts = np.vstack(rings)
+        bbox = (min(pts[:, 0].min(), fbox[0]), max(pts[:, 0].max(), fbox[1]),
+                min(pts[:, 1].min(), fbox[2]), max(pts[:, 1].max(), fbox[3]))
+    else:
+        bbox = (mx0, mx1, my0, my1)
+    area = lambda b: max(b[1] - b[0], 1e-9) * max(b[3] - b[2], 1e-9)
+    views = [bbox] + ([fbox] if area(bbox) > MAP_ZOOM_AREA * area(fbox) else [])
+    fig = Figure(figsize=(9, 4.6 if len(views) == 2 else 5.4))
+    norm = LogNorm(vmin=peak * MAP_FLOOR, vmax=peak) if peak > 0 else None
+    # Filled contours, log spaced: what is under the floor is left blank.
+    levels = np.geomspace(peak * MAP_FLOOR, peak, 13) if peak > 0 else None
+    image = None
+    for k, view in enumerate(views):
+        ax = fig.add_subplot(1, len(views), k + 1)
+        if levels is not None:
+            image = ax.contourf(gx, gy, vals, levels=levels, cmap="YlOrRd", norm=norm,
+                                alpha=0.85, extend="neither", zorder=1)
+        # With a zoomed view beside it, the whole board's is the overview: no labels.
+        overview = k == 0 and len(views) > 1
+        _draw_top(ax, snap, view, labels=not overview)
+        for i, h in enumerate([] if overview else spots, 1):
+            ax.plot(h.x_mm, h.y_mm, "o", ms=9, mfc="white", mec="#d62728", mew=1.0, zorder=7)
+            ax.annotate(str(i), (h.x_mm, h.y_mm), ha="center", va="center", fontsize=6,
+                        color="#d62728", zorder=8)
+        ax.set_xlim(view[0], view[1])
+        ax.set_ylim(view[3], view[2])
+        ax.set_aspect("equal")
+        ax.set_xlabel("x (mm)", fontsize=8)
+        ax.set_ylabel("y (mm)", fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.set_title("Board, top side" if k == 0 else "Around the converter", fontsize=9)
+    if image is not None and peak > 0:
+        cb = fig.colorbar(image, ax=fig.axes, shrink=0.85, pad=0.02, ticks=levels[::3],
+                          format="%.3g")
+        cb.set_label(f"{fmap.kind} ({fmap.unit} peak), strongest harmonic", fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+    fig.suptitle(f"{fmap.kind} field {height_mm:g} mm over the board", fontsize=10)
+    return _png(fig)
+
+
 def write_noise_report(path, result, snap, setup, progress=None) -> Path:
     """Write the report of ``result`` (a :class:`~kipi.noise.result.NoiseResult`): a web
     page, or a PDF when ``path`` ends in .pdf."""
@@ -95,9 +190,11 @@ def write_noise_report(path, result, snap, setup, progress=None) -> Path:
         f"<h1>KiPI Coupled Noise report: {_e(result.aggressor)}</h1>"
         f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {fork.VERSION}</div>"]
     if not pdf:
+        emi = getattr(result, "emi", None)
         parts.append("<nav><a href='#victims'>Victims</a> <a href='#aggressor'>Aggressor</a> "
                      "<a href='#waveforms'>Waveforms</a> <a href='#noise'>Victim noise</a>"
                      + (" <a href='#scan'>Scan</a>" if result.scan else "")
+                     + (" <a href='#emi'>Near field and emissions</a>" if emi is not None else "")
                      + " <a href='#notes'>Notes</a> <a href='#user-notes'>User notes</a></nav>")
     judged = [v.passed for v in result.victims]
     if judged:
@@ -120,6 +217,17 @@ def write_noise_report(path, result, snap, setup, progress=None) -> Path:
         parts.append("<p class='note'>Peak: the largest noise at the receiver over a "
                      "switching period, all mechanisms added as phasors. Scanned nets use "
                      "the scan's default driver and logic level.</p>")
+        splits = [(v, sp) for v in result.victims for sp in getattr(v, "splits", [])]
+        if splits:
+            parts.append("<h3>Plane splits crossed</h3>")
+            parts.append(_table(
+                ["Victim", "At (mm)", "Layer", "From", "To", "Detour (mm)", "Series L (nH)"],
+                [[_e(v.name), f"{sp.x_mm:.1f}, {sp.y_mm:.1f}", _e(sp.layer), _e(sp.from_ref),
+                  _e(sp.to_ref), f"{sp.detour_mm:.3g}", f"{sp.l_h * 1e9:.3g}"]
+                 for v, sp in splits]))
+            parts.append("<p class='note'>Where a victim's reference plane stops or changes "
+                         "under it, its return current detours; the detour's inductance "
+                         "(Johnson's slot estimate) is in series with the trace there.</p>")
     else:
         parts.append("<p>No victims were solved.</p>")
 
@@ -208,6 +316,46 @@ def write_noise_report(path, result, snap, setup, progress=None) -> Path:
                              "Inductive (mV)", "Solved in full"], rows))
         parts.append("<p class='note'>The estimate ranks the nets near the aggressor quickly; "
                      "the worst are solved in full (above, marked scan).</p>")
+
+    # ---------------- near field and emissions (#146)
+    emi = getattr(result, "emi", None)
+    if emi is not None:
+        parts.append("<h2 id='emi'>Near field and emissions</h2>")
+        if progress is not None:
+            progress.info("Report: field maps")
+        for spots, fmap, what in ((emi.h_hotspots, getattr(emi, "h_map", None), "H field (A/m)"),
+                                  (emi.e_hotspots, getattr(emi, "e_map", None), "E field (V/m)")):
+            if spots:
+                parts.append(f"<h3>{what} hotspots, {emi.height_mm:g} mm over the board</h3>")
+                if fmap is not None:
+                    try:
+                        parts.append(_img(pdf, _field_map_png(fmap, spots, snap, emi.height_mm)))
+                    except Exception:            # geometry trouble: the table still serves
+                        pass
+                parts.append(_table(["#", "x, y (mm)", "Peak", "At (MHz)", "Mostly from"],
+                                    [[str(i), f"{s.x_mm:.1f}, {s.y_mm:.1f}", f"{s.value:.3g}",
+                                      f"{s.f_hz / 1e6:.4g}", _e(s.source)]
+                                     for i, s in enumerate(spots, 1)]))
+        if emi.radiated_dbuv is not None and len(emi.radiated_dbuv):
+            f = emi.radiated_f
+            keep = np.isfinite(emi.limit_dbuv) if emi.limit_dbuv is not None else np.ones(len(f), bool)
+            if not keep.any():
+                keep = np.ones(len(f), bool)
+            fig, ax = _figure()
+            ax.plot(f[keep] / 1e6, emi.radiated_dbuv[keep], lw=0.9, color=COLORS[0],
+                    label="loops' estimate")
+            if emi.limit_dbuv is not None and np.isfinite(emi.limit_dbuv).any():
+                ax.plot(f[keep] / 1e6, emi.limit_dbuv[keep], lw=0.9, ls="--", color="#d62728",
+                        label="CISPR 32 class B, 3 m")
+            ax.set_xscale("log")
+            ax.set_xlabel("MHz")
+            ax.set_ylabel("dBµV/m")
+            ax.set_title(f"Radiated estimate at {emi.distance_m:g} m: {emi.worst_dbuv:.1f} "
+                         f"dBµV/m at {emi.worst_f_hz / 1e6:.4g} MHz, mostly {emi.worst_source}")
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+            parts.append(_img(pdf, _png(fig)))
+        parts.append("<p class='note'>" + " ".join(_e(n) for n in emi.notes) + "</p>")
 
     # ---------------- notes
     warnings = list(result.warnings) + [f"{v.name}: {w}" for v in result.victims

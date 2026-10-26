@@ -105,10 +105,6 @@ def test_dc_connection_takes_a_resistors_value(app):
     # ... and picking the resistor again re-reads its value.
     pick("R5")
     assert k.resistance == pytest.approx(0.01) and ed.r.value() == pytest.approx(10.0)
-    ed.diode_vf.setValue(0.45)
-    assert k.diode_vf == pytest.approx(0.45)
-    ed.diode_vf.setValue(0)
-    assert k.diode_vf == 0
     panel.close()
 
 
@@ -169,3 +165,27 @@ def test_a_regulator_with_levels_offers_them_in_the_editor(app):
     assert setup.vrms[1].voltage == 3.3
     panel.vrm_list.lst.setCurrentRow(0)
     assert not ed.form.isRowVisible(ed.level)
+
+
+def test_an_isolated_converter_edits_its_input_ground(app):
+    from tree_boards import isolated_board, isolated_setup
+
+    from kipi.dc.pi.model import PinRef
+    setup = isolated_setup()
+    panel = PIPanel()
+    panel.set_board(isolated_board(), setup)
+    panel.vrm_list.lst.setCurrentRow(1)
+    ed = panel.vrm_list.editor
+    assert ed.input_ground.value() == PinRef("U1", "PGND", ["3"])
+    assert ed.form.labelForField(ed.ground).text() == "Output ground pins"
+    assert ed.form.isRowVisible(ed.input_ground) and ed.form.isRowVisible(ed.eff)
+    ed.kind.setCurrentIndex(ed.kind.findData("smps"))      # a switcher has none
+    assert setup.vrms[1].input_ground is None
+    assert not ed.form.isRowVisible(ed.input_ground)
+    assert ed.form.labelForField(ed.ground).text() == "Ground pins"
+    ed.kind.setCurrentIndex(ed.kind.findData("isolated"))  # the picked pins come back
+    assert setup.vrms[1].input_ground == PinRef("U1", "PGND", ["3"])
+    ed.input_ground.set_value(None)
+    ed._store()                                            # none picked: U1's are guessed
+    assert setup.vrms[1].input_ground == PinRef("U1", "PGND")
+    panel.close()

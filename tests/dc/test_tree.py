@@ -2,18 +2,20 @@
 
 import math
 
+import numpy as np
 import pytest
 from shapely.geometry import box
 
 from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate, vin_range,
 )
+from kipi.core.model.spice import constant_drop_ref
 from kipi.dc.pi.tree import (
-    ACCURACY_NOT_GUARANTEED, NOT_CONVERGED, OUT_OF_REGULATION, solve_tree,
+    ACCURACY_NOT_GUARANTEED, NOT_CONVERGED, OUT_OF_REGULATION, _mean_v, solve_tree,
 )
 from kipi.dc.solver.fem import SolveError
 
-from tree_boards import R, board, by_name, pad, setup
+from tree_boards import R, board, by_name, isolated_board, isolated_setup, pad, setup
 
 
 def test_ldo_chain():
@@ -116,7 +118,8 @@ def test_validation_rules():
 def test_setup_file_round_trip(tmp_path):
     s = setup(kind="smps", eff=0.85, sense=True, ground=True, gsense=True)
     s.links.append(DcLink("D1", PinRef("U2", "+3V3", ["1"]),
-                          PinRef("U2", "+3V3", ["2"]), 0.05, diode_vf=0.32))
+                          PinRef("U2", "+3V3", ["2"]), 0.05,
+                          spice=constant_drop_ref(0.32, 0.05)))
     from kipi.dc.pi.model import PinGroup
     s.loads[0].groups = [PinGroup(["1"], 0.4, "a")]
     s.settings.rho_by_layer = {"In1.Cu": 1.9e-5}
@@ -127,6 +130,20 @@ def test_setup_file_round_trip(tmp_path):
     from kipi.core import yaml_io
     saved = yaml_io.loads(path.read_text(encoding="utf-8"))
     assert saved["format_version"] == 2
+
+
+def test_a_constant_diode_drop_loads_as_a_diode_model():
+    s = setup()
+    d = s.to_dict()
+    d["links"] = [{"name": "D1", "side_a": {"ref": "D1", "net": "A"},
+                   "side_b": {"ref": "D1", "net": "B"}, "resistance": 0.05,
+                   "diode_vf": 0.32}]
+    (k,) = PISetup.from_dict(d).links
+    assert k.is_diode and k.spice.subckt == "VF320MV"
+    m = k.spice.model()
+    for amps in (0.01, 0.1, 1.0):                   # 0.9.2's drop: 0.32 V + 50 mΩ · I
+        assert m.operating_point(amps)[0] == pytest.approx(0.32 + 0.05 * amps, abs=0.012)
+    assert "bias_a" not in PISetup.from_dict(d).to_dict()["links"][0]
 
 
 def test_legacy_json_setups_still_load(tmp_path):
@@ -474,3 +491,83 @@ def test_ranges_in_volts_from_nominal():
     del s.vrms[0]
     assert any("in volts from nominal needs a VRM" in e for e in validate(s))
 
+
+
+def test_a_solved_dc_current_biases_a_diode_before_the_estimate():
+    """AC and Coupled Noise take the diode's bias from the last DC solve where there is
+    one (the current the copper really carries), else the estimate from the loads."""
+    from types import SimpleNamespace as NS
+    from kipi.ac.bias import dc_link_currents
+    from kipi.dc.pi.model import biased_link
+    from kipi.dc.solver.post import SeriesResult
+    d = DcLink("D1", PinRef("D1", "A", ["1"]), PinRef("D1", "B", ["2"]), 0.05,
+               spice=constant_drop_ref(0.4, 0.05))
+    s = PISetup(vrms=[Vrm("J1", PinRef("J1", "A"), 5.0)], links=[d],
+                loads=[Load("U1", PinRef("U1", "B"), 0.5)])
+    series = [SeriesResult("D1", 0.05, 0.42, 5.0, 4.6, 0.01),
+              SeriesResult("J2", 0.0, float("nan"), 5.0, 5.0, 0.0)]       # a short
+    tree = NS(groups={"A": NS(result=NS(fields=NS(series=series)))})
+    assert dc_link_currents(tree) == {"D1": pytest.approx(0.42)}
+    assert dc_link_currents(None) == {} and dc_link_currents(NS(groups={})) == {}
+    assert biased_link(s, d, dc_link_currents(tree)).bias_a == pytest.approx(0.42)
+    assert biased_link(s, d, {}).bias_a == pytest.approx(0.5)             # the estimate
+    assert biased_link(s, d, {"D1": -0.1}).bias_a == 0.0                  # reverse: blocks
+
+
+def test_a_diode_is_biased_by_the_loads_beyond_it():
+    from kipi.dc.pi.model import biased_link, link_bias
+    d = DcLink("D1", PinRef("D1", "A", ["1"]), PinRef("D1", "B", ["2"]), 0.05,
+               spice=constant_drop_ref(0.4, 0.05))
+    r = DcLink("R1", PinRef("R1", "B", ["1"]), PinRef("R1", "C", ["2"]), 0.1)
+    s = PISetup(vrms=[Vrm("J1", PinRef("J1", "A"), 5.0)], links=[d, r],
+                loads=[Load("U1", PinRef("U1", "B"), 0.5), Load("U2", PinRef("U2", "C"), 0.25),
+                       Load("U3", PinRef("U3", "A"), 1.0)])
+    assert link_bias(s, d) == pytest.approx(0.75)        # B, and C through R1
+    k = biased_link(s, d)
+    assert k.bias_a == pytest.approx(0.75) and d.bias_a is None
+    assert biased_link(s, r) is r                         # not a diode
+    s.vrms.append(Vrm("J2", PinRef("J2", "C"), 5.0))       # driven from side B: blocking
+    assert link_bias(s, d) == 0.0
+    # Its small-signal resistance falls with its current.
+    w = np.array([2 * np.pi * 1e3])
+    assert abs(k.impedance(w)[0]) < abs(d.impedance(w)[0])
+
+
+def test_isolated_converter_references_its_own_output_ground():
+    s = isolated_setup()
+    assert validate(s) == []
+    res = solve_tree(isolated_board(), s)
+    u1, ld = by_name(res.vrms, "U1"), by_name(res.loads, "U2")
+    # Its input as a switcher's; its input current returns over PGND to J1 (9 mm).
+    assert u1.p_in == pytest.approx(u1.v_out * u1.i_out / 0.8, rel=1e-8)
+    pgnd = res.groups["PGND"].result.solution
+    u1_in_gnd = _mean_v(pgnd, ["u1_3"])
+    assert u1_in_gnd == pytest.approx(u1.i_in * R(9), rel=1e-8)
+    # The output side is referenced at U1.4: the load's 1 A returns over 8 mm of ISOGND.
+    assert ld.v_ground == pytest.approx(1.0 * R(8), rel=1e-8)
+    assert res.groups["ISOGND"].kind == "ground" and res.groups["ISOGND"].driver == "U1"
+
+
+def test_isolated_converter_validation():
+    s = isolated_setup()
+    s.vrms[1].input_ground = PinRef("U1", "ISOGND", ["4"])
+    assert any("not isolated" in e for e in validate(s))
+    s = isolated_setup()
+    s.vrms[1].ground = None                       # the output side has no reference
+    assert any("Ground ISOGND needs a reference" in e for e in validate(s))
+    s = isolated_setup()
+    s.vrms[1].phases = [s.vrms[1].all_phases()[0]]
+    assert any("one phase" in e for e in validate(s))
+    back = PISetup.from_dict(isolated_setup().to_dict())
+    assert back == isolated_setup()
+
+
+def test_isolated_converter_with_an_excluded_input_becomes_a_source():
+    from kipi.dc.pi.model import active_setup
+    s = isolated_setup()
+    s.excluded_nets = ["VIN"]
+    out, _ = active_setup(s)
+    u1 = by_name(out.vrms, "U1")
+    assert (u1.kind, u1.input, u1.input_ground) == ("source", None, None)
+    assert u1.ground == PinRef("U1", "ISOGND", ["4"])
+    assert validate(out) == []

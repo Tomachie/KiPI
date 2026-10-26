@@ -34,7 +34,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.core.model.nets import guess_voltage, sorted_nets, voltage_from_name
 from kipi.core.model.parts import bead_esl_h, is_capacitor_ref, part_esl, resistor_ohms
 from kipi.dc.pi.autofill import (
-    guess_ground_pins, guess_input_pins, guess_other_side, looks_like_ground,
+    guess_ground_pins, guess_input_ground, guess_input_pins, guess_other_side, looks_like_ground,
     next_phase_refs, other_net, part_nets, setup_grounds,
 )
 from kipi.dc.pi.load_model import apply_to_load, new_items
@@ -48,7 +48,7 @@ from kipi.gui.load_model_dialogs import (
 )
 from kipi.gui.report_option import ReportOption
 from kipi.gui.sortable import make_sortable, reset_sort, set_row, sorted_rows
-from kipi.gui.spice_dialog import LINK, import_spice, part_values, spice_text
+from kipi.gui.spice_dialog import LINK, import_spice, part_pins, part_values, spice_text
 from kipi.gui.tooltip_art import add_text, art_tip
 from kipi.gui.unit_spin import UnitSpinBox
 from kipi.dc.pi import vunits
@@ -508,6 +508,7 @@ class VrmEditor(_Editor):
         self.kind.addItem("Source (ideal supply, no input)", "source")
         self.kind.addItem("LDO (I_in = I_out + I_q)", "ldo")
         self.kind.addItem("Switcher (P_in = P_out / η)", "smps")
+        self.kind.addItem("Isolated (P_in = P_out / η, own output ground)", "isolated")
         self.output = self._picker()
         self.voltage = _spin(-1000, 1000, 3.3, 4, " V", 0.1)
         self.eff = _spin(1, 100, 90, 1, " %", 1)
@@ -531,8 +532,8 @@ class VrmEditor(_Editor):
         self.input = self._picker(optional=True)
         self.sense = self._picker(optional=True)
         self.ground = self._picker(optional=True)
+        self.input_ground = self._picker(optional=True)
         self.ground_sense = self._picker(optional=True)
-        self.output_ground = self._picker(optional=True)
         # Mesh remote sense (#93): the sense pickers show the selected point.
         self.mesh = QCheckBox("Enable mesh remote sense")
         self.n_points = QSpinBox()
@@ -572,18 +573,14 @@ class VrmEditor(_Editor):
         f.addRow("Output pins", self.output)
         f.addRow("Input pins", self.input)
         f.addRow("Ground pins", self.ground)
-        f.addRow("Output ground pins", self.output_ground)
-        tip(f, self.output_ground, "An isolated converter: its output side's return pins, on "
-                                   "a ground isolated from its input's. That ground is held "
-                                   "at 0 V there, and Ground pins carry only the input's "
-                                   "return. Empty for any other regulator.")
+        f.addRow("Input ground pins", self.input_ground)
         f.addRow("Mesh sense", self.mesh)
         f.addRow("Sense points", self.n_points)
         f.addRow("Edit sense point", self.cmb_point)
         f.addRow("Sense pins", self.sense)
         f.addRow("Ground sense pins", self.ground_sense)
         # Drawings under the tooltips (#116), the field's part picked out.
-        art = {self.kind: ("vrm_types",), self.eff: ("vrm_types", "smps"),
+        art = {self.kind: ("vrm_types",), self.eff: ("vrm_types", "smps", "iso"),
                self.iq: ("vrm_types", "ldo"), self.load_line: ("load_line", "ll"),
                self.dropout: ("dropout", "dropout"), self.vin_row: ("dropout", "range"),
                self.vin_row.min: ("dropout", "range"), self.vin_row.max: ("dropout", "range"),
@@ -596,12 +593,17 @@ class VrmEditor(_Editor):
                self.vin_row.unit: ("tolerance", "volts", "dv", "pct"),
                self.acc_row.unit: ("tolerance", "volts", "dv", "pct"),
                self.output: ("vrm_pins", "out"), self.input: ("vrm_pins", "inp"),
-               self.ground: ("vrm_pins", "gnd")}
+               self.ground: ("vrm_pins", "gnd"),
+               self.input_ground: ("isolated", "ignd")}
         for w, text in (
                 (self.name, "A name for this regulator, used in the results tables"),
                 (self.kind, "Source: an ideal supply with no input (a connector, a bench "
                             "supply).\nLDO: input current = output current + quiescent "
-                            "current.\nSwitcher: input power = output power / efficiency."),
+                            "current.\nSwitcher: input power = output power / efficiency."
+                            "\nIsolated: a switcher whose output side has a ground of its "
+                            "own; its output ground pins are that ground's 0 V reference "
+                            "and its input current returns through its input ground pins. "
+                            "Not modeled in Coupled Noise."),
                 (self.voltage, "The voltage the VRM regulates to, at its output pins or at "
                                "its sense pins if it has them; loads and results are judged "
                                "against it. Picking the output net fills it in from the "
@@ -675,6 +677,11 @@ class VrmEditor(_Editor):
                 (self.ground, "Optional: the VRM's ground pins. With them, the ground return "
                               "is solved too and drops are measured output to ground. Picking "
                               "the output pins fills in the same part's ground pins."),
+                (self.input_ground, "Optional, isolated converters only: the input "
+                                    "side's ground pins, where its input current returns to "
+                                    "the VRM feeding it. Its ground pins are then its output "
+                                    "side's: they hold that ground at 0 V, the reference of "
+                                    "everything grounded on it."),
                 (self.sense, "Optional remote sense: the VRM holds its target voltage at these "
                              "pins instead of at its output"),
                 (self.ground_sense, "Optional negative remote sense on the ground net: the "
@@ -708,7 +715,11 @@ class VrmEditor(_Editor):
 
     def _kind_rows(self, *_):
         kind = self.kind.currentData()
-        self.form.setRowVisible(self.eff, kind == "smps")
+        isolated = kind == "isolated"
+        self.form.setRowVisible(self.eff, kind in ("smps", "isolated"))
+        self.form.setRowVisible(self.input_ground, isolated)
+        self.form.setRowVisible(self.n_phases, not isolated or self.n_phases.value() > 1)
+        self._phase_rows()
         self.form.setRowVisible(self.iq, kind != "source")
         self.form.setRowVisible(self.input, kind != "source")
         self.form.setRowVisible(self.dropout, kind == "ldo")
@@ -717,7 +728,7 @@ class VrmEditor(_Editor):
         # worst case solves it at its minimum.
         self.form.setRowVisible(self.acc_row, True)
         self.form.setRowVisible(self.cable, kind == "source")
-        self.form.setRowVisible(self.btn_accuracy_calc, kind in ("ldo", "smps"))
+        self.form.setRowVisible(self.btn_accuracy_calc, kind != "source")
         dc = self.mode == "dc"
         dc_only = (self.kind, self.eff, self.iq, self.i_limit, self.load_line, self.n_phases,
                    self.input, self.sense, self.ground_sense, self.dropout, self.mesh,
@@ -730,7 +741,8 @@ class VrmEditor(_Editor):
         _gray((self.bandwidth,), not dc, "Used by the AC analysis only", editable=True)
         needs = {w: OPTIONAL for w in (self.iq, self.i_limit, self.load_line, self.cable,
                                        self.dropout, self.vin_row, self.acc_row,
-                                       self.n_phases, self.ground, self.sense,
+                                       self.n_phases, self.ground, self.input_ground,
+                                       self.sense,
                                        self.ground_sense, self.mesh, self.n_points,
                                        *ac_only)}
         needs.update({w: REQUIRED for w in (self.name, self.kind, self.voltage, self.output)})
@@ -765,8 +777,10 @@ class VrmEditor(_Editor):
         self.cmb_phase.blockSignals(False)
         self.form.setRowVisible(self.cmb_phase, n > 1)
         tag = f" (phase {self._phase + 1})" if n > 1 else ""
+        ground = ("Output ground pins" if self.kind.currentData() == "isolated"
+                  else "Ground pins")
         for w, text in ((self.output, "Output pins"), (self.input, "Input pins"),
-                        (self.ground, "Ground pins")):
+                        (self.ground, ground)):
             self.form.labelForField(w).setText(text + tag)
 
     def _show_phase(self, v: Vrm):
@@ -775,6 +789,7 @@ class VrmEditor(_Editor):
         self.output.set_value(ph.output)
         self.input.set_value(ph.input)
         self.ground.set_value(ph.ground)
+        self.input_ground.set_value(v.input_ground)
         self._loading = loading
 
     def _point_rows(self):
@@ -866,7 +881,6 @@ class VrmEditor(_Editor):
         self._point = 0
         self._point_rows()
         self._show_point(v)
-        self.output_ground.set_value(v.output_ground)
         self._kind_rows()
 
     def _accuracy_calculator(self):
@@ -911,7 +925,6 @@ class VrmEditor(_Editor):
         del pts[max(self.n_points.value(), 1):]
         v.sense, v.ground_sense = pts[0].sense, pts[0].ground_sense
         v.sense_points = pts[1:]
-        v.output_ground = self.output_ground.value()
         phases = v.all_phases()
         ph = phases[min(self._phase, len(phases) - 1)]
         old = ph.output
@@ -935,6 +948,12 @@ class VrmEditor(_Editor):
                 ph.input = None
         v.output, v.input, v.ground = phases[0].output, phases[0].input, phases[0].ground
         v.phases = phases[1:]
+        v.input_ground = self.input_ground.value() if v.kind == "isolated" else None
+        if v.kind == "isolated" and v.input_ground is None:
+            v.input_ground = guess_input_ground(snap, self.panel.setup, self.panel._nets,
+                                                v.output, v.ground, v.input)
+            if v.input_ground is not None:
+                self._show(self.input_ground, v.input_ground)
 
     def _autofill_phase(self, v: Vrm, ph: VrmPhase, old: PinRef):
         """Pick the ground and input pins that go with newly picked output pins: the same
@@ -1219,10 +1238,8 @@ class LinkEditor(_Editor):
         self.b = self._picker()
         self.r = _spin(0, 1e9, 0, 3, " mΩ", 1)
         self.r.setSpecialValueText("0 (short)")
-        self.diode_vf = _spin(0, 10, 0, 3, " V", 0.01)
         self.esl = _spin(0, 1e6, 0, 3, " nH", 0.1)
         self.r_max = _optional_spin(0, 1e9, 3, " mΩ", 1)
-        self.vf_max = _optional_spin(0, 10, 3, " V", 0.01)
         self.esl.setSpecialValueText("none")
         f.addRow("Name", self.name)
         f.addRow("Side A pins", self.a)
@@ -1231,10 +1248,6 @@ class LinkEditor(_Editor):
         f.addRow("Max resistance", self.r_max)
         tip(f, self.r_max, "The part's maximum DC resistance, solved instead of Resistance "
                            "when the solve is set to Worst case (max) beside Solve all")
-        f.addRow("Diode forward drop (A → B)", self.diode_vf)
-        f.addRow("Max forward voltage", self.vf_max)
-        tip(f, self.vf_max, "The diode's maximum forward drop, solved instead of Diode "
-                            "forward drop when the solve is set to Worst case (max)")
         f.addRow("ESL", self.esl)
         # Estimates of the ESL (#159): from the part's package, or a ferrite bead's
         # impedance.
@@ -1276,11 +1289,6 @@ class LinkEditor(_Editor):
                          "part with pins on just two nets (a resistor, ferrite, fuse...)."),
                 (self.r, "DC resistance (DCR), used by both analyses. For a resistor, it is "
                          "read from the part's value when both sides are on it."),
-                (self.diode_vf, "Constant forward voltage drop used by the DC model. Side A "
-                                "is the anode and side B the cathode. This is a linear "
-                                "forward model; reverse blocking is not modeled. Enter a "
-                                "nonzero DCR; "
-                                "the AC analysis uses DCR and ESL as its small-signal model."),
                 (self.esl, "Series inductance (ESL) of the part"),
                 (self.btn_esl_package,
                  "Estimate the ESL from the size of the part on side A: its footprint's "
@@ -1300,27 +1308,40 @@ class LinkEditor(_Editor):
                  "It is saved with the setup, and the AC and Coupled Noise solves take the "
                  "part's impedance from it at every frequency. The DCR (which the DC solve "
                  "uses) is the model's resistance at DC, and the ESL its inductance at "
-                 "100 kHz, low on a bead's inductive slope, for the tables and reports."),
+                 "100 kHz, low on a bead's inductive slope, for the tables and reports.\n\n"
+                 "A diode is its .model D card (IS, N, RS, BV, IBV, CJO, VJ, M, TT) or a "
+                 ".SUBCKT with diodes in it; side A is its anode (the model's first pin). "
+                 "The DC solve takes its drop from the model at the current it carries. AC "
+                 "and Coupled Noise use its small-signal resistance and capacitance at the "
+                 "current the DC loads beyond it draw. The DCR and ESL shown are its slope "
+                 "resistance and inductance at 1 A.\n\n"
+                 "A part with more than two pins (a common-mode choke, a feedthrough "
+                 "capacitor) is a .SUBCKT with a pin per side, coupled inductors (K) "
+                 "allowed. Map each of its pins to one of side A's part's pins in the "
+                 "dialog: each becomes a side of the link. DC takes its conductance "
+                 "between the sides, AC and Coupled Noise its admittance at every "
+                 "frequency.\n\n"
+                 "The model is worked out at the copper's temperature under the part when "
+                 "the solve knows it (TEMP, TC1 and TC2, and a diode's temperature "
+                 "parameters), else at 27 °C."),
                 (self.chk_spice,
                  "Take the impedance from the imported SPICE model. Untick to use the DCR "
                  "and ESL as you enter them; the model is kept, and ticking again puts its "
                  "fitted values back.")):
             tip(f, w, text, art.get(w))
         hint = QLabel("A part in series between two nets (sense resistor, ferrite, fuse, "
-                      "load switch or diode). For a diode, side A is the anode; enter its "
-                      "forward drop and nonzero series resistance.")
+                      "load switch or diode). For a diode, import its SPICE model, with "
+                      "side A its anode.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #999;")
         f.addRow(hint)
-        self._watch(self.name, self.r, self.r_max, self.diode_vf, self.vf_max, self.esl)
+        self._watch(self.name, self.r, self.r_max, self.esl)
         _gray((self.esl, self.btn_esl_package, self.btn_esl_bead), mode == "ac",
               "Used by the AC analysis only")
         self._legend(unused=mode == "dc")
         self._mark({self.name: REQUIRED, self.a: REQUIRED, self.b: REQUIRED, self.r: REQUIRED,
                     self.esl: OPTIONAL if mode == "ac" else UNUSED,
-                    **dict.fromkeys((self.r_max, self.vf_max),
-                                    UNUSED if mode == "ac" else OPTIONAL),
-                    self.diode_vf: OPTIONAL})
+                    self.r_max: UNUSED if mode == "ac" else OPTIONAL})
 
     def _esl_from_package(self):
         k = self.obj
@@ -1353,10 +1374,20 @@ class LinkEditor(_Editor):
         if k is None:
             return
         refs = dict.fromkeys(r.ref for r in (k.side_a, k.side_b) if r is not None)
-        got = import_spice(self, LINK, [k.name, *part_values(self.panel.snapshot, refs)])
+        # A multi-pin model (#193) maps its pins to side A's part's pins, its sides.
+        part = k.side_a.ref if k.side_a is not None else ""
+        pins = part_pins(self.panel.snapshot, part)
+        got = import_spice(self, LINK, [k.name, *part_values(self.panel.snapshot, refs)],
+                           pins)
         if got is None:
             return
-        k.spice = got[0]
+        k.spice, _values, mapped = got
+        if mapped:
+            net = dict(pins)
+            sides = [PinRef(part, net[n], [n]) for n in mapped]
+            k.side_a, k.side_b, k.more_sides = sides[0], sides[1], sides[2:]
+        else:
+            k.more_sides = []
         self._fitted(k)
 
     def _spice_toggled(self, on: bool):
@@ -1382,7 +1413,13 @@ class LinkEditor(_Editor):
         self.chk_spice.setVisible(k.spice is not None)
         self.lbl_spice.setVisible(k.spice is not None)
         self.chk_spice.setChecked(k.uses_spice)
-        self.lbl_spice.setText(spice_text(k.spice) if k.spice else "")
+        text = spice_text(k.spice) if k.spice else ""
+        if k.more_sides:                            # a multi-pin part's sides (#193)
+            text += (" Its pins: " + ", ".join(f"{chr(65 + i)} {p.label()} · {p.net}"
+                                              for i, p in enumerate(
+                                                  [k.side_a, k.side_b, *k.more_sides]))
+                     + ("." if k.uses_spice else "; only A and B while it is not in use."))
+        self.lbl_spice.setText(text)
         free = not k.uses_spice
         self.r.setEnabled(free)
         for w in (self.esl, self.btn_esl_package, self.btn_esl_bead):
@@ -1400,8 +1437,6 @@ class LinkEditor(_Editor):
         self.b.set_value(k.side_b)
         self.r.setValue(k.resistance * 1e3)
         _set_optional(self.r_max, None if k.resistance_max is None else k.resistance_max * 1e3)
-        self.diode_vf.setValue(k.diode_vf)
-        _set_optional(self.vf_max, k.diode_vf_max)
         self.esl.setValue((k.esl_h or 0.0) * 1e9)
 
     def _save(self, k: DcLink):
@@ -1425,8 +1460,6 @@ class LinkEditor(_Editor):
         k.resistance = self.r.value() / 1e3
         r_max = _get_optional(self.r_max)
         k.resistance_max = None if r_max is None else r_max / 1e3
-        k.diode_vf = self.diode_vf.value()
-        k.diode_vf_max = _get_optional(self.vf_max)
         k.esl_h = self.esl.value() * 1e-9 or None
         # Both sides just became the same resistor: take its resistance from its value.
         if (k.side_a.ref, k.side_b.ref) != parts and k.side_a.ref == k.side_b.ref:
@@ -2358,6 +2391,7 @@ class PIPanel(QWidget, PartSelection):
         groups = net_groups(setup)
         driver = {groups[v.output.net]: v for v in setup.vrms}
         grounds = {groups[r.net] for r in [*(v.ground for v in setup.vrms),
+                                           *(v.input_ground for v in setup.vrms),
                                            *(l.ground for l in setup.loads)] if r}
         off = set(setup.excluded_nets)
 
@@ -2603,11 +2637,11 @@ class PIPanel(QWidget, PartSelection):
     @staticmethod
     def _describe_link(k: DcLink) -> str:
         r = "short" if k.resistance <= 0 else f"{k.resistance * 1e3:g} mΩ"
-        kind = f", SPICE {k.spice.subckt}" if k.uses_spice else ""
-        if k.diode_vf:                                  # a diode, anode on side A
-            r = f"diode {k.diode_vf:g} V + {k.resistance * 1e3:g} mΩ"
-            return f"{k.name}: {k.side_a.net} → {k.side_b.net} ({r}{kind})"
-        return f"{k.name}: {k.side_a.net} ↔ {k.side_b.net} ({r}{kind})"
+        kind = ", diode A→B" if k.is_diode else ""
+        kind += f", SPICE {k.spice.subckt}" if k.uses_spice else ""
+        if k.is_multi:
+            r = f"{len(k.sides)} pins"
+        return f"{k.name}: {' ↔ '.join(p.net for p in k.sides)} ({r}{kind})"
 
     # ------------------------------------------------------------------ results
     def set_busy(self, busy: bool, queued: bool = False):

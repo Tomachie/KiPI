@@ -41,8 +41,8 @@ from kipi.noise.checks import (
     NoiseError, guess_ends, operating_point, seed_phases, smps_vrms, validate_noise,
 )
 from kipi.noise.model import (
-    CUSTOM, DEFAULT_COSS_F, DEFAULT_QRR_C, DEFAULT_RDS_ON_OHM, LOGIC_LEVELS, VICTIM_PRESETS, Aggressor,
-    AggressorPhase, Victim,
+    CUSTOM, DEFAULT_COSS_F, DEFAULT_QRR_C, DEFAULT_RDS_ON_OHM, INDUCTOR_AXES, LOGIC_LEVELS,
+    VICTIM_PRESETS, Aggressor, AggressorPhase, Victim,
 )
 
 TITLE = "Coupled Noise setup"
@@ -181,6 +181,13 @@ class AggressorEditor(_Editor):
         self.inductance = _spin(0, 1e6, 0, 1, " nH", 10)
         self.inductance.setSpecialValueText("required")
         self.dcr = _spin(0, 1e5, 0, 3, " mΩ", 0.1)
+        # The inductor's stray field (#146): its winding's axis and whether it is shielded.
+        self.ind_axis = QComboBox()
+        for key, text in INDUCTOR_AXES:
+            self.ind_axis.addItem(text, key)
+        self.ind_shielded = QCheckBox("Shielded inductor")
+        self.ind_shielded.setChecked(True)
+        self.ind_shielded.toggled.connect(self._store)
         self.switch_net = QComboBox()
         make_searchable(self.switch_net)
         self.high_side = self._picker()
@@ -199,6 +206,8 @@ class AggressorEditor(_Editor):
         pf.addRow("Inductor", self.inductor)
         pf.addRow("Inductance", self.inductance)
         pf.addRow("DCR", self.dcr)
+        pf.addRow("Winding axis", self.ind_axis)
+        pf.addRow(self.ind_shielded)
         pf.addRow("Switch node", self.switch_net)
         pf.addRow("High-side pins", self.high_side)
         pf.addRow("Low-side pins", self.low_side)
@@ -216,6 +225,21 @@ class AggressorEditor(_Editor):
                  ("hot_loop", "ind")),
                 (self.dcr, "The inductor's DC resistance, from its datasheet (optional)",
                  ("hot_loop", "ind")),
+                (self.ind_axis, "Which way the inductor's winding axis points, for its "
+                                "stray field: vertical for a flat SMD drum or moulded "
+                                "part (the usual power inductor), or along or across the "
+                                "part for one wound on a rod lying flat. The winding is "
+                                "modelled as a loop of its turns round the core, normal "
+                                "to the axis, at the body's height, carrying the inductor "
+                                "current; it couples onto victims and shows in Fields in "
+                                "3D.", ("inductor_field", "axis")),
+                (self.ind_shielded, "Tick for a shielded (or moulded) inductor, whose "
+                                    "shield closes most of its flux: the stray field "
+                                    "outside is taken as a tenth of the turns round a "
+                                    "smaller loop (the leakage near the core), so it is "
+                                    "weaker and falls off sooner. Untick for an unshielded "
+                                    "(open drum) part, whose whole winding's field reaches "
+                                    "the board around it.", ("inductor_field", "shield")),
                 (self.switch_net, "The switch node: the net between the switching device "
                                   "and the inductor. Its copper's capacitance to the planes "
                                   "adds to Coss.", ("hot_loop", "sw")),
@@ -254,9 +278,8 @@ class AggressorEditor(_Editor):
                                  "from its datasheet (0 if not given); added to the loop "
                                  "simulated on the board", ("hot_loop", "loop"))):
             tip(pf, w, text, art)
-        self._watch(self.inductance, self.dcr, self.switch_net, self.coss, self.qrr,
-                    self.rds_hs,
-                    self.rds_ls, self.package_l)
+        self._watch(self.inductance, self.dcr, self.ind_axis, self.switch_net, self.coss,
+                    self.qrr, self.rds_hs, self.rds_ls, self.package_l)
         self.inductor.currentIndexChanged.connect(self._inductor_changed)
         f.addRow(g)
 
@@ -398,6 +421,8 @@ class AggressorEditor(_Editor):
             self.inductor.setCurrentIndex(max(i, 0))
             self.inductance.setValue(ph.inductance_h * 1e9)
             self.dcr.setValue(ph.dcr_ohm * 1e3)
+            self.ind_axis.setCurrentIndex(max(self.ind_axis.findData(ph.inductor_axis), 0))
+            self.ind_shielded.setChecked(ph.inductor_shielded)
             i = self.switch_net.findData(ph.switch_net)
             if i < 0 and ph.switch_net:
                 self.switch_net.addItem(ph.switch_net, ph.switch_net)
@@ -419,10 +444,10 @@ class AggressorEditor(_Editor):
             self._loading = loading
 
     def _phase_widgets(self):
-        return (self.inductor, self.inductance, self.dcr, self.switch_net, self.high_side,
-                self.low_side, self.input_caps, self.output_caps, self.coss, self.qrr,
-                self.rds_hs,
-                self.rds_ls, self.package_l)
+        return (self.inductor, self.inductance, self.dcr, self.ind_axis, self.ind_shielded,
+                self.switch_net, self.high_side, self.low_side, self.input_caps,
+                self.output_caps, self.coss, self.qrr, self.rds_hs, self.rds_ls,
+                self.package_l)
 
     def _save(self, a: Aggressor):
         was_vrm = a.vrm
@@ -444,6 +469,8 @@ class AggressorEditor(_Editor):
             ph.inductor = self.inductor.currentData() or ""
             ph.inductance_h = self.inductance.value() * 1e-9
             ph.dcr_ohm = self.dcr.value() * 1e-3
+            ph.inductor_axis = self.ind_axis.currentData() or "vertical"
+            ph.inductor_shielded = self.ind_shielded.isChecked()
             ph.switch_net = self.switch_net.currentData() or ""
             ph.high_side = self.high_side.value()
             ph.low_side = self.low_side.value()
@@ -782,6 +809,10 @@ class NoisePanel(QWidget, PartSelection):
         self.result = None
         self._results: Dict[str, object] = {}     # the last NoiseResult of each aggressor
         self._victim = ""                         # the victim selected in the results
+        self._field_key = None                    # the field view's request (#146)
+        self._field_overlay = None                # and the field last worked out for it
+        self._field_overlay_key = None
+        self._field_task = None
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
 
@@ -914,9 +945,9 @@ class NoisePanel(QWidget, PartSelection):
         tip_3d = ("Show in the 3D view where the selected victim's peak noise couples in: "
                   "each piece of its traces colored by its part of the receiver's peak (red "
                   "adds to it, blue takes from it), by one mechanism or all of them. The "
-                  "common-ground part is a dot at the driver; the capacitor loops that "
-                  "induce the inductive part are drawn in magenta. Tick the switch node's net "
-                  "in the Board panel to see the capacitive source.")
+                  "common-ground part is a dot at the driver. Hot loops in 3D, below, draws "
+                  "the capacitor loops that induce the inductive part; tick the switch "
+                  "node's net in the Board panel to see the capacitive source.")
         tip_3d = art_tip(tip_3d, "coupling", "cap", "ind", "gnd")
         self.cmb_coupling.setToolTip(tip_3d)
         self.cmb_coupling.currentIndexChanged.connect(self._coupling_view_changed)
@@ -931,6 +962,83 @@ class NoisePanel(QWidget, PartSelection):
         self.lbl_coupling.setVisible(False)
         lr.addWidget(self.coupling_row)
         lr.addWidget(self.lbl_coupling)
+        # The hot loops (#178): each capacitor's current path through the copper.
+        self.loops_row = QWidget(g_res)
+        row = QHBoxLayout(self.loops_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.cmb_loops = QComboBox(self.loops_row)
+        tip_loops = ("Draw the hot loops in the 3D view: each input capacitor's (a boost: "
+                     "output capacitor's) ripple current from its positive pad through the "
+                     "copper to the switching device, through the device and back through "
+                     "the ground's copper, vias and plane to the capacitor, and the loops "
+                     "through the inductor likewise. With the board model on the lines are "
+                     "streamlines of the current through the copper, each starting at an "
+                     "equal share of it, so where they bunch the current is densest; off, "
+                     "the loop is drawn straight between the pads. Cones point the way the "
+                     "current flows out of the capacitor; each loop has its own colour and "
+                     "the capacitor's name. These loops are the sources of the inductive "
+                     "coupling.")
+        tip_loops = art_tip(tip_loops, "loop_path", "path")
+        self.cmb_loops.setToolTip(tip_loops)
+        self.cmb_loops.currentIndexChanged.connect(self._loops_changed)
+        lbl = QLabel("Hot loops in 3D", self.loops_row)
+        lbl.setToolTip(tip_loops)
+        row.addWidget(lbl)
+        row.addWidget(self.cmb_loops, 1)
+        self.lbl_loops = QLabel(g_res)
+        self.lbl_loops.setWordWrap(True)
+        self.lbl_loops.setStyleSheet("color: #aaa;")
+        self.loops_row.setVisible(False)
+        self.lbl_loops.setVisible(False)
+        lr.addWidget(self.loops_row)
+        lr.addWidget(self.lbl_loops)
+        # The fields (#146): the loops' H field or the switch nodes' E field on a slice.
+        from kipi.noise.viz import FIELD_HEIGHT_MM, FIELD_KINDS
+        self.fields_row = QWidget(g_res)
+        row = QHBoxLayout(self.fields_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.cmb_field = QComboBox(self.fields_row)
+        for key, text in FIELD_KINDS:
+            self.cmb_field.addItem(text, key)
+        tip_fields = ("Show a field over the board in the 3D view: the H (magnetic) field "
+                      "of the current loops you tick below, the capacitors' hot loops and "
+                      "the inductor's stray field, or the E (electric) field of the switch "
+                      "nodes you tick, on a slice at the height set (over the top copper). "
+                      "Each point is coloured by its peak over a switching period, on a log "
+                      "scale three decades under the strongest, with arrows along the field "
+                      "there; tick several sources to see how their fields add up. Animate "
+                      "plays one switching period. The field is the alternating one, the "
+                      "part that couples; the ground plane mirrors the loops as it does in "
+                      "the coupling. Click a part or net in the 3D view to add its field.")
+        tip_fields = art_tip(tip_fields, "field_slice", "slice", "h", "e")
+        self.cmb_field.setToolTip(tip_fields)
+        self.cmb_field.currentIndexChanged.connect(self._field_kind_changed)
+        lbl = QLabel("Fields in 3D", self.fields_row)
+        lbl.setToolTip(tip_fields)
+        self.spin_field_h = _spin(0.1, 50, FIELD_HEIGHT_MM, 1, " mm", 0.5)
+        self.spin_field_h.setToolTip("The slice's height over the top copper")
+        self.spin_field_h.valueChanged.connect(self._fields_changed)
+        self.chk_animate = QCheckBox("Animate", self.fields_row)
+        self.chk_animate.setToolTip("Play the field over one switching period")
+        self.chk_animate.toggled.connect(self._fields_changed)
+        row.addWidget(lbl)
+        row.addWidget(self.cmb_field, 1)
+        row.addWidget(self.spin_field_h)
+        row.addWidget(self.chk_animate)
+        self.lst_fields = QListWidget(g_res)
+        self.lst_fields.setToolTip("Tick the sources whose field to show; their fields add up")
+        self.lst_fields.setMinimumHeight(40)
+        self.lst_fields.setMaximumHeight(90)
+        self.lst_fields.itemChanged.connect(self._fields_changed)
+        self.lbl_fields = QLabel(g_res)
+        self.lbl_fields.setWordWrap(True)
+        self.lbl_fields.setStyleSheet("color: #aaa;")
+        self.fields_row.setVisible(False)
+        self.lst_fields.setVisible(False)
+        self.lbl_fields.setVisible(False)
+        lr.addWidget(self.fields_row)
+        lr.addWidget(self.lst_fields)
+        lr.addWidget(self.lbl_fields)
         self.txt_notes = QLabel(g_res)
         self.txt_notes.setWordWrap(True)
         self.txt_notes.setTextFormat(Qt.RichText)
@@ -1051,11 +1159,15 @@ class NoisePanel(QWidget, PartSelection):
         tip(f, self.chk_board, "Solve the converter's rails and ground with AC mode's field "
                                "model: the switching currents divide among all the modelled "
                                "capacitors on the rails through the copper's own impedance, "
-                               "the rails' ripple is taken at the device's pins, and the "
-                               "ground noise between each victim's driver and receiver is "
-                               "its shared-ground (common-impedance) coupling. Untick for a "
+                               "the rails' ripple is taken at the device's pins, each "
+                               "capacitor's hot loop is traced through the copper (its "
+                               "pours, traces, vias and plane), which sets the loop's "
+                               "inductance and the inductive coupling, and the ground noise "
+                               "between each victim's driver and receiver is its "
+                               "shared-ground (common-impedance) coupling. Untick for a "
                                "quick solve: the capacitors then share the current by their "
-                               "own impedance and there is no shared-ground coupling.",
+                               "own impedance, the hot loops are drawn straight between the "
+                               "pads and there is no shared-ground coupling.",
             ("board_model", "split", "gnd"))
         tip(f, self.spin_fpd, "Copper (field) solves per decade of the harmonics; the board's "
                               "response in between is interpolated, as in AC mode's sweep",
@@ -1254,7 +1366,8 @@ class NoisePanel(QWidget, PartSelection):
         agg = self._aggressor()
         if agg is None:
             errors = (["Add a VRM of type Switcher (in DC or AC mode), then an aggressor "
-                       "for it"] if not smps_vrms(self.setup) else ["Add an aggressor"])
+                       "for it (isolated converters are not modeled here)"]
+                      if not smps_vrms(self.setup) else ["Add an aggressor"])
         else:
             errors = validate_noise(self.setup, self.snapshot, agg)
         self.lbl_errors.setText("\n".join(f"• {e}" for e in errors))
@@ -1326,6 +1439,8 @@ class NoisePanel(QWidget, PartSelection):
         reset_sort(self.tbl_victims)
         self.tbl_victims.setRowCount(0)
         self.coupling_row.setVisible(False)
+        self._fill_loops(None)
+        self._fill_fields(None)
         self._set_victim("")
 
     def show_error(self, message: str):
@@ -1370,6 +1485,8 @@ class NoisePanel(QWidget, PartSelection):
         lines += [f"⚠ {html.escape(v.name)}: {html.escape(w)}"
                   for v in getattr(result, "victims", []) for w in v.warnings]
         self.txt_notes.setText("<br>".join(lines))
+        self._fill_loops(result)
+        self._fill_fields(result)
         self._fill_victims(result)
         self.btn_report.setVisible(bool(getattr(result, "report_path", "")))
         self.report_option.set_available(True)
@@ -1420,6 +1537,171 @@ class NoisePanel(QWidget, PartSelection):
         from kipi.noise.viz import coupling_overlay
         return coupling_overlay(self.result, self._victim,
                                 self.cmb_coupling.currentData() or "off")
+
+    def _fill_loops(self, result):
+        """The hot loops menu for ``result`` (#178): off, all, or one capacitor's; the
+        choice made stays where the new result has it too."""
+        from kipi.noise.viz import LOOPS_OFF, loop_choices
+        choices = loop_choices(result)
+        keep = self.cmb_loops.currentData() or LOOPS_OFF
+        self.cmb_loops.blockSignals(True)
+        self.cmb_loops.clear()
+        for key, text in choices:
+            self.cmb_loops.addItem(text, key)
+        i = self.cmb_loops.findData(keep)
+        self.cmb_loops.setCurrentIndex(i if i >= 0 else 0)
+        self.cmb_loops.blockSignals(False)
+        self.loops_row.setVisible(bool(choices))
+        self._loops_changed()
+
+    def _loops_changed(self, *_):
+        ov = self.hot_loops_overlay()
+        self.lbl_loops.setText(ov.note if ov is not None else "")
+        self.lbl_loops.setVisible(ov is not None)
+        self.coupling_changed.emit()
+
+    def hot_loops_overlay(self):
+        """The hot loops to draw in the 3D view (#178), or None."""
+        from kipi.noise.viz import LOOPS_OFF, hot_loops_overlay
+        return hot_loops_overlay(self.result, self.cmb_loops.currentData() or LOOPS_OFF)
+
+    # ------------------------------------------------------------- fields (#146)
+    def _fill_fields(self, result):
+        """The field sources of ``result``: the row shows when it has any; the kind and
+        the ticks made stay where the new result has them too."""
+        from kipi.noise.viz import field_choices
+        has = result is not None and getattr(result, "fields", None) is not None \
+            and (field_choices(result, "H") or field_choices(result, "E"))
+        self.fields_row.setVisible(bool(has))
+        ticked = set(self._ticked(self.lst_fields)) if self.lst_fields.count() else None
+        self._fill_field_list(ticked)
+
+    def _fill_field_list(self, ticked=None):
+        """The current kind's sources, those in ``ticked`` on (None: all of them)."""
+        from kipi.noise.viz import field_choices
+        kind = self.cmb_field.currentData() or "off"
+        choices = field_choices(self.result, kind) if self.fields_row.isVisibleTo(self) else []
+        self.lst_fields.blockSignals(True)
+        self.lst_fields.clear()
+        for key, text in choices:
+            it = QListWidgetItem(text)
+            it.setData(Qt.UserRole, key)
+            it.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
+            on = ticked is None or key in ticked
+            it.setCheckState(Qt.Checked if on else Qt.Unchecked)
+            self.lst_fields.addItem(it)
+        self.lst_fields.blockSignals(False)
+        self.lst_fields.setVisible(bool(choices))
+        self._fields_changed()
+
+    def _field_kind_changed(self, *_):
+        self._fill_field_list()             # another kind: its own sources, all on
+
+    def _field_request(self):
+        """What the field view asks for: (key, field_overlay's arguments), or None (off)."""
+        kind = self.cmb_field.currentData() or "off"
+        if kind == "off" or not self.fields_row.isVisibleTo(self) or self.result is None:
+            return None
+        keys = tuple(self._ticked(self.lst_fields))
+        h, animate = self.spin_field_h.value(), self.chk_animate.isChecked()
+        return (id(self.result), kind, keys, h, animate), (self.result, kind, keys, h, animate)
+
+    def _fields_changed(self, *_):
+        """The field asked for changed. The solve has worked out every source's maps at
+        the default height (:class:`~kipi.noise.viz.FieldViews`), so a choice of sources
+        is only their sum, put together off the UI thread and kept; a new height's maps
+        take seconds. The one shown stays until the new one is ready."""
+        from kipi.noise.viz import field_views
+        req = self._field_request()
+        key = req[0] if req is not None else None
+        if key == self._field_key:
+            return
+        self._field_key = key
+        if req is None:
+            self._field_overlay = self._field_overlay_key = None
+            self.lbl_fields.setVisible(False)
+            self.coupling_changed.emit()
+            return
+        _, (result, kind, keys, h, animate) = req
+        views = field_views(result)
+        ov = views.cached(kind, keys, h, animate) if views is not None else None
+        if ov is not None:                  # shown before: at once
+            self._show_field(ov)
+            return
+        if views is not None and not views.ready(kind, h):
+            self.lbl_fields.setText("Working out the field…")
+            self.lbl_fields.setVisible(True)
+        self._start_field_task()
+
+    def _start_field_task(self):
+        """Work out the field asked for, unless one is under way: the latest request
+        follows it when it is done."""
+        from kipi.gui.worker import QtProgress, Task
+        from kipi.noise.viz import field_overlay
+        req = self._field_request()
+        if self._field_task is not None or req is None:
+            return
+        key, args = req
+        task = Task(lambda _progress: field_overlay(*args), QtProgress(), self)
+        task.done.connect(lambda ov, k=key: self._field_done(k, ov))
+        task.failed.connect(lambda tb, k=key: self._field_done(k, None, tb))
+        task.finished.connect(task.deleteLater)
+        self._field_task = task
+        task.start()
+
+    def _field_done(self, key, ov, error: str = ""):
+        self._field_task = None
+        if key != self._field_key:          # another was asked for meanwhile
+            if self._field_key is not None and self._field_overlay_key != self._field_key:
+                self._start_field_task()
+            return
+        self._show_field(ov, error)
+
+    def _show_field(self, ov, error: str = ""):
+        self._field_overlay = ov
+        self._field_overlay_key = self._field_key
+        lines = error.strip().splitlines()
+        note = ov.note if ov is not None else \
+            f"The field failed: {lines[-1]}" if lines else ""
+        self.lbl_fields.setText(note)
+        self.lbl_fields.setVisible(bool(note))
+        self.coupling_changed.emit()
+
+    def wait_fields(self, ms: int = 3000) -> None:
+        """Let a field under way finish (the window closing, or a test)."""
+        if self._field_task is not None:
+            self._field_task.wait(ms)
+
+    def fields_overlay(self):
+        """The field slice to draw in the 3D view (#146), or None: the last one worked
+        out, while the view is on."""
+        return self._field_overlay if self._field_key is not None else None
+
+    @staticmethod
+    def _ticked(lst: QListWidget) -> List[str]:
+        return [lst.item(i).data(Qt.UserRole) for i in range(lst.count())
+                if lst.item(i).checkState() == Qt.Checked]
+
+    def show_field_of(self, what: str) -> bool:
+        """Add the field of a part or net clicked in the 3D view (#146): a capacitor's or
+        inductor's loop (H) or a switch node (E); False when the result has none."""
+        from kipi.noise.viz import field_choices
+        if not self.fields_row.isVisibleTo(self) or self.result is None:
+            return False
+        for kind in ("H", "E"):
+            keys = {k for k, text in field_choices(self.result, kind)
+                    if text.split(" ")[0] == what}
+            if not keys:
+                continue
+            if (self.cmb_field.currentData() or "off") == kind:
+                keys |= set(self._ticked(self.lst_fields))      # adds to what is shown
+            else:
+                self.cmb_field.blockSignals(True)
+                self.cmb_field.setCurrentIndex(self.cmb_field.findData(kind))
+                self.cmb_field.blockSignals(False)
+            self._fill_field_list(keys)
+            return True
+        return False
 
     def _save_results(self):
         if not self._results or self.snapshot is None:

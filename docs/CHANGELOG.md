@@ -4,7 +4,138 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.2 (in development)
+## 0.9.3 (in development)
+
+### Added
+- **Series links with more than two pins, from their SPICE models** (#193). Importing a
+  SPICE model for a series link now also offers subcircuits with more than two pins,
+  such as a common-mode choke, a feedthrough capacitor or a filter. The dialog maps each
+  of the model's pins to one of the part's pins, and each becomes a side of the link (A,
+  B, C, …). Only an import makes such a link; the series link pane is otherwise
+  unchanged. Coupled inductors (`K` lines) are read, as choke models need them. DC takes
+  the model's conductance matrix between the sides. Each piece of the part that conducts
+  at DC joins only its own nets, so a choke's two windings keep the rail and the ground
+  apart. AC and Coupled Noise take the model's N-port admittance at every frequency,
+  terminated as ports from side A to each other side. With the model unticked, the link
+  is its typed values between side A and side B.
+- **SPICE models follow the copper temperature** (#196). Every imported SPICE model, for
+  capacitors and series links, is worked out at its part's temperature. That is the mean
+  of the copper's temperature under its pads: from the DC thermal co-simulation in DC,
+  and from the AC sweep's temperature setting in AC and Coupled Noise. Without a known
+  temperature, a model stays at SPICE's nominal 27 °C. `TEMP` in a model's values follows
+  it, and so do TC1 and TC2 on its resistors, inductors and capacitors. A diode's IS
+  (with XTI and EG), thermal voltage, BV (TBV1, TBV2) and RS (TRS1, TRS2) follow it too.
+  A two-pin link's DC resistance is the model's at that temperature.
+- **Field maps in the noise report.** The near-field section draws the H and E fields
+  5 mm over the board on the board's outline and its top side (pads, silkscreen and
+  reference designators). Each point shows its strongest harmonic on a log colour
+  scale, with the hotspots numbered as in their tables. A converter that covers only a
+  small part of its board also gets a zoomed view next to the whole board. The hotspots
+  are now the field's separate peaks, each at least 5 % of the strongest. Before, they
+  were the five strongest points at least 3 mm apart, which could all sit around the
+  same peak.
+- **Fields in 3D, the inductor's stray field, plane splits and a near-field report**
+  (#146), the Coupled Noise stretch goals. **Fields in 3D** under the results draws the
+  H field of the current loops you tick (each capacitor's hot loop and the inductor) or
+  the E field of the switch nodes on a slice over the board, each point's peak over a
+  switching period on a log colour scale with arrows along the field, or animated through
+  one period; several sources add up, and clicking a part or net in the 3D view adds its
+  field. The Aggressors pane's phase gains a **Winding axis** and a **Shielded inductor**
+  tickbox: the inductor's stray field is modelled as a loop of its turns at the body,
+  couples onto victims like the hot loops and shows in the field view; a shielded part's
+  is weaker and falls off sooner. A victim crossing a split in its reference plane (a
+  slot, a gap, a change to another plane) gets the return's detour inductance in series
+  there (Johnson's estimate), the loops' real current round the gap instead of a solid
+  plane's images, and a note saying where it crosses. The notes and the report also give
+  the near-field hotspots 5 mm over the board (the strongest H and E, where, at which
+  harmonic and from which source) and a first radiated estimate of the loops at 3 m
+  against the CISPR 32 class B limit: an indicator for the bare board's loops, not a
+  compliance prediction. The hot-loop visualizer of #146 was done by #178 and #187.
+- **Hot loops traced through the copper** (#187). With the board model on, Coupled Noise
+  no longer draws each capacitor's hot loop straight between its pads: a DC conduction
+  solve of one ampere on the rails' and ground's mesh, from the capacitor's rail pad to
+  the switch's pins and from its ground pins back to the capacitor (and through the
+  switch node for the loops through the inductor), gives where the current flows in the
+  pours, traces, vias and plane. That distribution is the loop: its inductance is the
+  weighted sum of its pieces' partial inductances, with each side of the nearest plane
+  mirrored in its own face and the plane's own spread current counted by what the plane
+  lets through at each frequency, and the same pieces are the sources of the inductive
+  coupling onto every victim and the scan. The board model's mesh is built once, before
+  the waveforms, and shared with its field solve. The results notes say whether a phase's
+  loop was traced or drawn straight (the board model off, or a capacitor the copper does
+  not join to the switch), and a victim near a detour in the copper now sees it.
+- **Hot loops in 3D** (#178). A new menu under Coupled Noise's results draws the capacitor
+  loops in the 3D view, all of them or one: each capacitor's ripple current from its
+  positive pad through the copper to the switching device and back through the ground's
+  copper, vias and plane, as streamlines of the traced current (equal shares each, so they
+  bunch where the current is densest), in a colour of its own with the capacitor's name
+  and cones pointing the current's way; the line under the menu gives each loop's
+  inductance. It works with or without victims. The coupling views no longer draw the
+  loops in magenta over the victim.
+- **Diodes from a SPICE model** (#191). **Import SPICE model…** in a series link now also
+  reads a diode: its `.model D(...)` card or a two-pin subcircuit with diodes in it, side A
+  its anode. Diodes use IS, N and RS, BV and IBV for reverse breakdown, and CJO, VJ, M, FC
+  and TT, at 27 °C. The DC solve finds each diode's drop at the current it carries, by
+  Newton's method on the diodes' I-V curves around the factorized copper solve (no
+  refactorizing). AC and Coupled Noise use its small-signal resistance and capacitance at
+  the current its side B loads draw. A reverse-biased diode with nothing else feeding its
+  load stops the solve with a message.
+- **Isolated converters** (#170): a new VRM type, **Isolated**, for a flyback, a forward
+  converter or an isolated module. It draws its input as a switcher does; its output ground
+  pins are the 0 V reference of the ground on its output side, and its input current
+  returns through its new **Input ground pins** on the input side's ground, so both grounds
+  are solved in DC. AC solves its rails against its output ground and counts its input as a
+  load on the rail feeding it. Coupled Noise does not model isolated converters.
+- **HyperLynx files** (#143). Standalone **Open…** reads a `.hyp` board file (KiCad writes
+  one with File > Export > Hyperlynx): its stackup and solder masks, pad stacks (round,
+  rectangular, oblong and oval pads, through and per layer), and each net's pins, vias
+  (through, blind and buried), tracks and arcs, copper polygons with their voids, and the
+  board outline with its cutouts. Inches and metres, and copper given as a thickness or a
+  weight, are read. Parts are placed in the middle of their pads, as the file does not say
+  where they sit. Checked against KiCad's export of an 8-layer board: its stackup, tracks,
+  vias, zone copper, outline and DC solve match the board file's.
+
+### Changed
+- **Diodes are biased by the DC solve.** An AC or Coupled Noise solve made after a DC
+  solve takes each diode link's small-signal model at the current the DC solve found
+  through it, the copper's own split, in place of the estimate from the loads beyond it
+  (which stays for solves without a DC result); the notes say which. Coupled Noise's board
+  model also derates its capacitors at the DC solve's voltage across each, as AC mode's
+  does, instead of the rails' nominal voltages.
+- **The series link's constant diode drop is gone** (#191): a diode is its SPICE model.
+  Setups saved with a forward drop load with a diode model of that drop and DCR.
+- **The Coupled Noise log says what it is doing** (#198). The board model's field solves
+  each get a line (`[k/n] solving f`, and how long the first took), as in AC mode, instead
+  of going to the log file only. The log also reports each hot loop traced through the
+  copper, the H and E fields' hotspot and map grids and their time, the scan every tenth
+  of its nets, and each victim's steps (cross-sections, mutual inductance, the line
+  solve). Long stretches with no output are gone.
+- **Plane crossings are only the aggressor's.** Coupled Noise now counts a victim's plane
+  crossing only where every plane involved is the aggressor's ground or one of its input
+  or output rails. A gap in another rail's pour, or a step from ground onto another rail's
+  plane, is no longer reported or added to the victim's line.
+- **Fields in 3D are worked out by the solve, once.** The last step of a Coupled Noise
+  solve, after the victims, works out every H and E source's field at the slice's default
+  height. Showing a field, ticking other sources or turning Animate on now only adds up
+  those fields, and a view seen before shows at once instead of being worked out again.
+  The view stays off until you pick a field. A new slice height is worked out the first
+  time you ask for it and kept. Results opened from a file work their fields out the
+  first time one is shown.
+
+### Fixed
+- **Waveform legend labels cut off** (#197). The tickbox list beside the Waveforms plot
+  kept a narrow width and cut its curve names short. It now widens to its longest name, up
+  to 360 px, and a name still too long for the room (on a small screen) is shortened with
+  an ellipsis, its whole text in the tooltip.
+- **KiPI froze when a field was shown in 3D** after a Coupled Noise solve. With the board
+  model on, each hot loop is traced through the copper in hundreds or thousands of
+  pieces, and the field of them all was worked out on the UI thread, twice for every
+  change (and again on unrelated changes such as picking a victim). The field is now
+  worked out once per change in the background, with "Working out the field…" under the
+  list meanwhile and the field shown before staying until the new one is ready; the
+  field sums themselves are about 2.5 times faster.
+
+## 0.9.2
 
 ### Added
 - **Package PI models** (#53). The AC setup's new **Packages** tab reads a device's package

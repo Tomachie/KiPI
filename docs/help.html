@@ -326,8 +326,8 @@ title bar, or drag it onto the main window, to dock it again.</p>
     board files with <b>Open…</b> and needs no KiCad. The title bar then ends in
     <i>(standalone)</i>, and the controls that need KiCad are hidden (see the
     <a href="#toolbar">toolbar</a>). Standalone opens KiCad board files
-    (<code>.kicad_pcb</code>), ODB++ jobs and KiPI snapshots
-    (<code>.kipi.json.gz</code>).</li>
+    (<code>.kicad_pcb</code>), ODB++ jobs, HyperLynx files (<code>.hyp</code>) and KiPI
+    snapshots (<code>.kipi.json.gz</code>).</li>
   <li><b>KiCad board files.</b> A <code>.kicad_pcb</code> from KiCad 7 to 10 reads the
     same as the plugin reads it from KiCad, so a board set up in the plugin opens standalone
     with its setup. Net classes come from the <code>.kicad_pro</code> next to it. KiPI uses
@@ -342,6 +342,12 @@ title bar, or drag it onto the main window, to dock it again.</p>
     tool asks: KiCad's default of 2 rounds coordinates to 10&nbsp;µm. What the job leaves
     out (copper drawings' nets, a dielectric's thickness) is listed under
     <b>Placeholders</b>.</li>
+  <li><b>HyperLynx.</b> Open a <code>.hyp</code> file (KiCad writes one with <i>File &rarr;
+    Export &rarr; Hyperlynx</i>). KiPI reads its stackup, pad stacks and each net's pins,
+    vias, tracks and copper polygons as the file gives them. The file does not say where a
+    part sits or how it is turned, so each part is placed in the middle of its pads (listed
+    under <b>Placeholders</b>); KiCad's export also leaves out pads with no net. The setup
+    is found by the file's name, as for an ODB++ job.</li>
   <li><b>Standalone setup.</b> Start standalone KiPI with its launcher:
     double-click <code>kipi_launcher.pyw</code> (Windows) or run <code>python
     kipi_launcher.py</code>. The first start installs KiPI's packages into an environment
@@ -405,8 +411,8 @@ of decimals, plus more when a small typed value needs them.</p>
     saved with <b>Save snapshot…</b>. KiCad does not need to be running.</td></tr>
   <tr><td><b>Open…</b><br><small>standalone</small></td><td class="wrap">Opens a board file:
     a KiCad board (<code>.kicad_pcb</code>), an ODB++ job (<code>.zip</code>,
-    <code>.tgz</code>, or its <code>matrix/matrix</code> file) or a KiPI snapshot
-    (<code>.kipi.json.gz</code>).
+    <code>.tgz</code>, or its <code>matrix/matrix</code> file), a HyperLynx file
+    (<code>.hyp</code>) or a KiPI snapshot (<code>.kipi.json.gz</code>).
     Its saved setup comes with it, as with <b>Load from KiCad</b>. The arrow beside it lists
     the boards opened lately.</td></tr>
   <tr><td><b>Reload</b><br><small>standalone</small></td><td class="wrap">Reads the open board
@@ -790,6 +796,15 @@ output current, efficiency or quiescent current) is applied as a load upstream. 
 <p>Voltages are measured against the source's ground (0 V). If ground pins are given, the
 ground return is solved too and a load's ground rises above 0 V. The figure to compare with
 the VRM's regulated voltage is the load's <b>effective voltage</b>: supply minus ground at the load.</p>
+<h4 id="vrm-isolated">Isolated converters</h4>
+<p>A VRM of type <b>Isolated</b> (a flyback, a forward converter or an isolated module) is a
+switcher whose output side has a ground of its own. Its <b>Output ground pins</b> hold that
+ground at 0 V: they are its reference, as a source's ground pins are on the input side, and
+the loads on its rails return their current to them. Its input current returns through its
+<b>Input ground pins</b>, on the ground of the side feeding it. The two grounds must not be
+joined by a DC connection; a converter whose grounds are tied is a switcher. An isolated
+converter has one phase. In AC mode its rails are solved against its output ground, and
+Coupled Noise does not model isolated converters as aggressors.</p>
 <h4>Drop and boost</h4>
 <p>A <b>drop</b> is a pin below the VRM's regulated voltage. A <b>boost</b> is a pin above it, which
 happens with remote sense: the VRM raises its output to hold a sense point further down the
@@ -884,12 +899,15 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
   <tr><td>Name</td><td class="wrap">Used in the results tables.</td></tr>
   <tr><td>Type</td><td class="wrap"><b>Source</b>: an ideal supply with no input (connector,
     bench supply, battery). <b>LDO</b>: I<sub>in</sub> = I<sub>out</sub> + I<sub>q</sub>.
-    <b>Switcher</b>: P<sub>in</sub> = P<sub>out</sub> / efficiency.</td></tr>
+    <b>Switcher</b>: P<sub>in</sub> = P<sub>out</sub> / efficiency. <b>Isolated</b>: a
+    switcher whose output side has its own ground (see <a href="#vrm-isolated">isolated
+    converters</a>).</td></tr>
   <tr><td>Target voltage</td><td class="wrap">The rail's target: the VRM regulates to it at
     its output (or sense) pins, and loads are judged against it. Read from the net name when
     you pick the output net (see <a href="#autofill">pre-filled fields</a>).</td></tr>
-  <tr><td>Efficiency</td><td class="wrap">Switcher only.</td></tr>
-  <tr><td>Quiescent</td><td class="wrap">LDO and switcher: extra input current.</td></tr>
+  <tr><td>Efficiency</td><td class="wrap">Switcher and isolated only.</td></tr>
+  <tr><td>Quiescent</td><td class="wrap">LDO, switcher and isolated: extra input
+    current.</td></tr>
   <tr><td>Output current limit</td><td class="wrap">Optional. The VRM row shows PASS if its total
     output current (all phases) is at most this.</td></tr>
   <tr><td>Load line</td><td class="wrap">Optional, DC only (adaptive voltage positioning). The
@@ -909,7 +927,7 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
     solved input is outside its range (or an LDO below its dropout) cannot hold its output, and every load it
     feeds, directly or downstream, is marked <span class="fail">VRM OUT OF
     REGULATION</span>.</td></tr>
-  <tr><td>DC accuracy</td><td class="wrap">LDO and switcher only; used by the AC
+  <tr><td>DC accuracy</td><td class="wrap">LDO, switcher and isolated only; used by the AC
     <a href="#ac-calc">target calculator</a>. The output's DC error (DC accuracy or DC
     tolerance) from the datasheet: the regulator's reference accuracy, the feedback resistor
     tolerances, leakage into the FB pin, and line and load regulation. Min and max
@@ -926,11 +944,16 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
     <a href="#wf-multiphase">the multi-phase workflow</a>.</td></tr>
   <tr><td>Output pins</td><td class="wrap">Where it drives the rail: the output pin, or for a
     switcher usually the inductor's output side.</td></tr>
-  <tr><td>Input pins</td><td class="wrap">LDO and switcher: where it draws its input. This
+  <tr><td>Input pins</td><td class="wrap">LDO, switcher and isolated: where it draws its
+    input. This
     links it into the power tree. Filled in from the output part when it has one other
     rail.</td></tr>
   <tr><td>Ground pins</td><td class="wrap">Optional: solve the ground return as well. Filled in
-    with the output part's ground pins.</td></tr>
+    with the output part's ground pins. On an isolated converter, <b>Output ground pins</b>:
+    the output side's ground, which they hold at 0 V.</td></tr>
+  <tr><td>Input ground pins</td><td class="wrap">Isolated only, optional: the input side's
+    ground pins, where its input current returns to the VRM feeding it. Filled in with the
+    output part's pins on its other ground net.</td></tr>
   <tr><td>Sense pins</td><td class="wrap">Optional remote sense (positive).</td></tr>
   <tr><td>Ground sense pins</td><td class="wrap">Optional negative remote sense on the ground net
     (needs ground pins).</td></tr>
@@ -1055,12 +1078,27 @@ frequency, so a bead keeps its resistive peak. The DCR and ESL are then fitted t
 locked: the DCR is its resistance at DC (which the DC solve uses), and the ESL its
 inductance at 100 kHz, low on a bead's inductive slope. Untick to use the values as you
 type them; the model is kept.</p>
+<p><b>A diode</b> is imported the same way: pick its <code>.model … D(…)</code> card, or a
+two-pin subcircuit with diodes in it, and make side A its anode (the model's first pin).
+The dialog shows its forward voltage at 1 mA, 100 mA and 1 A. The DC solve takes the drop
+from the model at the current the diode carries, so the drop rises with the load. The AC and
+Coupled Noise solves use its small-signal resistance (n·V<sub>T</sub>/I + RS) and its
+junction and diffusion capacitance at the current the last DC solve found through it, or,
+without a DC solve, at an estimate: what the loads and VRM inputs on side B's nets draw at
+nominal voltages (nothing, so the diode blocks, when a VRM drives side B). The solve's
+notes say which. The DCR and ESL shown are its slope resistance and inductance at 1 A. A
+diode that is reverse biased with a load beyond it and no other supply has no DC solution,
+and says so. The junction is read at 27 °C. Setups from 0.9.2 with a constant forward drop
+load with a diode model of that drop.</p>
 <p><b>What KiPI reads from a SPICE file.</b> A two-pin <code>.SUBCKT</code> of resistors,
-inductors and capacitors, which is how makers model capacitors, resistors and ferrite beads.
+inductors, capacitors and diodes, which is how makers model capacitors, resistors, ferrite
+beads and diodes, or a diode's <code>.model D</code> card. Diodes use IS, N, RS, BV, IBV,
+CJO, VJ, M, FC, TT and an area factor; LTspice's piecewise-linear diode (Ron, Vfwd) is
+not read.
 It may call other subcircuits in the same file, use <code>.param</code> values and
 arithmetic, and use LTspice's <code>Rser</code>, <code>Lser</code>, <code>Rpar</code> and
-<code>Cpar</code>. 0 V sources (current probes) are read as shorts. Anything else (diodes,
-transistors, controlled or behavioral sources, coupled inductors) is refused with the
+<code>Cpar</code>. 0 V sources (current probes) are read as shorts. Anything else
+(transistors, controlled or behavioral sources, coupled inductors) is refused with the
 element named, and <code>.include</code> lines are not followed. The file is only read,
 never run. Models of switching regulators and other active parts are not for this; give a
 VRM or load its own values instead.</p>
@@ -1911,19 +1949,30 @@ the victim's own loop picking up the field, which the inductive path counts).</p
 with AC mode's field model: the switching currents divide among all the capacitors on the
 rails through the copper's own impedance, the rails' ripple is taken at the switching
 device's pins, and the ground difference between each victim's ends gives its shared-
-ground coupling. It is the slow part of a solve (comparable to an AC solve of the rails);
-untick it in Settings for a quick look.</p>
+ground coupling. Each capacitor's hot loop is traced through the same copper (below). It
+is the slow part of a solve (comparable to an AC solve of the rails); untick it in
+Settings for a quick look.</p>
 <p>An aggressor is one of the setup's VRMs of type <b>Switcher</b> (made in DC or AC mode).
 Its input rail and regulated voltage give the input and output voltages, and from them the
 topology: an input above the output is a <b>buck</b>, below it a <b>boost</b>. Its output
 current is the DC setup's loads on its output rail, unless you enter one.</p>
 <p>The <b>hot loop</b> is the path the switching current takes on every edge: in a buck,
 from the input capacitors through the high-side switch and back from the low-side switch to
-the capacitors' ground; in a boost, the same through the output capacitors. KiPI draws it
-between the pads you name, as wide as the copper along it, and computes its inductance from
-partial inductances, with the plane under it taking image currents. With the switch node's
+the capacitors' ground; in a boost, the same through the output capacitors. With the board
+model on, KiPI traces each capacitor's loop through the copper itself: a conduction solve
+on the rails' and ground's mesh of one ampere from the capacitor's rail pad to the switch's
+pins, and another from its ground pins back to the capacitor, give where the current flows
+in the rail's pours and traces and in the ground's copper, vias and plane. That current
+distribution, cell by cell and via by via, is the loop: its inductance comes from the
+partial inductances of every piece carrying its share of the current, with the plane under
+the device taking image currents, and the same pieces are the sources of the inductive
+coupling onto victims. (The DC distribution is the path of least resistance; at the ringing
+frequency the return in a solid plane gathers under the forward path, which the plane's
+images carry, and the plane's own spread current counts only by what the plane lets through
+at each frequency.) With the board model off, the loop is drawn straight between the pads
+you name, as wide as the copper along it, and the notes say so. With the switch node's
 capacitance to ground (the switch's Coss plus the switch-node copper's capacitance to the
-neighbouring planes) it sets the <b>ringing</b> on every edge, at
+neighbouring planes) the loop's inductance sets the <b>ringing</b> on every edge, at
 f = 1 / (2π√(L·C)). The ringing's current flows round the hot loop too, so the input
 capacitors of a buck (the output capacitors of a boost) carry it, and it couples onto
 victims through their loops.</p>
@@ -1937,6 +1986,30 @@ which overshoots once and settles. So a buck rings on its rising edge and a boos
 falling one. At light load the current may be too small to carry the node across within
 the controller's dead time; the next switch then turns on part way and finishes the edge
 hard. The results notes say which edge is which.</p>
+<p>The <b>inductor</b> is a source too: its winding is a magnetic dipole along its axis,
+and an unshielded (open drum) part's field reaches the board around it. KiPI stands the
+winding in as a loop of its turns at the body, normal to the winding axis you set, with
+the turns from the inductance and the body's size, carrying the inductor current; it
+couples onto victims like the hot loops. A shielded (or moulded) part keeps most of its
+flux in its shield: its equivalent loop is smaller and carries a tenth of the turns, so
+its field is weaker and falls off sooner. The winding's sense is not on the board, so the
+sign of its coupling is taken positive.</p>
+<p>A victim that crosses a <b>split in its reference plane</b>, a slot, a gap between two
+planes, the edge of a pour, or a change from one plane to another, has its return current
+detour round the split. Each crossing is found where two joined pieces of the victim have
+different copper under them, and the detour's inductance (Johnson's estimate for a trace
+crossing a slot, 0.197 nH/mm × D × ln(D/w), D the detour and w the trace width; through
+the nearest capacitor joining the two nets where the reference changes plane) goes in
+series with the trace there. The cross-sections already give a piece over a gap the
+capacitance and inductance of the far copper, and the inductive coupling counts the
+loops' real current round the gap rather than a solid plane's images. The results say
+where each victim crosses and what the detour adds.</p>
+<p>The <b>fields</b> the sources make are kept for the 3D view and for a near-field
+report: the H field of every current loop by Biot–Savart from the same elements the
+inductive coupling uses, with the plane's images (and its own current, by what the plane
+mirrors at each frequency), and the E field of each switch node from its copper's charge
+(its capacitance to the nearest plane, patch by patch) and that charge's image. See
+<b>Fields in 3D</b> under the results.</p>
 <p>The waveforms are exact Fourier series of piecewise-linear shapes (trapezoids and
 triangles) up to a highest frequency set by the edges and the ringing, so nothing is
 time-stepped and a solve takes well under a second.</p>
@@ -1977,6 +2050,11 @@ and the rail, its value, the switch node, and the capacitors from each rail to g
 given to the nearest phase. Each phase has:</p>
 <ul>
   <li><b>Inductor</b>, <b>Inductance</b> and <b>DCR</b>.</li>
+  <li><b>Winding axis</b> and <b>Shielded inductor</b>: how the inductor's winding sits
+    (vertical for a flat SMD drum or moulded part, along or across the part for one wound
+    on a rod lying flat) and whether a shield closes its flux, for its stray field (see
+    <a href="#noise-concepts">the concepts</a>). An unshielded part's whole winding
+    reaches the board around it; a shielded part's field is weaker and falls off sooner.</li>
   <li><b>Switch node</b>: the net between the switching device and the inductor.</li>
   <li><b>High-side pins</b> and <b>Low-side pins</b> (<a href="#pin-picker">pin pickers</a>):
     the switching device's pins on the rail its hot loop is fed from (VIN for a buck, the
@@ -2048,8 +2126,10 @@ and the results say so.</p>
     cross-section of the copper around it (default 0.5 mm).</li>
   <li><b>Coupling window</b>: how far either side of a victim trace copper is taken into its
     cross-section (default 3 mm). Switch-node copper further away does not couple.</li>
-  <li><b>Board model</b>: solve the rails and ground's copper (above). Off, the capacitors
-    share the current by their own impedances and there is no shared-ground coupling.</li>
+  <li><b>Board model</b>: solve the rails and ground's copper (above), and trace the hot
+    loops through it. Off, the capacitors share the current by their own impedances, the
+    hot loops are drawn straight between the pads and there is no shared-ground
+    coupling.</li>
   <li><b>Field solves per decade</b>: copper solves per decade of the harmonics; the board's
     response in between is interpolated (default 10).</li>
   <li><b>Scan radius</b>: the scan looks at signal nets with a trace this close to the
@@ -2127,9 +2207,38 @@ two against the smaller margin.</p>
 victim's peak noise couples in: <b>Superposition</b>, or one mechanism. Each piece of its
 traces is colored by its share of the receiver's peak, red adding to it and blue taking
 from it; the shares add up exactly to the peak, so the brightest pieces are the ones to
-move. The common-ground share is a dot at the driver, and the capacitor loops that induce
-the inductive noise are drawn in magenta. The line under the menu gives each mechanism's
-share. Choose <b>Off</b> to go back to the board.</p>
+move. The common-ground share is a dot at the driver. The line under the menu gives each
+mechanism's share. Choose <b>Off</b> to go back to the board.</p>
+<p><b>Hot loops in 3D</b>, below it, draws the capacitor loops themselves: <b>All
+capacitors</b>, or one. Each is the capacitor's ripple current from its positive pad
+through the copper to the switching device, through the device, and back through the
+ground's copper, vias and plane to the capacitor (the loops through the inductor
+likewise), in a colour of its own with the capacitor's name at the capacitor, and cones
+along it pointing the way the current flows. With the board model on, the lines are
+streamlines of the current the solve traced through the copper, each starting at an equal
+share of it: where they bunch the current is densest, and where they dive down a via and
+run in the plane that is where the return really goes. With the board model off the loop
+is drawn straight between the pads. The line under the menu gives each loop's inductance
+and whether it was traced. These loops are the sources of the inductive noise, so a victim
+close to one of them, on the same side of the plane, is the one to move; the view works
+whether or not any victim is solved.</p>
+<p><b>Fields in 3D</b>, below the hot loops, draws a field on a slice over the board: the
+<b>H field</b> of the current loops you tick in the list (each capacitor's hot loop and
+the inductor's stray field) or the <b>E field</b> of the switch nodes, at the height
+entered over the top copper. Each point is coloured by its peak over a switching period,
+on a log scale three decades under the strongest, with arrows along the field there; tick
+several sources to see how their fields add up, and tick <b>Animate</b> to play the field
+through one switching period. Clicking a part or net in the 3D view adds its field to the
+view (and switches it to H or E as the part needs). The field shown is the alternating
+one, the part that couples: a plane under a loop mirrors it as it does in the coupling,
+and the DC part of the inductor's current is left out.</p>
+<p>The notes and the report also give the <b>near field</b> 5 mm over the board: where
+the H and E fields are strongest, at which harmonic and from which source, as a
+near-field probe would find them, and a first <b>radiated estimate</b> at 3 m: each loop,
+with its image in the plane, as a magnetic dipole, the loops added as phasors, against
+the CISPR 32 class B limit. It counts the bare board's loops only: cables, common-mode
+currents and an enclosure are not modelled, so it is an indicator of which loop and
+harmonic would radiate most, not a compliance prediction.</p>
 <p>The mechanisms answer different fixes. <b>Capacitive</b> noise comes from the switch
 node's dV/dt: keep victims away from the switch node's copper (or behind a plane), and
 drive them harder. <b>Inductive</b> noise comes from the hot loop's dI/dt: make the loop
@@ -2398,6 +2507,20 @@ If the running programs cannot be listed, KiPI carries on.</p></div>
   <li><b>A copper drawing carries no current:</b> some exporters (KiCad among them) do not
     say which net drawn copper is on. KiPI gives it the net of the copper it touches; on
     its own it has none.</li>
+</ul></div>
+</details>
+<details id="ts-hyp">
+<summary>A HyperLynx file does not open, or opens with parts missing</summary>
+<div class="body"><ul>
+  <li><b>"not a HyperLynx board file":</b> the file has no <code>BOARD</code>,
+    <code>STACKUP</code> or <code>NET</code> records. Export it again as a board.</li>
+  <li><b>"ends inside a block":</b> the file was cut short, e.g. copied while it was still
+    being written. Export it again.</li>
+  <li><b>A part is missing or off its place:</b> a part with no pads on any net is not in
+    the file, and a part is drawn in the middle of its pads because the file does not say
+    where it sits.</li>
+  <li><b>"pad stacks are used but not in the file":</b> those pads are read with no copper.
+    Export the file again from the design tool.</li>
 </ul></div>
 </details>
 <details>

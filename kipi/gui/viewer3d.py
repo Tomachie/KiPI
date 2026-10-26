@@ -54,11 +54,19 @@ _PI_BLINKS = 6
 _PI_LABEL_HALF_H_PX = 9
 _PI_DOT_PICK_PX = 8
 # Coupled Noise's coupling overlay (#152): the victim's traces as tubes this many pixels
-# wide, the common-ground dot, and the capacitor loops thinner, in the loops' color.
+# wide, and the common-ground dot.
 _COUPLING_LINE_PX = 7
 _COUPLING_DOT_PX = 18
-_COUPLING_LOOP_PX = 3
-_COUPLING_LOOP_COLOR = "#ff4dff"
+# Its hot loops (#178): each capacitor's current path as a tube, with cones along it the
+# way the current flows, and the capacitor's name at the capacitor.
+_HOT_LOOP_PX = 4
+_HOT_LOOP_CONE_MM = (0.9, 0.3)                  # length, radius
+# Coupled Noise's field slice (#146): its opacity, the arrows' spacing (grid points) and
+# length as a share of that spacing, and their colour.
+_FIELD_OPACITY = 0.85
+_FIELD_ARROW_EVERY = 5
+_FIELD_ARROW_SHARE = 0.7
+_FIELD_ARROW_COLOR = (0.95, 0.95, 0.95)
 
 
 def _bar_format(lo: float, hi: float, log_scale: bool) -> str:
@@ -335,6 +343,17 @@ class Viewer3D(QWidget):
         self._coupling_actors: List[object] = []
         self._coupling_bar: Optional[str] = None
         self._coupling_title = None
+        self._hot_loops = None              # Coupled Noise's hot loops (#178), likewise
+        self._hot_loop_actors: List[object] = []
+        self._fields = None                 # Coupled Noise's field slice (#146), likewise
+        self._field_actors: List[object] = []
+        self._field_bar: Optional[str] = None
+        self._field_title = None
+        self._field_mesh = None
+        self._field_arrows = None           # (points, directions) the arrows sit at
+        self._field_frame = 0
+        self._field_timer = QTimer(self)
+        self._field_timer.timeout.connect(self._field_step)
         # Clicks are handled here rather than with pyvista's point picking, so a click can
         # also select a via by its on-screen distance (vias are only a few pixels wide).
         self._picker = vtkCellPicker()
@@ -363,6 +382,8 @@ class Viewer3D(QWidget):
         self._set_result(None)
         self._remove_coupling_actors()
         self._coupling = None
+        self._remove_hot_loop_actors()
+        self._hot_loops = None
         p.clear_actors()
         self._remove_pi_actors()
         self._pi_markers = []
@@ -590,11 +611,6 @@ class Viewer3D(QWidget):
                 show_scalar_bar=not shown_bar, scalar_bar_args=bar, name="coupling:common",
                 pickable=False, reset_camera=False, render=False))
             shown_bar = True
-        if ov.loops:
-            self._coupling_actors.append(p.add_mesh(
-                lines(np.concatenate(ov.loops)), color=_COUPLING_LOOP_COLOR,
-                line_width=_COUPLING_LOOP_PX, render_lines_as_tubes=True, lighting=False,
-                name="coupling:loops", pickable=False, reset_camera=False, render=False))
         for a in self._coupling_actors:
             a.SetScale(1.0, 1.0, self._zscale)
         if shown_bar and ov.title in p.scalar_bars:
@@ -606,6 +622,166 @@ class Viewer3D(QWidget):
             self._coupling_bar = ov.title
             self._coupling_title = _bar_title_actor(ov.title)
             p.renderer.AddViewProp(self._coupling_title)
+
+    # ------------------------------------------------------- hot loops (#178)
+    def set_hot_loops(self, overlay):
+        """Draw Coupled Noise's hot loops over the copper: a
+        :class:`kipi.noise.viz.LoopOverlay`, or None to remove them."""
+        self._hot_loops = overlay
+        self._remove_hot_loop_actors()
+        if overlay is not None:
+            self._draw_hot_loops(overlay)
+        self._apply_visibility()
+
+    @property
+    def hot_loops(self):
+        return self._hot_loops
+
+    def _remove_hot_loop_actors(self):
+        p = self.plotter
+        for a in self._hot_loop_actors:
+            if isinstance(a, vtkActor2D):
+                p.renderer.RemoveViewProp(a)
+            else:
+                p.remove_actor(a, render=False)
+        self._hot_loop_actors = []
+
+    def _draw_hot_loops(self, ov):
+        p = self.plotter
+        flip = np.array([1.0, -1.0, 1.0])
+        length, radius = _HOT_LOOP_CONE_MM
+        cone = pv.Cone(center=(length / 2, 0, 0), direction=(1, 0, 0), height=length,
+                       radius=radius, resolution=12)
+        for i, loop in enumerate(ov.loops):
+            pts = loop.segments.reshape(-1, 3) * flip
+            n = len(loop.segments)
+            cells = np.column_stack([np.full(n, 2), 2 * np.arange(n), 2 * np.arange(n) + 1])
+            mesh = pv.PolyData(pts, lines=cells.ravel(), deep=True)
+            self._hot_loop_actors.append(p.add_mesh(
+                mesh, color=loop.color, line_width=_HOT_LOOP_PX, render_lines_as_tubes=True,
+                lighting=False, name=f"hotloop:{i}", pickable=False, reset_camera=False,
+                render=False))
+            if len(loop.arrow_xyz):
+                heads = pv.PolyData(loop.arrow_xyz * flip, deep=True)
+                heads["dir"] = loop.arrow_dir * flip
+                glyphs = heads.glyph(orient="dir", scale=False, factor=1.0, geom=cone)
+                self._hot_loop_actors.append(p.add_mesh(
+                    glyphs, color=loop.color, lighting=False, name=f"hotloop:{i}:arrows",
+                    pickable=False, reset_camera=False, render=False))
+            label = loop.label_xyz * flip
+            label[2] = label[2] * self._zscale + _PI_LABEL_LIFT_MM
+            actor = _pi_labels_actor(label[None, :], [loop.label], pv.Color(loop.color).float_rgb)
+            p.renderer.AddViewProp(actor)
+            self._hot_loop_actors.append(actor)
+        for a in self._hot_loop_actors:
+            if not isinstance(a, vtkActor2D):
+                a.SetScale(1.0, 1.0, self._zscale)
+
+    # ------------------------------------------------------- fields (#146)
+    def set_fields(self, overlay):
+        """Draw a Coupled Noise field slice over the copper: a
+        :class:`kipi.noise.viz.FieldOverlay`, or None to remove it. With frames, the
+        slice animates over one switching period."""
+        self._fields = overlay
+        self._remove_field_actors()
+        if overlay is not None:
+            self._draw_fields(overlay)
+        self._apply_visibility()
+
+    @property
+    def fields(self):
+        return self._fields
+
+    def _remove_field_actors(self):
+        p = self.plotter
+        self._field_timer.stop()
+        for a in self._field_actors:
+            p.remove_actor(a, render=False)
+        self._field_actors = []
+        self._field_mesh = self._field_arrows = None
+        if self._field_bar is not None:
+            try:
+                p.remove_scalar_bar(self._field_bar, render=False)
+            except (KeyError, ValueError, StopIteration):
+                pass
+            self._field_bar = None
+        if self._field_title is not None:
+            p.renderer.RemoveViewProp(self._field_title)
+            self._field_title = None
+
+    def _field_arrow_mesh(self, vectors: np.ndarray) -> pv.PolyData:
+        """Arrows along ``vectors`` (P, 3) at every few grid points, of one length."""
+        ov = self._fields
+        idx = self._field_arrow_index
+        pts = ov.points[idx] * np.array([1.0, -1.0, 1.0])
+        v = np.asarray(vectors, float)[idx] * np.array([1.0, -1.0, 1.0])
+        n = np.linalg.norm(v, axis=1)
+        d = np.where(n[:, None] > 0, v / np.maximum(n, 1e-30)[:, None], 0.0)
+        heads = pv.PolyData(pts, deep=True)
+        heads["dir"] = d
+        length = _FIELD_ARROW_SHARE * _FIELD_ARROW_EVERY * self._field_cell
+        return heads.glyph(orient="dir", scale=False, factor=length,
+                           geom=pv.Arrow(tip_length=0.3, tip_radius=0.12, shaft_radius=0.04))
+
+    def _draw_fields(self, ov):
+        p = self.plotter
+        lo, hi = ov.limits
+        bar = _bar_args(ov.title, _bar_format(lo, hi, True))
+        pts = ov.points * np.array([1.0, -1.0, 1.0])
+        nx, ny = ov.nx, ov.ny
+        i = np.arange(ny - 1)[:, None] * nx + np.arange(nx - 1)[None, :]
+        quads = np.column_stack([np.full(i.size, 4), i.ravel(), i.ravel() + 1,
+                                 i.ravel() + nx + 1, i.ravel() + nx])
+        mesh = pv.PolyData(pts, faces=quads.ravel(), deep=True)
+        mesh.point_data["field"] = np.maximum(ov.magnitude, lo)
+        self._field_mesh = mesh
+        self._field_cell = float(np.linalg.norm(ov.points[1] - ov.points[0])) if nx > 1 else 1.0
+        every = _FIELD_ARROW_EVERY
+        rows = np.arange(every // 2, ny, every)
+        cols = np.arange(every // 2, nx, every)
+        self._field_arrow_index = (rows[:, None] * nx + cols[None, :]).ravel()
+        self._field_actors.append(p.add_mesh(
+            mesh, scalars="field", cmap="inferno", clim=(lo, hi), log_scale=True,
+            opacity=_FIELD_OPACITY, lighting=False, show_scalar_bar=True, scalar_bar_args=bar,
+            name="field:slice", pickable=False, reset_camera=False, render=False))
+        self._field_mesh = self._field_actors[0].mapper.dataset     # what the mapper draws
+        self._field_actors.append(p.add_mesh(
+            self._field_arrow_mesh(ov.vectors), color=_FIELD_ARROW_COLOR, lighting=False,
+            name="field:arrows", pickable=False, reset_camera=False, render=False))
+        for a in self._field_actors:
+            a.SetScale(1.0, 1.0, self._zscale)
+        if ov.title in p.scalar_bars:
+            b = p.scalar_bars[ov.title]
+            b.SetTextPositionToPrecedeScalarBar()
+            b.SetVerticalTitleSeparation(12)
+            b.SetTextPad(-2)
+            b.GetTitleTextProperty().SetOpacity(0.0)
+            self._field_bar = ov.title
+            self._field_title = _bar_title_actor(ov.title)
+            p.renderer.AddViewProp(self._field_title)
+        if ov.frames is not None and len(ov.frames):
+            self._field_frame = 0
+            self._field_timer.setInterval(max(int(ov.frame_ms), 10))
+            self._field_timer.start()
+
+    def _field_step(self):
+        """The next frame of the field animation."""
+        ov = self._fields
+        if ov is None or ov.frames is None or self._field_mesh is None:
+            self._field_timer.stop()
+            return
+        self._field_frame = (self._field_frame + 1) % len(ov.frames)
+        f = np.asarray(ov.frames[self._field_frame], float)
+        self._field_mesh.point_data["field"][:] = np.maximum(np.linalg.norm(f, axis=1),
+                                                             ov.limits[0])
+        self._field_mesh.Modified()
+        if len(self._field_actors) > 1:
+            self._field_actors[1].GetMapper().SetInputData(self._field_arrow_mesh(f))
+        self.plotter.render()
+
+    @property
+    def field_frame(self) -> int:
+        return self._field_frame
 
     @property
     def pi_marker_names(self) -> List[str]:
@@ -818,10 +994,18 @@ class Viewer3D(QWidget):
             a.SetVisibility(self._show_pi and not showing_result)
         for a in self._coupling_actors:
             a.SetVisibility(not showing_result)
+        for a in self._hot_loop_actors:
+            a.SetVisibility(not showing_result)
+        for a in self._field_actors:
+            a.SetVisibility(not showing_result)
         if self._coupling_bar in self.plotter.scalar_bars:
             self.plotter.scalar_bars[self._coupling_bar].SetVisibility(not showing_result)
         if self._coupling_title is not None:
             self._coupling_title.SetVisibility(not showing_result)
+        if self._field_bar in self.plotter.scalar_bars:
+            self.plotter.scalar_bars[self._field_bar].SetVisibility(not showing_result)
+        if self._field_title is not None:
+            self._field_title.SetVisibility(not showing_result)
         self.plotter.render()
 
     def set_zscale(self, s: float):
@@ -840,6 +1024,11 @@ class Viewer3D(QWidget):
             a.SetScale(1.0, 1.0, self._zscale)
         for a in self._coupling_actors:
             a.SetScale(1.0, 1.0, self._zscale)
+        for a in self._field_actors:
+            a.SetScale(1.0, 1.0, self._zscale)
+        if self._hot_loops is not None:       # its labels sit at a height in view units
+            self._remove_hot_loop_actors()
+            self._draw_hot_loops(self._hot_loops)
         self._place_models()
         if self._pi_markers:
             self._draw_pi_markers()
