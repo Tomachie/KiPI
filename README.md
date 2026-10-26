@@ -207,8 +207,10 @@ time (with the Python DLLs it needs beside it); if that copy cannot start, KiPI 
 KiPI solves each rail with SciPy's single-threaded sparse solver, or with AMG when a rail
 has more than 200k unknowns. If the optional [`pypardiso`](https://pypi.org/project/pypardiso/)
 package is installed, KiPI uses Intel MKL's multithreaded PARDISO solver instead, and for
-rails of up to 1M unknowns. On a 645k-unknown rail one solve drops from about 8 s to 1.2 s,
-and a four-iteration electro-thermal run from about 90 s to 34 s. Small boards gain little.
+rails of up to 3M unknowns. On a 645k-unknown rail one solve drops from about 8 s to 1.2 s,
+and a four-iteration electro-thermal run from about 90 s to 34 s; a 10-layer board's
+1.9M-unknown ground plane takes about 70 s, where AMG took about 30 minutes. Small boards
+gain little.
 
 KiPI installs it by default where it can, with an opt-out because of its size. There are no
 MKL packages for macOS or ARM:

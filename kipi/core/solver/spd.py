@@ -20,7 +20,8 @@ from kipi.core.solver import direct
 # Largest systems factorized directly, by backend (see kipi.core.solver.direct); AMG-CG above.
 # Measured on board meshes: SuperLU beats AMG-CG up to ~250k unknowns (0.7 s vs 2.4 s at
 # 160k; ~1 GB of factors at 420k), and multithreaded PARDISO beats it at every size
-# tried (1.2 s vs 10 s at 640k).
+# tried (1.2 s vs 10 s at 640k; about 70 s vs about 30 minutes on a 10-layer board's
+# 1.9M-unknown ground plane, about 3 GB).
 DIRECT_SOLVE_MAX_UNKNOWNS = 200_000
 DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO = 3_000_000
 # CG on big boards can reach the floor that round-off allows just above the target
