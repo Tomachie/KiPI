@@ -22,7 +22,7 @@ from kipi.core.solver import direct
 # 160k; ~1 GB of factors at 420k), and multithreaded PARDISO beats it at every size
 # tried (1.2 s vs 10 s at 640k).
 DIRECT_SOLVE_MAX_UNKNOWNS = 200_000
-DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO = 1_000_000
+DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO = 3_000_000
 # CG on big boards can reach the floor that round-off allows just above the target
 # tolerance; past that point it does not stall quietly but diverges. Stop once it has
 # gone this many iterations without a new best residual, and keep the best iterate.
