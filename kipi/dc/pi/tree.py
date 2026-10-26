@@ -432,11 +432,16 @@ class _TreeSolver:
         """The ground's reference VRMs and its (mesh, system)."""
         refs = [v for v in self.setup.vrms
                 if v.kind == "source" and v.ground and v.ground.net in g]
-        sources = [VoltageSource(f"{v.name} (gnd)", self.pads(v.ground), 0.0) for v in refs]
         # An isolated converter holds its output side's ground at 0 V at its return pins.
         isolated = [v for v in self.setup.vrms if v.output_ground and v.output_ground.net in g]
-        sources += [VoltageSource(f"{v.name} (output gnd)", self.pads(v.output_ground), 0.0)
-                    for v in isolated]
+        # Every reference is 0 V, so references on the same pads are one (a chip's two
+        # internal LDOs share its ground pins): one source, named after all of them.
+        held: Dict[frozenset, List[str]] = {}
+        for name, ref in ([(f"{v.name} (gnd)", v.ground) for v in refs]
+                          + [(f"{v.name} (output gnd)", v.output_ground) for v in isolated]):
+            held.setdefault(frozenset(self.pads(ref)), []).append(name)
+        sources = [VoltageSource(" / ".join(names), sorted(pads), 0.0)
+                   for pads, names in held.items()]
         refs = refs + isolated
         loads = [CurrentLoad(f"{l.name} (return)", self.pads(l.ground), -l.total_current(),
                              optional=True)
