@@ -79,6 +79,17 @@ def _failure(e: BaseException) -> str:
     return f"{type(e).__name__}: {text}"
 
 
+def _incomplete_off_rail(setup, snap, typ, vrm: str) -> list:
+    """Capacitor models missing a value (no ESL in the file) with no part on ``vrm``'s
+    rail: they would stop its sweep without being in it."""
+    nets = {n for g in typ.groups.values() if g.kind == "rail" and g.driver == vrm
+            for n in g.nets}
+    on_rail = {p.footprint for p in snap.pads if p.net in nets}
+    return [m for m in setup.caps
+            if m.refs and not all(v and v > 0 for v in (m.capacitance_f, m.esl_h, m.esr_ohm))
+            and not set(m.refs) & on_rail]
+
+
 def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         progress: Optional[ProgressReporter] = None,
         memory_gb: Optional[float] = None) -> Path:
@@ -131,23 +142,32 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
     for name in (_ac_rails(setup, ac) if typ is not None else []):
         v = next(x for x in setup.vrms if x.name == name)
         progress.stage(f"AC, {name}")
+        left_out = _incomplete_off_rail(setup, snap, typ, name)
+        for m in left_out:
+            setup.caps.remove(m)
+            progress.message(f"{name}: capacitor model {m.name} ({', '.join(m.refs)}) is "
+                             "missing a value and is on another rail; left out of this sweep")
         try:
             r = solve_ac(snap, setup, name, v.ground.net if v.ground else "",
                          progress, dc_result=typ)
             html = write_ac_report(out_dir / f"ac_{name.split()[0]}.html", r, snap, setup)
+            rails.append(pdn_results.ac_rail(r, setup, Path(html).name))
+            rails[-1].update(unknowns=r.stats.n_unknowns,
+                             peak_memory_gb=_gb(limits.peak_memory_gb()))
+            del r                       # its factor and fields, before the next rail
         except ACError as e:
             rails.append(pdn_results.ac_not_solved(name, str(e)))
             progress.message(f"{name}: not swept: {e}")
-            continue
         except Exception as e:  # noqa: BLE001 - out of memory above all; the next rail
             rails.append(pdn_results.ac_not_solved(name, _failure(e)))  # may still fit
             progress.message(f"{name}: not swept: {_failure(e)}")
+        finally:
+            setup.caps.extend(left_out)
             gc.collect()
-            continue
-        rails.append(pdn_results.ac_rail(r, setup, Path(html).name))
-        rails[-1].update(unknowns=r.stats.n_unknowns, peak_memory_gb=_gb(limits.peak_memory_gb()))
-        del r                           # its factor and fields, before the next rail
-        gc.collect()
+        if left_out:
+            rails[-1]["capacitor_models_left_out"] = [
+                {"model": m.name, "refdes": list(m.refs), "why": "missing_value_other_rail"}
+                for m in left_out]
 
     solve = {"dc_mesh": {k: getattr(setup.settings, k) for k in COARSE_DC},
              "ac_mesh": {k: getattr(setup.ac, k) for k in COARSE_AC},
