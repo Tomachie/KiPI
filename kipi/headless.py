@@ -138,7 +138,11 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         gc.collect()
 
     setup.corner = "typ"
-    rails = []
+    # Without the typical DC solve there is no DC bias to sweep with: each rail asked for
+    # is listed with why, rather than left out of the file.
+    rails = [] if typ is not None else [
+        pdn_results.ac_not_solved(name, "no typical DC solve to take the DC bias from")
+        for name in _ac_rails(setup, ac)]
     for name in (_ac_rails(setup, ac) if typ is not None else []):
         v = next(x for x in setup.vrms if x.name == name)
         progress.stage(f"AC, {name}")
