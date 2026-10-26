@@ -301,6 +301,26 @@ class _TreeSolver:
         v = _connected(_pad_voltages(sol, self._supply_pads(l)))
         return float(v.min()) if len(v) else math.nan
 
+    def _link_current(self, name: str, current: float) -> float:
+        """A short's current is not solved (its sides merge into one). A switcher's output
+        inductor, a short inside its regulation loop, carries what its phase's switch pins
+        supply, when nothing else is on the switch node: no load, no other series part."""
+        if current == current:
+            return current
+        link = next((k for k in self.setup.links if k.name == name), None)
+        if link is None:
+            return current
+        for v in self.setup.vrms:
+            for i, o in enumerate([v.output, *(p.output for p in v.phases)]):
+                if o.net not in (link.side_a.net, link.side_b.net) or v.name not in self.i_out:
+                    continue
+                alone = (not any(l.supply.net == o.net for l in self.setup.loads) and
+                         [k.name for k in self.setup.links
+                          if o.net in (k.side_a.net, k.side_b.net)] == [name])
+                if alone and i < len(self.i_out[v.name]):
+                    return abs(self.i_out[v.name][i])
+        return current
+
     def _headroom(self, reports: Dict[str, LoadReport]) -> List[RailHeadroom]:
         """Per rail with loads whose current is not known: what those loads may draw,
         together, before a load on the rail leaves its tolerance.
@@ -761,7 +781,8 @@ class _TreeSolver:
         # they may add together before a load on their rail leaves its tolerance.
         out.headroom = self._headroom({r.name: r for r in out.loads})
         rated = {k.name: k.rated_current_a for k in self.setup.links}
-        out.link_ratings = [LinkRating(s.name, g.name, s.current, rated.get(s.name))
+        out.link_ratings = [LinkRating(s.name, g.name, self._link_current(s.name, s.current),
+                                       rated.get(s.name))
                             for g in out.groups.values() for s in g.result.fields.series]
         with_unknowns = {h.group for h in out.headroom}
         for r in out.loads:

@@ -271,6 +271,12 @@ def test_a_switchers_output_inductor_is_inside_its_regulation_loop():
     assert (fb2.resistance, fb2.resistance_max) == (0.0, None)
     assert any(n.startswith("FB2: inside U1's regulation loop") for n in notes)
     assert by_name(setup.links, "FB1").resistance == pytest.approx(0.08)   # before U1: a drop
+    # A short's current is not solved, but the inductor carries all U1's switch pins
+    # supply: judged against its rating, not "not resolved".
+    by_name(setup.links, "FB2").rated_current_a = 2.0
+    tree = solve_tree(filtered_board(), setup)
+    [k] = [k for k in tree.link_ratings if k.name == "FB2"]
+    assert k.current == pytest.approx(1.0, rel=1e-3) and k.within is True
 
 
 def test_datasheet_minimum_supply_tightens_the_rail_minimum():
