@@ -10,7 +10,7 @@ every change this fork ships.
 
 from kipi import __version__
 
-TAG = "tomachie.3"
+TAG = "tomachie.4"
 BY = "Tomachie LLC"
 REPO = "https://github.com/Tomachie/KiPI"
 VERSION = f"{__version__}+{TAG}"
