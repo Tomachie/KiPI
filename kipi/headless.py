@@ -30,7 +30,10 @@ from kipi.core.progress import ProgressReporter
 # needs to solve in minutes rather than hours (2026-10-26: 1.9M unknowns instead of 8.5M
 # for DC; 3.3M instead of 4.75M for AC, with 6 copper solves a decade, not 20).
 COARSE_DC = dict(max_edge_mm=1.5, min_edge_mm=0.1, grading=0.5)
-COARSE_AC = dict(max_edge_mm=2.0, min_edge_mm=0.1, grading=0.5, field_points_per_decade=6)
+# A rail with a hundred parts spends as long again on the sweep after the copper solves
+# (a dense solve over all its parts at each sweep point) as on them: 50 points a decade.
+COARSE_AC = dict(max_edge_mm=2.0, min_edge_mm=0.1, grading=0.5, field_points_per_decade=6,
+                 points_per_decade=50)
 
 
 class _Print(ProgressReporter):
