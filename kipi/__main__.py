@@ -6,6 +6,8 @@
                                         # no splash, minimized without taking the focus,
                                         # the board loaded and the power tree imported
     python -m kipi --dump out.json.gz   # extract from the running KiCad and save, no GUI
+    python -m kipi board.tgz --pdn-json board.pdn.json --solve out_dir [--ac all] [--coarse]
+                                        # no GUI: solve, write out_dir/pdn_results.json
 
 Started from a terminal, KiPI runs standalone and needs no KiCad. To run the plugin
 workflow from a terminal instead (connect to the running KiCad PCB editor), set
@@ -33,8 +35,22 @@ def main(argv=None) -> int:
                          "focus from what you are typing in")
     ap.add_argument("--pdn-json", metavar="PATH",
                     help="import this Tomachie power tree once the board is loaded")
+    ap.add_argument("--solve", metavar="OUT_DIR",
+                    help="no window: solve the power tree of BOARD from --pdn-json, write "
+                         "OUT_DIR/pdn_results.json and an AC report per swept rail, exit")
+    ap.add_argument("--ac", default="all", metavar="RAILS",
+                    help="with --solve: the regulators whose rails to sweep, comma "
+                         "separated, or all (default) or none")
+    ap.add_argument("--coarse", action="store_true",
+                    help="with --solve: a coarser mesh, for boards with thousands of vias")
     args = ap.parse_args(argv)
     path = args.board or args.snapshot
+    if args.solve:
+        if not (path and args.pdn_json):
+            ap.error("--solve needs a BOARD and --pdn-json")
+        from kipi.headless import run
+        run(args.solve, path, args.pdn_json, ac=args.ac, coarse=args.coarse)
+        return 0
     missing = missing_packages()
     if missing:
         print(f"This Python ({sys.executable}) does not have KiPI's packages "
