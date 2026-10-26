@@ -43,13 +43,24 @@ def main(argv=None) -> int:
                          "separated, or all (default) or none")
     ap.add_argument("--coarse", action="store_true",
                     help="with --solve: a coarser mesh, for boards with thousands of vias")
+    ap.add_argument("--threads", type=int, metavar="N",
+                    help="with --solve: at most N solver threads")
+    ap.add_argument("--memory-gb", type=float, metavar="GB",
+                    help="with --solve: at most GB of memory; a rail that needs more is "
+                         "listed not solved instead of starving the machine")
+    ap.add_argument("--normal-priority", action="store_true",
+                    help="with --solve: run at normal priority (default: below normal)")
     args = ap.parse_args(argv)
     path = args.board or args.snapshot
     if args.solve:
         if not (path and args.pdn_json):
             ap.error("--solve needs a BOARD and --pdn-json")
+        # Before NumPy and PARDISO load: their thread pools read the counts once.
+        from kipi.core import limits
+        limits.apply(args.threads, args.memory_gb, not args.normal_priority)
         from kipi.headless import run
-        run(args.solve, path, args.pdn_json, ac=args.ac, coarse=args.coarse)
+        run(args.solve, path, args.pdn_json, ac=args.ac, coarse=args.coarse,
+            memory_gb=args.memory_gb)
         return 0
     missing = missing_packages()
     if missing:

@@ -2,7 +2,11 @@
 (:mod:`kipi.pdn_results`) and an AC report per swept rail.
 
     python -m kipi --solve OUT_DIR BOARD --pdn-json PDN.json [--ac all|none|U35 VCC_CORE,...]
-                   [--coarse]
+                   [--coarse] [--threads N] [--memory-gb GB] [--normal-priority]
+
+On a shared machine the solve runs below normal priority, with at most N solver threads
+and GB of memory (kipi.core.limits): a rail that needs more is listed not solved, out of
+memory, and the next rail is tried.
 
 DC is solved at the typical and the worst case. AC sweeps each rail asked for at the
 typical case, with the capacitors' DC bias from the typical solve; a rail that cannot be
@@ -11,12 +15,15 @@ swept (no control loop bandwidth, a capacitor model without a value) is listed w
 
 from __future__ import annotations
 
+import gc
 import json
+import os
 import time
 from pathlib import Path
 from typing import List, Optional
 
 from kipi import pdn_results
+from kipi.core import limits
 from kipi.core.progress import ProgressReporter
 
 # A coarser mesh for boards with thousands of vias, DC and AC: what a 10-layer board
@@ -56,8 +63,23 @@ def _ac_rails(setup, ask: str) -> List[str]:
     return names
 
 
+def _gb(x: Optional[float]) -> Optional[float]:
+    return round(x, 2) if x is not None else None
+
+
+def _failure(e: BaseException) -> str:
+    """Why a solve stopped, for the file: out of memory said as such (a MemoryError, or
+    PARDISO's own error -2 when the memory cap stops its factor)."""
+    text = str(e) or type(e).__name__
+    if isinstance(e, MemoryError) or "memory" in text.lower() or "error code -2" in text:
+        return f"out of memory ({type(e).__name__}: {text})"
+    return f"{type(e).__name__}: {text}"
+
+
 def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
-        progress: Optional[ProgressReporter] = None) -> Path:
+        progress: Optional[ProgressReporter] = None,
+        memory_gb: Optional[float] = None) -> Path:
+    """``memory_gb``: the cap :func:`kipi.core.limits.apply` set, recorded in the file."""
     from kipi.ac.html_report import write_ac_report
     from kipi.ac.solver.sweep import ACError, solve_ac
     from kipi.dc.pi.importers.tomachie_pdn import TomachiePdnImporter
@@ -79,32 +101,55 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         for k, v in COARSE_AC.items():
             setattr(setup.ac, k, v)
 
-    cases, trees, mesh_cache = [], {}, {}
+    cases, typ, mesh_cache, dc_error = [], None, {}, None
     for corner in ("typ", "max"):
         setup.corner = corner
         progress.stage(f"DC, {pdn_results.CASE_NAMES[corner]} case")
-        trees[corner] = solve_tree(snap, setup, progress, mesh_cache=mesh_cache)
-        cases.append(pdn_results.dc_case(trees[corner], setup, corner))
-        progress.message(trees[corner].summary())
+        try:
+            tree = solve_tree(snap, setup, progress, mesh_cache=mesh_cache)
+        except Exception as e:  # noqa: BLE001 - said in the file; out of memory above all
+            dc_error = _failure(e)
+            progress.message(f"DC not solved: {dc_error}")
+            break
+        cases.append(pdn_results.dc_case(tree, setup, corner))
+        cases[-1]["peak_memory_gb"] = _gb(limits.peak_memory_gb())
+        progress.message(tree.summary())
+        if corner == "typ":
+            typ = tree                  # its DC bias for the AC sweeps; the worst case's
+        del tree                        # solution is let go once written
 
     setup.corner = "typ"
     rails = []
-    for name in _ac_rails(setup, ac):
+    for name in (_ac_rails(setup, ac) if typ is not None else []):
         v = next(x for x in setup.vrms if x.name == name)
         progress.stage(f"AC, {name}")
         try:
             r = solve_ac(snap, setup, name, v.ground.net if v.ground else "",
-                         progress, dc_result=trees["typ"])
+                         progress, dc_result=typ)
+            html = write_ac_report(out_dir / f"ac_{name.split()[0]}.html", r, snap, setup)
         except ACError as e:
             rails.append(pdn_results.ac_not_solved(name, str(e)))
             progress.message(f"{name}: not swept: {e}")
             continue
-        html = write_ac_report(out_dir / f"ac_{name.split()[0]}.html", r, snap, setup)
+        except Exception as e:  # noqa: BLE001 - out of memory above all; the next rail
+            rails.append(pdn_results.ac_not_solved(name, _failure(e)))  # may still fit
+            progress.message(f"{name}: not swept: {_failure(e)}")
+            gc.collect()
+            continue
         rails.append(pdn_results.ac_rail(r, setup, Path(html).name))
+        rails[-1].update(unknowns=r.stats.n_unknowns, peak_memory_gb=_gb(limits.peak_memory_gb()))
+        del r                           # its factor and fields, before the next rail
+        gc.collect()
 
     solve = {"dc_mesh": {k: getattr(setup.settings, k) for k in COARSE_DC},
              "ac_mesh": {k: getattr(setup.ac, k) for k in COARSE_AC},
-             "seconds": round(time.monotonic() - t0, 1)}
+             "seconds": round(time.monotonic() - t0, 1),
+             "limits": {"threads": int(os.environ["OMP_NUM_THREADS"])
+                        if os.environ.get("OMP_NUM_THREADS", "").isdigit() else None,
+                        "memory_gb": memory_gb},
+             "peak_memory_gb": _gb(limits.peak_memory_gb())}
+    if dc_error:
+        solve["dc_error"] = dc_error
     doc = pdn_results.document("KiPI", VERSION, pdn, pdn_json, board,
                                fmt.name if fmt else "", solve, cases, rails, notes)
     path = pdn_results.write(out_dir / "pdn_results.json", doc)
