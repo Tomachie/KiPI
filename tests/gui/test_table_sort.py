@@ -112,10 +112,10 @@ def test_target_points_sort_by_frequency_or_impedance(app):
     ed = panel.probe_list.editor
     h = ed.points.horizontalHeader()
     h.sectionClicked.emit(1)                                # |Z| ascending
-    assert probe.target_points == pytest.approx([(1e4, 0.01), (1e6, 0.02), (1e5, 0.03)])
+    assert _flat(probe.target_points) == pytest.approx([1e4, 0.01, 1e6, 0.02, 1e5, 0.03])
     h.sectionClicked.emit(0)                                # frequency, then reversed
     h.sectionClicked.emit(0)
-    assert probe.target_points == pytest.approx([(1e6, 0.02), (1e5, 0.03), (1e4, 0.01)])
+    assert _flat(probe.target_points) == pytest.approx([1e6, 0.02, 1e5, 0.03, 1e4, 0.01])
     assert ed.points.cellWidget(0, 0).value() == pytest.approx(1e3)      # kHz
     h.sectionClicked.emit(2)                                # the remove buttons don't sort
     assert probe.target_points[0] == pytest.approx((1e6, 0.02))
@@ -217,3 +217,8 @@ def test_report_voltages_sort_in_the_unit_shown():
     assert names(_sorted_in_node(node, rows, ["Load", "Mean"], [1])) == ["A", "B"]   # mV
     assert names(_sorted_in_node(node, rows, ["Load", "Mean"], [1], "pct")) == ["B", "A"]
     assert names(_sorted_in_node(node, rows, ["Load", "Mean"], [1], "v")) == ["B", "A"]
+
+
+def _flat(points):
+    """(frequency, |Z|) pairs as one list: pytest.approx compares no nested tuples."""
+    return [x for p in points for x in p]

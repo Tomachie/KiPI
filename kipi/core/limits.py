@@ -12,6 +12,7 @@ instead of the machine paging. Elsewhere it is RLIMIT_AS.
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Optional
@@ -73,13 +74,23 @@ def _win_job_memory(limit_bytes: int) -> None:
         raise OSError(ctypes.get_last_error(), "AssignProcessToJobObject failed")
 
 
-def limit_memory(gb: float) -> None:
+def limit_memory(gb: float) -> bool:
+    """Cap the process's memory at ``gb``; False where the system cannot (macOS takes no
+    address-space limit), said in the log."""
     limit = int(gb * 1024 ** 3)
     if sys.platform == "win32":
         _win_job_memory(limit)
-    else:
-        import resource
-        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+        return True
+    import resource
+    if sys.platform == "darwin":
+        logging.getLogger(__name__).warning(
+            "macOS cannot cap a process's memory; solving without the %g GB cap", gb)
+        return False
+    _soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+    if hard != resource.RLIM_INFINITY:
+        limit = min(limit, hard)            # a soft limit may not exceed the hard one
+    resource.setrlimit(resource.RLIMIT_AS, (limit, hard))
+    return True
 
 
 def lower_priority() -> None:
@@ -96,13 +107,15 @@ def lower_priority() -> None:
 
 
 def apply(threads: Optional[int] = None, memory_gb: Optional[float] = None,
-          low_priority: bool = True) -> None:
+          low_priority: bool = True) -> Optional[float]:
+    """Apply the limits; the memory cap set, GB (None: none asked, or the system takes
+    none)."""
     if threads:
         limit_threads(threads)
-    if memory_gb:
-        limit_memory(memory_gb)
+    capped = memory_gb if memory_gb and limit_memory(memory_gb) else None
     if low_priority:
         lower_priority()
+    return capped
 
 
 def peak_memory_gb() -> Optional[float]:

@@ -94,11 +94,11 @@ def test_editor_switches_to_a_custom_mask(app):
     assert probe.target_custom and probe.target_points == [(1e5, 0.01)]
     ed.btn_point.click()                                # a decade up, same |Z|
     ed.points.cellWidget(1, 1).setValue(20)             # 20 mΩ
-    assert probe.target_points == pytest.approx([(1e5, 0.01), (1e6, 0.02)])
+    assert [x for p in probe.target_points for x in p] == pytest.approx([1e5, 0.01, 1e6, 0.02])
     assert "custom target (2 points)" in panel._describe_probe(probe)
 
     ed.points.cellWidget(0, 2).click()                  # remove the first point
-    assert probe.target_points == pytest.approx([(1e6, 0.02)])
+    assert [x for p in probe.target_points for x in p] == pytest.approx([1e6, 0.02])
     ed.target_kind.setCurrentIndex(0)                   # back to flat, mask kept
     assert not probe.target_custom and probe.target_mask() is None
     assert probe.target_ohm == pytest.approx(0.01) and len(probe.target_points) == 1

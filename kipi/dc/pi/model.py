@@ -42,7 +42,7 @@ import numpy as np
 from kipi.ac.model import (
     DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, PackageModel, Probe, report_format,
 )
-from kipi.core.model.spice import SpiceRef
+from kipi.core.model.spice import SpiceRef, constant_drop_ref  # noqa: F401 - re-exported
 from kipi.dc.solver.setup import SHORT_OHMS, SolveSettings
 from kipi.dc.thermal.model import ThermalSettings
 from kipi.noise.model import (

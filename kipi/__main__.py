@@ -57,10 +57,10 @@ def main(argv=None) -> int:
             ap.error("--solve needs a BOARD and --pdn-json")
         # Before NumPy and PARDISO load: their thread pools read the counts once.
         from kipi.core import limits
-        limits.apply(args.threads, args.memory_gb, not args.normal_priority)
+        capped = limits.apply(args.threads, args.memory_gb, not args.normal_priority)
         from kipi.headless import run
         run(args.solve, path, args.pdn_json, ac=args.ac, coarse=args.coarse,
-            memory_gb=args.memory_gb)
+            memory_gb=capped)
         return 0
     missing = missing_packages()
     if missing:
