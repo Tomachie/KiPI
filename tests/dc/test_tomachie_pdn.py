@@ -715,3 +715,47 @@ def test_a_malformed_file_is_refused_not_a_crash(tmp_path, text):
     path.write_text(text, encoding="utf-8")
     with pytest.raises(PdnImportError):
         import_tomachie_pdn(path, board())
+
+
+def _edge_pdn():
+    """VIN_F is a board input one series part (FB1) from its connector J1; U2's load
+    on +3V3 is a motor its driver U2 sends off the board at connector J9."""
+    return {
+        "schema": "tomachie-pdn", "schema_version": 1, "spec_revision": 8,
+        "ground_nets": ["GND"],
+        "rails": [
+            {"name": "VIN_F", "voltage": {"nominal": 12.0, "min": 10.0, "max": 14.0,
+                                          "basis": "user"},
+             "source": {"role": "board_input", "refdes": "J1", "pins": ["J1_1"],
+                        "output_net": "VIN",
+                        "output_path": [{"refdes": "FB1", "class": "ferrite",
+                                         "net_in": "VIN", "net_out": "VIN_F",
+                                         "resistance_ohm": 0.05, "datasheet_figures": []}],
+                        "return": {"pins": ["J1_2"], "net": "GND"}},
+             "loads": [{"role": "motor_output", "refdes": "J9", "pins": ["J9_1", "J9_2"],
+                        "current": {"amps": 2.0, "basis": "user"},
+                        "driver": {"refdes": "U1", "supply_pins": ["U1_1"],
+                                   "return_pins": ["U1_3"]}}],
+             "offboard_pins": []},
+        ],
+        "regulators": [],
+    }
+
+
+def test_a_board_input_behind_a_series_part_carries_its_current_through_it():
+    """The parts between a connector's pin and the rail it feeds are DC connections."""
+    pdn = _edge_pdn()
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
+    assert [v.name for v in setup.vrms] == ["J1 VIN_F"]
+    assert "FB1" in [l.name for l in setup.links]
+    assert not any("Nothing in the file powers" in n for n in notes)
+
+
+def test_a_motor_is_drawn_at_its_drivers_pins():
+    """A motor's connector terminals sit on the motor phases: its current leaves the rail
+    at the driver's supply pins and returns at the driver's ground pins."""
+    setup, notes = TomachiePdnImporter(_edge_pdn(), filtered_board()).run()
+    motor = by_name(setup.loads, "J9")
+    assert motor.supply.ref == "U1" and motor.supply.pins == ["1"]
+    assert motor.ground.ref == "U1" and motor.ground.pins == ["3"]
+    assert motor.current == pytest.approx(2.0)

@@ -268,7 +268,11 @@ class TomachiePdnImporter:
             elif src["role"] in SOURCE_ROLES:
                 v = self._voltage(r)
                 out = self._source_pins(src, f"Source of {name}")
-                if v is None or self._off_its_net(name, src, out):
+                # A board input one or more series parts from its connector (a reverse-
+                # battery FET, a fuse): a second rail from the same connector pin is
+                # behind the source already placed, through its own parts.
+                if v is None or self._behind_placed_output(name, src, out) or \
+                        self._off_its_net(name, src, out):
                     continue
                 if out is None:
                     self.notes.append(f"Rail {name}: source {src.get('refdes') or '?'} not "
@@ -281,6 +285,9 @@ class TomachiePdnImporter:
                                            ground=self._ground(src.get("refdes"),
                                                                ret.get("net") or r.get("ground")),
                                            **self._input_range(r, src)))
+                # The parts between the connector's pin and the rail carry its current.
+                if src.get("output_path"):
+                    self._output_path(src.get("refdes", ""), src, name)
 
     def _input_range(self, rail: dict, src: dict) -> dict:
         """A board input's stated range, as the source's accuracy in volts (the worst case
@@ -640,7 +647,12 @@ class TomachiePdnImporter:
                 # On the rail by a detect, enable or reference pin only: it draws nothing.
                 self.not_supplied.append(f"{l['refdes']} ({name})")
                 continue
-            supply = self.idx.pin_ref(l["pins"], self.notes, f"Load {l['refdes']} on {name}")
+            # A motor driven off the board: its current leaves the rail at the driver's
+            # supply pins and returns at the driver's ground pins (the connector's
+            # terminals sit on the motor phases, not on the rail).
+            drv = l.get("driver") if isinstance(l.get("driver"), dict) else {}
+            supply = self.idx.pin_ref(drv.get("supply_pins") or l["pins"], self.notes,
+                                      f"Load {l['refdes']} on {name}")
             if supply is None:
                 continue
             taken = {x.name for x in self.setup.loads}
@@ -652,8 +664,12 @@ class TomachiePdnImporter:
             for e in l.get("input_filter") or []:
                 self._link(e)
             returns = _return_part(l)
+            ground = (self.idx.pin_ref(drv["return_pins"], self.notes,
+                                       f"Return of {l['refdes']} on {name}")
+                      if drv.get("return_pins") else None)
             self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
-                                         ground=self._ground(returns, rail.get("ground")),
+                                         ground=ground or self._ground(returns,
+                                                                       rail.get("ground")),
                                          current_max=self.max_current.get(label),
                                          current_known=label not in self.unknown_current
                                          and label not in self.static_current,
@@ -865,6 +881,7 @@ class TomachiePdnImporter:
         self._probe_targets()
         self._ac_notes()
         self._range_notes()
+        self.setup.import_notes = list(self.notes)
         return self.setup, self.notes
 
     def _ac_notes(self):

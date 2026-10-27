@@ -650,7 +650,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     meta = (f"{_e(snap.board_name)} · {now} · KiPI {fork.VERSION} · solved in "
             f"{tree.solve_s:.1f} s · {_e(corner)} currents and resistances")
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{meta}</div>")
-    nav = ["<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
+    nav = (["<a href='#import'>Import</a>"] if getattr(setup, "import_notes", None) else []) + [
+           "<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
            "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",
            "<a href='#vias'>Vias</a>"]
     if th is not None:
@@ -674,6 +675,13 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     parts.append(f"<p class='note'>Stackup, top to bottom: {_e(stackup_summary(snap.stackup))}.</p>")
     if pdf and tree.groups:
         parts.append(f"<p><b>3D Results View:</b> {_views_link(path)}</p>")
+
+    # ---------------- what the power-tree file left out, before any result: a rail
+    # missing from the tables is explained here, not only in the import's Log.
+    if getattr(setup, "import_notes", None):
+        parts.append("<h2 id='import'>Power-tree import</h2><p class='note'>What the "
+                     "imported power-tree file could not place, or what was assumed:</p><ul>"
+                     + "".join(f"<li>{_e(n)}</li>" for n in setup.import_notes) + "</ul>")
 
     # ---------------- tables
     parts.append("<h2 id='loads'>Loads</h2>")

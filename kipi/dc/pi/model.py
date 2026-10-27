@@ -385,6 +385,10 @@ class PISetup:
     aggressors: List[Aggressor] = field(default_factory=list)
     victims: List[Victim] = field(default_factory=list)
     noise: NoiseSettings = field(default_factory=NoiseSettings)
+    # What the power-tree import could not place or had to assume (a rail with no
+    # source, a regulator whose input nothing powers): kept with the setup so the
+    # report says why a rail is missing, not only the import's Log.
+    import_notes: List[str] = field(default_factory=list)
 
     def pin_nets(self) -> set:
         """Nets the VRMs, loads, series links and probes have pins on."""
@@ -507,6 +511,7 @@ class PISetup:
                         for a in d.get("aggressors", [])],
             victims=[victim_from_dict(v, pin) for v in d.get("victims", [])],
             noise=noise_settings(d.get("noise", {})),
+            import_notes=[str(n) for n in d.get("import_notes", [])],
         )
 
     def save(self, path) -> Path:
