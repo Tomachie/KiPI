@@ -759,3 +759,27 @@ def test_a_motor_is_drawn_at_its_drivers_pins():
     assert motor.supply.ref == "U1" and motor.supply.pins == ["1"]
     assert motor.ground.ref == "U1" and motor.ground.pins == ["3"]
     assert motor.current == pytest.approx(2.0)
+
+
+def test_a_sources_rated_output_is_its_current_limit():
+    """A module's rated current out of the supply it makes limits that source."""
+    pdn = _edge_pdn()
+    pdn["rails"][0]["source"]["max_output_current"] = {"amps": 0.6, "basis": "max"}
+    setup, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    assert by_name(setup.vrms, "J1 VIN_F").current_limit_a == pytest.approx(0.6)
+
+
+def test_a_driven_led_returns_through_its_driver():
+    """An LED a driver's output sinks draws at its own pin on the rail and returns at
+    the driver's ground pins; a driver with no supply pins listed moves no supply."""
+    pdn = _edge_pdn()
+    pdn["rails"][0]["loads"] = [{"role": "resistive_path", "refdes": "U1", "pins": ["U1_1"],
+                                 "path_parts": ["U1"], "path_end": "LED_K",
+                                 "current": {"amps": 0.0045, "basis": "v_minus_vf_over_r"},
+                                 "driver": {"refdes": "U1", "supply_pins": [],
+                                            "return_pins": ["U1_3"]}}]
+    setup, notes = TomachiePdnImporter(pdn, filtered_board()).run()
+    led = by_name(setup.loads, "U1")
+    assert led.supply.ref == "U1" and led.supply.pins == ["1"]
+    assert led.ground.ref == "U1" and led.ground.pins == ["3"]
+    assert led.current == pytest.approx(0.0045)

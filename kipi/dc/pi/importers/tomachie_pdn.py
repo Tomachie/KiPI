@@ -284,6 +284,8 @@ class TomachiePdnImporter:
                                            out, v, "source",
                                            ground=self._ground(src.get("refdes"),
                                                                ret.get("net") or r.get("ground")),
+                                           # A module's rated output for this supply.
+                                           current_limit_a=amps(src.get("max_output_current")),
                                            **self._input_range(r, src)))
                 # The parts between the connector's pin and the rail carry its current.
                 if src.get("output_path"):
