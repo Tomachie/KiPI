@@ -40,6 +40,7 @@ Nothing is guessed. Whatever cannot be placed on the board is listed in the note
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 from collections import deque
 from pathlib import Path
@@ -884,6 +885,7 @@ class TomachiePdnImporter:
         self._ac_notes()
         self._range_notes()
         self.setup.import_notes = list(self.notes)
+        self.setup.import_source = source_text(self.pdn)
         return self.setup, self.notes
 
     def _ac_notes(self):
@@ -1047,6 +1049,24 @@ def _ohms(r: float) -> str:
     return f"{r * 1e3:.4g} mΩ" if abs(r) < 1 else f"{r:.4g} Ω"
 
 
+def source_text(pdn: dict, path=None) -> str:
+    """Which power-tree file a setup came from, for the reports: its name and a short
+    hash (with ``path``), the tool and version that wrote it, its date and the format's
+    revision."""
+    parts = []
+    if path is not None:
+        path = Path(path)
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()[:12]
+        parts.append(f"{path.name} (sha256 {digest})")
+    if pdn.get("generated_by"):
+        parts.append(str(pdn["generated_by"]))
+    if pdn.get("date"):
+        parts.append(str(pdn["date"]))
+    if pdn.get("spec_revision") is not None:
+        parts.append(f"format revision {pdn['spec_revision']}")
+    return ", ".join(parts)
+
+
 def import_tomachie_pdn(path, snap: BoardSnapshot,
                         base: Optional[PISetup] = None) -> Tuple[PISetup, List[str]]:
     """The setup described by a Tomachie ``.pdn.json`` on this board, and notes on what
@@ -1058,7 +1078,9 @@ def import_tomachie_pdn(path, snap: BoardSnapshot,
     if not isinstance(pdn, dict):
         raise PdnImportError(f"{path.name} is not a {SCHEMA} file")
     try:
-        return TomachiePdnImporter(pdn, snap, base).run()
+        setup, notes = TomachiePdnImporter(pdn, snap, base).run()
+        setup.import_source = source_text(pdn, path)
+        return setup, notes
     except (AttributeError, TypeError, KeyError) as e:
         # A field of the wrong kind (a list where an object belongs, say): the file is
         # not one Tomachie wrote, or is damaged.

@@ -576,6 +576,13 @@ def maps_html(images: List[str], pdf: bool, tags: Optional[List[tuple]] = None,
         for r in rows) + "</table>"
 
 
+def source_meta(setup) -> str:
+    """The line under a report's title naming the power-tree file its setup was imported
+    from; nothing for a setup entered by hand."""
+    src = getattr(setup, "import_source", "")
+    return f"<div class='meta'>Power tree: {_e(src)}</div>" if src else ""
+
+
 def page(title: str, body: str, css: str, script: str = "") -> str:
     """A web page that works offline: Plotly's JavaScript in it."""
     import plotly.offline
@@ -650,6 +657,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     meta = (f"{_e(snap.board_name)} · {now} · KiPI {fork.VERSION} · solved in "
             f"{tree.solve_s:.1f} s · {_e(corner)} currents and resistances")
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{meta}</div>")
+    parts.append(source_meta(setup))
     nav = (["<a href='#import'>Import</a>"] if getattr(setup, "import_notes", None) else []) + [
            "<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
            "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",

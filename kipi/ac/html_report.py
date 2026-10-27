@@ -31,7 +31,9 @@ from kipi.ac.solver.fem import dielectric_summary
 from kipi.ac.transient import transients
 from kipi.core.model.board import BoardSnapshot
 from kipi.core.naming import timestamp
-from kipi.dc.report.html import CSS, _e, _png, _table, _verdict, finish, maps_html, notes_section
+from kipi.dc.report.html import (
+    CSS, _e, _png, _table, _verdict, finish, maps_html, notes_section, source_meta,
+)
 
 COLORS = ("#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#17becf", "#bcbd22",
           "#8c564b", "#e377c2", "#7f7f7f")
@@ -473,7 +475,7 @@ def write_ac_report(path, result, snap: BoardSnapshot, setup, progress=None) -> 
     # ---------------- summary
     parts.append(f"<h1>KiPI AC impedance report: {_e(result.rail)}</h1>"
                  f"<div class='meta'>{_e(snap.board_name)} · {now} · KiPI {fork.VERSION} · "
-                 f"solved in {result.solve_s:.1f} s</div>")
+                 f"solved in {result.solve_s:.1f} s</div>" + source_meta(setup))
     if not pdf:
         parts.append("<nav><a href='#probes'>Probes</a> <a href='#impedance'>Impedance</a> "
                      "<a href='#map'>Board map</a>"

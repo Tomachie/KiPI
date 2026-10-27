@@ -389,6 +389,10 @@ class PISetup:
     # source, a regulator whose input nothing powers): kept with the setup so the
     # report says why a rail is missing, not only the import's Log.
     import_notes: List[str] = field(default_factory=list)
+    # The power-tree file the setup was imported from (its name, the tool and version that
+    # wrote it, its date and a short hash), printed on the reports: a report says which
+    # power tree its currents and tolerances came from.
+    import_source: str = ""
 
     def pin_nets(self) -> set:
         """Nets the VRMs, loads, series links and probes have pins on."""
@@ -512,6 +516,7 @@ class PISetup:
             victims=[victim_from_dict(v, pin) for v in d.get("victims", [])],
             noise=noise_settings(d.get("noise", {})),
             import_notes=[str(n) for n in d.get("import_notes", [])],
+            import_source=str(d.get("import_source", "")),
         )
 
     def save(self, path) -> Path:

@@ -96,7 +96,7 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
     """``memory_gb``: the cap :func:`kipi.core.limits.apply` set, recorded in the file."""
     from kipi.ac.html_report import write_ac_report
     from kipi.ac.solver.sweep import ACError, solve_ac
-    from kipi.dc.pi.importers.tomachie_pdn import TomachiePdnImporter
+    from kipi.dc.pi.importers.tomachie_pdn import TomachiePdnImporter, source_text
     from kipi.dc.pi.tree import solve_tree
     from kipi.fork import VERSION
     from kipi.sources import registry
@@ -109,6 +109,7 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
     snap = registry.open_board(board).load(progress)
     pdn = json.loads(Path(pdn_json).read_text(encoding="utf-8"))
     setup, notes = TomachiePdnImporter(pdn, snap).run()
+    setup.import_source = source_text(pdn, pdn_json)
     if coarse:
         for k, v in COARSE_DC.items():
             setattr(setup.settings, k, v)

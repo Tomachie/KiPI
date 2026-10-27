@@ -783,3 +783,18 @@ def test_a_driven_led_returns_through_its_driver():
     assert led.supply.ref == "U1" and led.supply.pins == ["1"]
     assert led.ground.ref == "U1" and led.ground.pins == ["3"]
     assert led.current == pytest.approx(0.0045)
+
+
+def test_the_setup_names_the_power_tree_it_came_from(tmp_path):
+    """The reports print which power-tree file (and which Tomachie wrote it) their
+    currents and tolerances came from, so a report can be matched to its file."""
+    from kipi.dc.report.html import source_meta
+    pdn = dict(PDN, generated_by="Tomachie 5.165", date="2026-10-27")
+    path = tmp_path / "board.pdn.json"
+    path.write_text(json.dumps(pdn), encoding="utf-8")
+    setup, _ = import_tomachie_pdn(path, board())
+    src = setup.import_source
+    assert src.startswith("board.pdn.json (sha256 ") and "Tomachie 5.165" in src
+    assert "2026-10-27" in src and "format revision 2" in src
+    assert PISetup.from_dict(setup.to_dict()).import_source == src
+    assert f"Power tree: {src}" in source_meta(setup) and source_meta(PISetup()) == ""
