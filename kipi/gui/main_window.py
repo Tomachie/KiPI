@@ -1487,29 +1487,36 @@ class MainWindow(QMainWindow):
         return setup
 
     def import_pdn(self):
-        """Replace the power tree with the one in a Tomachie .pdn.json (#120)."""
+        """Replace the power tree with the one in a Tomachie .pdn.json (#120), or merge a
+        HyperLynx session file's power nets, series links and capacitor groups (#132)."""
         if self.snapshot is None:
             QMessageBox.information(self, "KiPI", "Load or open the board first.")
             return
+        start = str(self._setup_path.parent) if self._setup_path else ""
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import power tree", start,
+            "Power tree files (*.pdn.json *.bud);;Tomachie power tree (*.pdn.json);;"
+            "HyperLynx session file (*.bud);;JSON (*.json)")
+        if not path:
+            return
+        from kipi.dc.pi.importers.hyperlynx_bud import is_bud
+        if is_bud(path):
+            self._import_bud(path)
+            return
+        self.import_pdn_file(path)
+
+    def import_pdn_file(self, path: str, quiet: bool = False):
+        """Replace the power tree with the one in the Tomachie file ``path``. ``quiet``
+        (a background start): nothing is asked, and a file that cannot be read is said in
+        the Log, not in a dialog that would take the focus."""
         current = self.solve_panel.setup
-        if (current.vrms or current.loads or current.links) and QMessageBox.question(
+        if not quiet and (current.vrms or current.loads or current.links) and QMessageBox.question(
                 self, "KiPI", f"This board already has a power tree: {len(current.vrms)} "
                               f"VRM(s), {len(current.loads)} load(s) and {len(current.links)} "
                               "DC connection(s). Replace it with the one in the file?\n\n"
                               "Mesh, via plating, thermal and AC settings stay as they are."
         ) != QMessageBox.Yes:
             return
-        start = str(self._setup_path.parent) if self._setup_path else ""
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Import Tomachie power tree", start,
-            "Tomachie power tree (*.pdn.json);;JSON (*.json)")
-        if path:
-            self.import_pdn_file(path)
-
-    def import_pdn_file(self, path: str, quiet: bool = False):
-        """Replace the power tree with the one in the Tomachie file ``path``. ``quiet``
-        (a background start): a file that cannot be read is said in the Log, not in a
-        dialog that would take the focus."""
         from kipi.dc.pi.importers.tomachie_pdn import PdnImportError, import_tomachie_pdn
         current = self.solve_panel.setup
         name = Path(path).name
@@ -1521,26 +1528,46 @@ class MainWindow(QMainWindow):
             else:
                 QMessageBox.critical(self, "KiPI", f"Could not import {name}:\n\n{e}")
             return
+        self._show_import(name, current, setup, notes, quiet=quiet)
+
+    def _import_bud(self, path: str):
+        """Merge a HyperLynx session file into the setup (#132)."""
+        from kipi.dc.pi.importers.hyperlynx_bud import import_bud
+        current = self.solve_panel.setup
+        name = Path(path).name
+        try:
+            setup, notes, power_nets = import_bud(path, self.snapshot, current)
+        except (ValueError, KeyError, TypeError, OSError) as e:
+            QMessageBox.critical(self, "KiPI", f"Could not import {name}:\n\n{e}")
+            return
+        caps = len(setup.caps) - len(current.caps)
+        self._show_import(name, current, setup, notes, set(power_nets),
+                          f"{len(power_nets)} power net(s) ticked"
+                          + (f", {caps} capacitor model(s) added" if caps else ""))
+
+    def _show_import(self, name: str, current, setup, notes: List[str],
+                     power_nets=frozenset(), extra: str = "", quiet: bool = False):
         from kipi.dc.pi.importers.import_summary import counts, group_notes, setup_changes
         notes = group_notes(notes)
         if notes:
-            self.log(f"Notes on Tomachie {name}:")
+            self.log(f"Notes on {name}:")
         for note in notes:
             # A note's later lines (a long list of parts) go under its first.
             first, *more = note.split("\n")
             self.log(f"  {first}", logging.WARNING)
             for line in more:      # no-break spaces: the log is HTML, which drops spaces
                 self.log("\u00a0" * 6 + line, logging.WARNING)
-        used = setup.pin_nets()
+        used = setup.pin_nets() | power_nets
         self._set_checked(lambda it: it.checkState() == Qt.Checked
                           or it.data(Qt.UserRole) in used)
-        label = f"Imported from Tomachie {name}"
+        label = f"Imported from {name}"
         for panel in self._panels().values():
             panel.set_board(self.snapshot, setup)
         self._refresh_power_tree()
         self.setup_bar.set_label(f"{label} - not saved")
         # Last in the Log, under the notes, so it is the line in view.
-        self.log(f"== Read Tomachie {name}: {counts(setup)} - {setup_changes(current, setup)}"
+        self.log(f"== Read {name}: {counts(setup)} - {setup_changes(current, setup)}"
+                 + (f"; {extra}" if extra else "")
                  + (f"; {len(notes)} note(s) above" if notes else "")
                  + ". Not saved: Save keeps it, the setup file is as it was")
         self.log_dock.show()

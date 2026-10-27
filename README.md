@@ -45,7 +45,7 @@ control in KiPI has a tooltip. This README is an overview; the user guide has th
 
 ![Current density with flow arrows through the +12V input path and the U201 eFuse, with the Series links table](docs/images/current_density.png)
 
-**Status: 0.9.3 (alpha, in development)** ([changelog](docs/CHANGELOG.md)). KiPI runs on its own too, with an app launcher that handles dependencies, and imports boards from other layout tools. The author wants to add support for more PCB file formats. If you have an example with good complexity which uses a wide variety of your PCB design tool's features that you are willing to share, please open an [issue](https://github.com/drewsum/KiPI/issues) and attach your PCB file there.
+**Status: 0.9.4 (alpha, in development)** ([changelog](docs/CHANGELOG.md)). KiPI runs on its own too, with an app launcher that handles dependencies, and imports boards from other layout tools. The author wants to add support for more PCB file formats. If you have an example with good complexity which uses a wide variety of your PCB design tool's features that you are willing to share, please open an [issue](https://github.com/drewsum/KiPI/issues) and attach your PCB file there.
 
 ## Install
 
@@ -230,6 +230,8 @@ picker: the net, then the part, then optionally the pin numbers. As you pick pin
 pre-fills what usually follows from them (a VRM's target voltage from the net name, ground
 pins, a series link's other side and a resistor's value), and problems are shown in red.
 **Import…** fills the power tree from a Tomachie power-tree file (`<design>.pdn.json`).
+It also reads a HyperLynx BoardSim session file (`.bud`): its power nets are ticked, and its
+`DC_CONN` series links and decoupling capacitor groups are added to the setup.
 
 **VRMs tab**: one entry per regulator, power input, or ideal supply. A VRM is a **Source**,
 **LDO**, **Switcher** or **Isolated** converter, with its output pins and target voltage,
@@ -243,7 +245,9 @@ To try it without a design of your own, open the example board in
 
 **Loads tab**: one entry per consumer: its **Supply pins**, **Current** (split evenly or by
 pin group), optional **Ground pins** and a **Tolerance** for PASS/FAIL. **Load models**
-(**Model ▾**) save and apply a part's supplies as a YAML file.
+(**Model ▾**) save and apply a part's supplies as a YAML file. They also read a
+HyperLynx PI model (`.hlpimodel`): its DC sink currents, pin by pin, as a load on each net
+the pins are on, on as many parts as you tick.
 
 ![Load editor](docs/images/setup_loads.png)
 

@@ -44,7 +44,7 @@ def test_import_says_what_it_read_and_what_changed(app, no_3d, tmp_path, monkeyp
         w._setup_path = setup_file
         w.import_pdn()
         last = w.log_view.toPlainText().splitlines()[-1]
-        assert last.startswith("== Read Tomachie board.pdn.json: ") and "a new power tree" in last
+        assert last.startswith("== Read board.pdn.json: ") and "a new power tree" in last
         w.import_pdn()                                   # the same file again
         assert "the same as before" in w.log_view.toPlainText().splitlines()[-1]
         assert w.log_view.minimumHeight() > 0
@@ -97,9 +97,48 @@ def test_a_background_start_imports_its_file_and_asks_nothing(app, no_3d, tmp_pa
         w.showMinimized()
         w._set_snapshot(board())
         app.processEvents()
-        assert "== Read Tomachie board.pdn.json: " in w.log_view.toPlainText()
+        assert "== Read board.pdn.json: " in w.log_view.toPlainText()
         w.import_pdn_file(str(tmp_path / "missing.pdn.json"), quiet=w._quiet())
         assert "Could not import Tomachie missing.pdn.json" in w.log_view.toPlainText()
         assert dialogs == []
+    finally:
+        w.close()
+
+
+def test_a_hyperlynx_session_file_ticks_its_power_nets_and_adds_its_links(
+        app, no_3d, tmp_path, monkeypatch):
+    from kipi.gui.main_window import MainWindow
+    sys.path.insert(0, str(Path(__file__).parents[1] / "dc"))
+    from test_hyperlynx_bud import BUD, _board
+    path = tmp_path / "board.bud"
+    path.write_text(BUD, encoding="utf-8")
+    monkeypatch.setattr(QFileDialog, "getOpenFileName", lambda *a, **k: (str(path), ""))
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.Discard)
+    w = MainWindow()
+    try:
+        w.show()
+        w.snapshot = _board()
+        w._load_setup(w.snapshot)
+        w._setup_path = tmp_path / "kept.kipi-setup.yml"
+        ticked = []
+
+        class Item:                     # a net list row, unticked
+            def __init__(self, net):
+                self.net = net
+
+            def checkState(self):
+                return None
+
+            def data(self, _role):
+                return self.net
+
+        monkeypatch.setattr(w, "_set_checked", lambda pred: ticked.extend(
+            n.net for n in map(Item, ("VIN", "+3V3", "GND", "+5V")) if pred(n)))
+        w.import_pdn()
+        last = w.log_view.toPlainText().splitlines()[-1]
+        assert last.startswith("== Read board.bud: ") and "3 power net(s) ticked" in last
+        assert ticked == ["VIN", "+3V3", "GND"]
+        assert [k.name for k in w.solve_panel.setup.links] == ["U1"]
+        assert {m.name for m in w.solve_panel.setup.caps} == {"Group1", "Group2"}
     finally:
         w.close()

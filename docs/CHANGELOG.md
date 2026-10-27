@@ -4,7 +4,76 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.3 (in development)
+## 0.9.4 (in development)
+
+### Added
+- **HyperLynx PI models for DC loads** (#149). The Loads tab's **Model ▾** menu now also
+  opens a HyperLynx PI model file (`.hlpimodel`), which gives a part's DC sink current pin
+  by pin. **Add loads from model file…** adds a load on each net the model's pins are on,
+  on every part you tick, so one file serves every copy of the part. **Apply model file to
+  loads…** sets the current of loads that already exist from the model's pins on their
+  net. Pins that draw different currents become pin groups. Only the `DC` records are
+  read: `VRM` records are skipped, and the sink resistance `R` is not modelled, since KiPI's
+  loads draw a fixed current. Anything left out is listed when the file is opened.
+
+- **HyperLynx session files** (#132). **Import…** now also reads a HyperLynx BoardSim
+  session file (`.bud`) and merges it into the setup. Its power nets (`SUPPLIES`) are
+  ticked. Its series links (`DC_CONN`) become series links from the part's two pins with
+  its DC resistance, replacing any link already on that part; both nets are ticked. Its
+  decoupling capacitor groups (`DCCGROUPS`, `DCCAPACITORS`) become capacitor models
+  holding each group's parts. A part already in another model moves to its group. Where
+  every part in a group has the same value, the capacitance, voltage rating and
+  dielectric are read from it; ESL and ESR are left to fill in. VRMs, loads and every
+  setting stay as they were. HyperLynx does not publish the file's format, so the VRM and
+  DC load sections are not read; a section with records is named in the Log.
+
+### Changed
+- **Large boards show in 3D more than twice as fast** (#202). After a board is read,
+  each net's copper is meshed for the 3D view; on a 10-layer board with 1,400 nets
+  (KiCad's Jetson AGX Thor demo, read as ODB++) that took 55 s, and now takes 23 s.
+  Copper is triangulated with Triangle, which KiPI already uses for its solver meshes,
+  instead of GEOS: a ground plane with 2,700 antipads took 4 s and now takes a quarter
+  of a second. Triangle is used only where the copper's outlines neither cross nor
+  touch, or touch only at shared corners; anywhere else, or without Triangle
+  installed, GEOS triangulates as before. A net's drill holes are worked out once for
+  its copper and its pad tops, and a via's tube shape is made once for every net.
+
+### Fixed
+- **The transient's ESL spike, found and sized** (#200). While a probe's load ramps up,
+  the PDN's inductance (the capacitors' ESL, their mounting and the planes) drops L·di/dt:
+  a plateau as long as the edge. It was always in the estimate, but in a window sized for
+  the loop's recovery it was only a sliver of a pixel wide. The Transient tab now lists
+  each probe's ESL spike, the inductance at the edge's frequency times the slew rate, and
+  the rail's largest dip over the edge. A slow edge sees a PDN that is still capacitive,
+  and the tab says that no spike stands out from the droop. **Zoom to edge** shows just
+  the step-up edge, and the report's transient table has an ESL spike column. The
+  spectrum's taper now runs from DC rather than from half the grid. A fast edge's spike
+  had rung 10 % past its corners, inflating the undershoot; it now lands within 1 % of
+  L·di/dt + R·I.
+
+- **Coupled noise from an inductor lying on its side, and at a victim's ends** (#201).
+  An inductor whose winding axis is set along or across the part was modelled as a
+  loop as tall as its winding is wide, which reached down through the board into the
+  plane under it. Its loop now stands inside the part's body, and its turns are worked
+  out from that area. A victim's loop also closes at its ends, down through its pads and
+  parts to the plane its return flows in. That path is vertical, so a straight trace
+  running across a winding's field lines can pick up the field through its ends even
+  where the trace picks up none. It is now counted at each free end of the victim. For a
+  trace ending beside such an inductor, this is all of the coupling. It agrees with a
+  Biot–Savart integral of the inductor's field over the victim's loop to 0.3%. An
+  unshielded inductor within a few millimetres of a victim can add half again to its
+  inductive noise; a shielded one adds a few percent at most.
+
+- **ODB++ pads drawn with the job's own symbols had no copper** (#203). A pad, drill or
+  via drawn with a symbol from the job's `symbols/` folder rather than a standard one
+  (`rect…`, `r…`, `oval…`, …) was read with no copper and a drill of size zero. PADS
+  draws every 0402 pad this way, with a symbol named `special`, so those pads could not
+  be modelled. These symbols are now read from the job, in their own units, and drawn
+  as the copper of their features: negative features cut what came before them, and a
+  symbol may be drawn with other symbols. They are turned and mirrored as the pad is.
+  Drill and via pad sizes are taken from the symbol's extent.
+
+## 0.9.3
 
 ### Added
 - **Series links with more than two pins, from their SPICE models** (#193). Importing a
