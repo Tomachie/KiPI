@@ -522,6 +522,7 @@ def test_a_load_behind_a_ferrite_is_reached_through_it():
            "datasheet_figures": [{"spec": "dcr", "max": "0.080", "unit": "ohm"}]}
     pdn = _behind_ferrite_pdn({"role": "ic", "refdes": "U1", "pins": ["U1_1"],
                                "current": {"amps": 0.2, "basis": "typ"},
+                               "supply_min": {"volts": 10.8, "basis": "min"},
                                "input_net": "VIN_F", "input_filter": [fb1]})
     setup, _ = TomachiePdnImporter(pdn, filtered_board()).run()
     assert {k.name: (k.side_a.net, k.side_b.net) for k in setup.links} == \

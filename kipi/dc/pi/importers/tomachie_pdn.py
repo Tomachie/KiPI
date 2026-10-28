@@ -68,6 +68,9 @@ from kipi.dc.pi.diode_curve import DIODE_MIN_OHMS, diode_ref
 # A part on a rail by a signal pin only (detect, enable, reference): 0 A, not a load.
 # "signal_pin_only" since Tomachie 7710456a; "not_a_supply" in files written before.
 NOT_A_LOAD = ("signal_pin_only", "not_a_supply")
+# Loads whose supply range is the datasheet's to state (a resistor's or a connector's is
+# not): one not stated is a value still to find.
+IC_ROLES = ("ic", "ic_with_regulator")
 
 SCHEMA = "tomachie-pdn"
 SCHEMA_VERSION = 1
@@ -145,6 +148,7 @@ class TomachiePdnImporter:
         self.unknown_current: List[str] = []
         self.static_current: Dict[str, float] = {}   # solved at a static figure, more not known
         self.not_supplied: List[str] = []    # on a rail by no supply pin: not a load
+        self.no_supply_range: List[str] = []  # ICs whose datasheet supply range is not known
         self.rails: Dict[str, dict] = {r["name"]: r for r in pdn.get("rails", [])}
         self.regulators: Dict[str, dict] = {g["refdes"]: g for g in pdn.get("regulators", [])}
         self.skipped_rails: Set[str] = set()
@@ -588,14 +592,21 @@ class TomachiePdnImporter:
                 self._link(e)
 
     # ------------------------------------------------------------ loads
-    def _tolerance(self, rail: dict, l: dict) -> dict:
+    def _tolerance(self, rail: dict, l: dict, label: str = "") -> dict:
         """The load's PASS / FAIL range: the rail's stated minimum and maximum, in % from
         nominal, or in volts when the datasheet's minimum supply voltage (``supply_min``)
-        is higher than the rail's minimum and takes its place."""
+        is higher than the rail's minimum and takes its place. A load whose datasheet
+        states no supply range has none: the rail's range is its source's (a battery's
+        10 V minimum), and a worst case solved there fails it at any copper drop. An IC
+        so left is named, its range being a value still to find."""
         v = rail.get("voltage", {})
         nom, lo, hi = number(v.get("nominal")), number(v.get("min")), number(v.get("max"))
         smin, smax = (number(x.get("volts")) if isinstance(x, dict) else None
                       for x in (l.get("supply_min"), l.get("supply_max")))
+        if smin is None and smax is None:
+            if l.get("role") in IC_ROLES:
+                self.no_supply_range.append(label or l["refdes"])
+            return {}
         if not nom:
             return {}
         if smin is not None or smax is not None:
@@ -680,7 +691,8 @@ class TomachiePdnImporter:
             ground = (self.idx.pin_ref(drv["return_pins"], self.notes,
                                        f"Return of {l['refdes']} on {name}")
                       if drv.get("return_pins") else None)
-            self.setup.loads.append(Load(label, supply, current, **self._tolerance(rail, l),
+            self.setup.loads.append(Load(label, supply, current,
+                                         **self._tolerance(rail, l, label),
                                          ground=ground or self._ground(returns,
                                                                        rail.get("ground")),
                                          current_max=self.max_current.get(label),
@@ -1005,6 +1017,11 @@ class TomachiePdnImporter:
             self.notes.append("Draw what they drive: their own (static) current from the "
                               "datasheet is solved, what they drive is on top and not known, "
                               "the Headroom results say how much that may add: " + ", ".join(static))
+        no_range = [n for n in self.no_supply_range if n in kept]
+        if no_range:
+            self.notes.append("No supply voltage range is stated for these ICs, so they "
+                              "are not judged PASS / FAIL; enter it on the Loads tab when "
+                              "known: " + ", ".join(no_range))
         unknown = [n for n in self.unknown_current if n in kept]
         if unknown:
             self.notes.append("Current not known, imported as 0 A and marked not known (the "

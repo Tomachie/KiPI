@@ -80,6 +80,23 @@ def test_a_maximum_equal_to_its_typical_but_for_rounding_solves():
     assert by_name(solve_tree(board(), setup).loads, "U2").current == pytest.approx(1.4)
 
 
+def test_a_load_with_no_stated_supply_range_is_not_judged():
+    """The rail's range is its source's: a load stating none of its own has no window
+    (a worst case at the source's minimum would fail it at any copper drop); an IC so
+    left is named."""
+    pdn = copy.deepcopy(PDN)
+    load = pdn["rails"][1]["loads"][0]
+    del load["supply_min"]
+    pdn["rails"][1]["loads"].append({"role": "pull_resistor", "refdes": "R5",
+                                     "pins": ["U2_1"],
+                                     "current": {"amps": 0.001, "basis": "typ"}})
+    setup, notes = run(pdn)
+    for name in ("U2", "R5"):
+        assert not by_name(setup.loads, name).has_tolerance()
+    note = next(n for n in notes if n.startswith("No supply voltage range is stated"))
+    assert note.endswith(": U2")
+
+
 def test_supply_max_tightens_the_rails_maximum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_max"] = {"volts": 3.4, "basis": "max",
