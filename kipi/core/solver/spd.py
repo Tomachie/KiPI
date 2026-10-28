@@ -14,6 +14,7 @@ from typing import List, Optional
 import numpy as np
 import scipy.sparse as sp
 
+from kipi.core.memory import free_memory
 from kipi.core.progress import ProgressReporter
 from kipi.core.solver import direct
 
@@ -23,7 +24,13 @@ from kipi.core.solver import direct
 # tried (1.2 s vs 10 s at 640k; about 70 s vs about 30 minutes on a 10-layer board's
 # 1.9M-unknown ground plane, about 3 GB).
 DIRECT_SOLVE_MAX_UNKNOWNS = 200_000
-DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO = 3_000_000
+DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO = 1_000_000
+# Above that, PARDISO is still used while its factorization fits in this share of the
+# memory free, at this many bytes per unknown: on board meshes it takes about 1.3 kB (6.5 GB
+# at 4.9M unknowns, where it solved in 11 s what AMG-CG took 104 s for, #214), counted
+# with a margin since the fill grows a little faster than the unknowns.
+PARDISO_BYTES_PER_UNKNOWN = 2048
+PARDISO_MEMORY_SHARE = 0.5
 # CG on big boards can reach the floor that round-off allows just above the target
 # tolerance; past that point it does not stall quietly but diverges. Stop once it has
 # gone this many iterations without a new best residual, and keep the best iterate.
@@ -31,6 +38,12 @@ CG_STALL_ITERATIONS = 40
 CG_ACCEPT_FACTOR = 100     # accept a stopped CG result within this factor of tol
 CG_WARM_ACCEPT_FACTOR = 10  # skip CG when a warm start is already within this factor
 CG_REUSED_MAX_ITERATIONS = 150  # past this, a reused preconditioner is set up afresh
+# The AMG hierarchy's prolongation smoothing: energy minimization took 8-17% less time to
+# the same answer than pyamg's default Jacobi smoothing on every system above 200k
+# unknowns tried (Jetson AGX Thor rails up to 4.9M unknowns, the DSP board's rails and
+# heat model, #218). Should CG not converge with it, the default is set up once before
+# anything else is tried.
+AMG_SMOOTH = "energy"
 
 
 class _Stalled(Exception):
@@ -38,9 +51,13 @@ class _Stalled(Exception):
 
 
 def direct_solve_max_unknowns() -> int:
-    """Largest system solved directly with the backend this machine has."""
-    return (DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO if direct.backend() == "pardiso"
-            else DIRECT_SOLVE_MAX_UNKNOWNS)
+    """Largest system solved directly with the backend this machine has: with PARDISO, as
+    many as its factorization fits in memory for."""
+    if direct.backend() != "pardiso":
+        return DIRECT_SOLVE_MAX_UNKNOWNS
+    free = free_memory()
+    fits = 0 if free is None else int(PARDISO_MEMORY_SHARE * free // PARDISO_BYTES_PER_UNKNOWN)
+    return max(DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO, fits)
 
 
 class SpdSolver:
@@ -65,6 +82,7 @@ class SpdSolver:
         self.lu = None            # direct factorization of A itself
         self.M = None             # CG preconditioner: this matrix's AMG cycle, or a previous one's
         self.reused = False
+        self.smooth = None        # the AMG hierarchy's prolongation smoother, once set up
         n = A.shape[0]
         if (previous is not None and previous.M is not None
                 and previous.A.shape == A.shape and previous.A.nnz == A.nnz):
@@ -77,26 +95,39 @@ class SpdSolver:
         else:
             self._setup(progress)
 
-    def _setup(self, progress: ProgressReporter):
-        """Factorization (small systems) or AMG hierarchy (large ones) for A itself."""
+    def _setup(self, progress: ProgressReporter, smooth: str = AMG_SMOOTH):
+        """Factorization (small systems) or AMG hierarchy (large ones) for A itself;
+        ``smooth`` is the hierarchy's prolongation smoother."""
         A, n = self.A, self.A.shape[0]
         self.reused = False
         self.M = None
         if n <= direct_solve_max_unknowns():
             progress.info(f"Direct solve ({n} unknowns, {direct.backend()})")
             progress.fraction(None)
-            self.lu = direct.factorize(A, progress.warn) if n else None
-            self.stats["method"] = f"direct ({self.lu.name})" if n else "direct"
-            self.stats["iterations"] = 0
-        else:
-            import pyamg
-            t = time.perf_counter()
-            progress.info(f"AMG setup ({n} unknowns, {A.nnz} non-zeros)...")
-            ml = pyamg.smoothed_aggregation_solver(A, symmetry="hermitian", max_coarse=500)
-            progress.info(f"AMG hierarchy: {len(ml.levels)} levels, operator complexity "
-                          f"{ml.operator_complexity():.2f} ({time.perf_counter() - t:.2f} s)")
-            self.M = ml.aspreconditioner()
-            self.stats["method"] = "amg-cg"
+            if n == 0:
+                self.lu = None
+                self.stats.update(method="direct", iterations=0)
+                return
+            try:
+                # Past PARDISO's usual limit SuperLU would take far too long: if PARDISO
+                # fails there, AMG-CG instead (#214).
+                self.lu = direct.factorize(A, progress.warn,
+                                           superlu=n <= DIRECT_SOLVE_MAX_UNKNOWNS_PARDISO)
+            except direct.DirectError as e:
+                progress.warn(f"{e}; solving this system iteratively (AMG-CG)")
+            else:
+                self.stats.update(method=f"direct ({self.lu.name})", iterations=0)
+                return
+        import pyamg
+        t = time.perf_counter()
+        progress.info(f"AMG setup ({n} unknowns, {A.nnz} non-zeros)...")
+        kw = {} if smooth == "jacobi" else {"smooth": smooth}      # jacobi: pyamg's default
+        ml = pyamg.smoothed_aggregation_solver(A, symmetry="hermitian", max_coarse=500, **kw)
+        self.smooth = smooth
+        progress.info(f"AMG hierarchy: {len(ml.levels)} levels, operator complexity "
+                      f"{ml.operator_complexity():.2f} ({time.perf_counter() - t:.2f} s)")
+        self.M = ml.aspreconditioner()
+        self.stats["method"] = "amg-cg"
 
     def solve(self, rhs: np.ndarray, progress: ProgressReporter) -> np.ndarray:
         if self.A.shape[0] == 0:
@@ -111,6 +142,12 @@ class SpdSolver:
             if self.lu is not None:
                 self.x_prev = np.asarray(self.lu(rhs))
                 return self.x_prev
+            x, rel = self._cg(rhs, progress)
+        if (rel > self.s.tol * CG_ACCEPT_FACTOR and self.M is not None and not self.reused
+                and self.smooth not in (None, "jacobi")):
+            progress.info(f"AMG-CG did not converge (relative residual {rel:.1e}); setting "
+                          "the hierarchy up again with Jacobi smoothing")
+            self._setup(progress, smooth="jacobi")
             x, rel = self._cg(rhs, progress)
         if rel > self.s.tol * CG_ACCEPT_FACTOR:
             progress.warn("Iterative solve did not converge; switching this system to a "

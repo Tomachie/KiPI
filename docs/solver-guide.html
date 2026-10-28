@@ -273,8 +273,12 @@ mesher:</p>
     drill hole, down to <i>Min edge</i> (0.02 mm), and grow again away from it. Detail is
     spent where the voltage changes fastest.</li>
   <li><b>Pads and holes.</b> Each load or VRM pad outline is built into the mesh, so the pad
-    has nodes of its own to inject or draw current. Drill holes are holes in the copper, and
-    the nodes around each rim are where the plated barrel joins that layer.</li>
+    has nodes of its own to inject or draw current. Its nodes are one equipotential, as if
+    the part shorted the whole pad. With <i>Model large pads as copper shapes</i> (Mesh tab)
+    a pad above the area threshold is meshed as copper instead, and only its contact is
+    equipotential: an SMD pad's outline shrunk about its centre, or a plated hole's wall.
+    Drill holes are holes in the copper, and the nodes around each rim are where the plated
+    barrel joins that layer.</li>
   <li><b>2.5D.</b> Each layer is a flat sheet with the copper's thickness. Vias and plated
     holes join the sheets of different layers through their barrels. Current flowing through
     the thickness of a single sheet is not modeled, which suits board copper, which is tens
@@ -822,7 +826,8 @@ solves them:</p>
     direct limit.</td></tr>
   <tr><td>PARDISO (Intel MKL)</td><td class="wrap">A parallel sparse direct solver. It
     factorizes on every CPU core and handles complex systems too.</td><td class="wrap">Up to
-    1M unknowns, if installed.</td></tr>
+    1M unknowns, if installed, and larger DC and thermal systems while the factorization fits
+    in half the free memory.</td></tr>
 </table>
 <p>PARDISO is an optional install (the <code>pypardiso</code> package). Its benefits:</p>
 <ul>
@@ -830,7 +835,10 @@ solves them:</p>
     On a 645k-unknown rail one solve drops from about 8 s to 1.2 s, and a four-pass
     electro-thermal run from about 90 s to 34 s.</li>
   <li><b>A higher direct-solve limit.</b> With PARDISO, KiPI factorizes systems of up to 1M
-    unknowns instead of 200k. A factorization is reused for every load, power-tree iteration
+    unknowns instead of 200k, and larger DC and thermal systems while the factorization,
+    reckoned at 2 kB an unknown, fits in half the memory free. On KiCad's Jetson AGX Thor demo
+    a 4.9M-unknown ground factorizes in 10 s where AMG-CG took 104 s. If such a factorization
+    fails, that system is solved by AMG-CG, not by SuperLU. A factorization is reused for every load, power-tree iteration
     and AC port, which an iterative solver cannot do, so fine meshes stay fast.</li>
   <li><b>AC sweeps.</b> Each field frequency of an AC sweep is a complex factorization, so
     large AC models gain the most.</li>

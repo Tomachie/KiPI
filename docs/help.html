@@ -698,9 +698,12 @@ mode it shows the impedance plot's cursor values.</p>
 anything KiPI had to fill in because the source did not give it, such as a default stackup
 when the board's own is incomplete. Results that depend on a placeholder are only as good as
 the placeholder.</p>
-<p><b>Select in KiCad</b> selects the picked pad or via in the PCB editor, so you can find it
-in your layout. It needs a live KiCad connection (not a snapshot), so the plugin has it and
-standalone KiPI does not.</p>
+<p><b>Select in KiCad</b> selects the picked pad, via or track in the PCB editor, so you can
+find it in your layout. With <b>Follow in KiCad</b> ticked (the default), each click in 3D
+does this by itself. The editor also centres its view on the item and makes its copper layer
+the active one. KiCad can't be sent to a bare point, so a click on zone copper with no track
+under it leaves the editor's view where it is. Both need a live KiCad connection (not a
+snapshot), so the plugin has them and standalone KiPI does not.</p>
 </div>
 </details>
 
@@ -1141,8 +1144,24 @@ many groups will be solved, e.g. <b>Solve 3 of 5 net groups</b>.</p>
     drill range, plating (µm, growing inward from the drill) and what a filled hole is
     filled with. A via the KiCad board marks as filled carries its core too when the fill
     conducts. Defaults: IPC-6012 Class 2 minimum averages.</td></tr>
+  <tr><td>Model large pads as copper shapes</td><td class="wrap">Off (the default): every
+    load, VRM and series-part pad is one equipotential, as if the part shorted all of it.
+    On: pads at least as large as <b>Pads larger than</b> are solved as copper, and the part
+    connects only at its contact. Current density then shows inside these pads, and vias
+    in them away from the contact are ordinary vias.</td></tr>
+  <tr><td>Pads larger than</td><td class="wrap">Slider, 1 to 200 mm² of copper (a plated
+    hole's drill not counted). The default of 10 mm² takes in SO-8 and QFN power pads and
+    larger, but no passives.</td></tr>
+  <tr><td>Contact area</td><td class="wrap">Where a large SMD pad's part connects: the pad's
+    outline shrunk about its centre to this share of its area (25% by default, about a power
+    die on its tab). A plated-hole pad, such as a mounting hole or a through-hole lead,
+    connects at its hole wall.</td></tr>
 </table>
 <p>The defaults suit most boards; set the via plating your fabricator states.</p>
+<p>Equipotential pads give the lowest drop, since they treat the part as a perfect conductor
+across its pad. Large pads as copper give a higher one, since they ignore the part's own tab.
+For a soldered power tab (D2PAK, TOLL) the truth lies between the two, so run both on a
+critical rail.</p>
 <figure><img src="images/setup_mesh.png" alt="The Mesh tab with the via plating rules">
 <figcaption>The Mesh tab and its via plating rules.</figcaption></figure>
 </div>
@@ -2579,7 +2598,7 @@ copper with KiCad: KiPI only sees filled copper.</p></div>
 <summary>NOT CONVERGED</summary>
 <div class="body"><p>The iterative solver did not reach its tolerance on a very large group.
 Raise <b>Max edge</b> to shrink the problem, or install the optional PARDISO solver (see the
-README) for a direct solve of up to 3M unknowns.</p></div>
+README) for a direct solve of up to 1M unknowns, or more while memory allows.</p></div>
 </details>
 <details>
 <summary>Solves are slow</summary>
@@ -2587,7 +2606,34 @@ README) for a direct solve of up to 3M unknowns.</p></div>
 in the Solve tab. In AC, lower <b>Field solves per decade</b>, raise <b>Min edge</b>, or check
 that <b>Grade only near the rail</b> is ticked. Large planes
 are cheap; long fine traces are not. PARDISO helps a lot on large boards (Windows and Linux,
-x86-64).</p></div>
+x86-64): it solves DC systems directly as long as the factorization fits in half the free
+memory, and the Log says <i>Direct solve</i> for those. Without it, an AC or Coupled Noise solve works on several field frequencies at once,
+one core each, as many as memory allows; the Log says how many (<i>Solving … frequencies …
+at a time</i>).</p>
+<p>A large mesh (a ground with many vias, say) is built in several processes at once, a
+copper layer to each, up to eight; Task Manager shows them while it does. The mesh is the
+same as one process makes. If a computer can't start them, KiPI meshes in one process and
+the Log says why. To mesh in one process anyway, set the environment variable
+<code>KIPI_SERIAL=1</code>.</p></div>
+</details>
+<details>
+<summary>The 3D view is slow</summary>
+<div class="body"><p>The 3D view draws on the graphics card through OpenGL. Once the board
+has drawn, the Log names what draws it (<i>3D view: drawn by …</i>). On a board with
+millions of triangles, a graphics card turns the view in a few milliseconds a frame. With
+<b>Opacity</b> below 100% the see-through layers are sorted every frame, which takes several
+times as long. When the Log warns that the view is drawn on the processor (<i>GDI Generic</i>,
+<i>llvmpipe</i>), turning it is slow. That is usual over Remote Desktop or in a virtual
+machine; otherwise install the graphics card's driver. On a laptop with two graphics chips,
+Windows' <b>Graphics settings</b> can set Python to the high-performance one.</p>
+<p>Building the view of a large board is the slow part, and that runs on the processor, not
+the graphics card: shaping each net's copper, and the solder masks and silkscreens, into
+triangles. On a board with many nets KiPI builds them in several processes at once, up to
+eight, so the view comes in several times sooner on a processor with many cores; Task
+Manager shows those processes while it does. If a computer can't start them, KiPI builds
+the view in one process as before and the Log says why. To build in one process anyway, set
+the environment variable <code>KIPI_SERIAL=1</code>.</p>
+</div>
 </details>
 <details>
 <summary>An AC curve looks wrong</summary>

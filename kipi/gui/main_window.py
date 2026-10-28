@@ -158,6 +158,8 @@ class MainWindow(QMainWindow):
         self._guess_wanted = False          # Guess models clicked: run once models are in
         self._model_source = None           # the board's ModelProvider, False if none
         self._closed = False
+        self._graphics_logged = False   # the 3D view's graphics card, once a session
+        self._coatings_wanted = False   # solder masks and silkscreens to build
         self._layer_colors_from = None      # where the layer colors were last read from
         self._model_timer = QTimer(self)    # coalesce setup edits into one update
         self._model_timer.setSingleShot(True)
@@ -624,8 +626,16 @@ class MainWindow(QMainWindow):
         self.btn_select = QPushButton("Select", g_info)
         self.btn_select.setEnabled(False)
         self.btn_select.clicked.connect(self._select_in_source)
+        self.chk_follow = QCheckBox("Follow", g_info)
+        follow = QSettings("KiPI", "KiPI").value("view/follow_in_editor", True)
+        self.chk_follow.setChecked(str(follow).lower() not in ("false", "0"))
+        self.chk_follow.toggled.connect(
+            lambda v: QSettings("KiPI", "KiPI").setValue("view/follow_in_editor", v))
         li.addWidget(self.info, 1)
-        li.addWidget(self.btn_select)
+        row = QHBoxLayout()
+        row.addWidget(self.btn_select, 1)
+        row.addWidget(self.chk_follow)
+        li.addLayout(row)
 
         split = QSplitter(Qt.Vertical, panel)
         for w in (g_nets, g_layers, g_view, g_info):
@@ -900,9 +910,16 @@ class MainWindow(QMainWindow):
                                    "before reading (recommended)")
         self._act_refill.setVisible(src is not None and src.caps.refill_zones)
         self.btn_select.setText(f"Select in {src.name}" if src else "Select")
-        self.btn_select.setToolTip("Select the picked pad or via in "
+        self.btn_select.setToolTip("Select the picked pad, via or track in "
                                    f"{src.description if src else 'the editor'}")
         self.btn_select.setVisible(src is not None and src.caps.select_items)
+        self.chk_follow.setText(f"Follow in {src.name}" if src else "Follow")
+        self.chk_follow.setToolTip(
+            "Each pad, via or track clicked in the 3D view is selected in "
+            f"{src.description if src else 'the editor'}, which centres its view on it and "
+            "makes its copper layer the active one. Untick it to leave the editor's view "
+            "alone; Select still selects the picked item.")
+        self.chk_follow.setVisible(src is not None and src.caps.select_items)
         self._watch(src.files() if src is not None else [])
 
     # --- the board's files -----------------------------------------------------------
@@ -1062,9 +1079,9 @@ class MainWindow(QMainWindow):
         self._show_unsaved()
         self.setup_bar.setEnabled(not self._busy())
         self._show_board_summary()
-        from kipi.core.viz.meshes import board_body, board_coatings
+        from kipi.core.viz.meshes import board_body
         self.viewer.set_board(*board_body(snap))
-        self.viewer.set_coatings(board_coatings(snap))
+        self._coatings_wanted = True        # built with the nets, off the UI thread (#209)
         self.sync_nets()
         if self._pending_pdn:
             path, self._pending_pdn = self._pending_pdn, None
@@ -1232,29 +1249,33 @@ class MainWindow(QMainWindow):
         wanted = [n.name for n in self.snapshot.nets]
         shown = set(self.viewer.nets())
         todo = [n for n in wanted if n not in shown]
-        if not todo:
+        coatings = self._coatings_wanted
+        if not todo and not coatings:
             return
 
         snap = self.snapshot
         cache = self._copper_cache
 
         def work(progress):
-            from kipi.core.geometry.copper import net_copper
-            from kipi.core.viz.meshes import build_net_scene
+            from kipi.core.viz.parallel import Coatings, build_nets
             built = 0
             with progress.timed(f"Building {len(todo)} net(s)"):
-                for i, net in enumerate(todo):
-                    progress.check_cancel()
-                    if net not in cache:
-                        cache[net] = net_copper(snap, net, progress)
-                    progress.partial(build_net_scene(snap, net, cache[net], progress))
-                    built += 1
-                    progress.fraction((i + 1) / len(todo))
+                # In processes (#210), with the solder masks and silkscreens (#209).
+                for ns in build_nets(snap, todo, cache, progress, coatings):
+                    progress.partial(ns)
+                    if not isinstance(ns, Coatings):
+                        built += 1
+                        progress.fraction(built / max(len(todo), 1))
             return built
 
         added: List[str] = []
 
         def on_net(ns):
+            from kipi.core.viz.parallel import Coatings
+            if isinstance(ns, Coatings):
+                self.viewer.set_coatings(ns.coatings)
+                self._coatings_wanted = False
+                return
             if not ns.copper:
                 self.log(f"{ns.net}: no copper on any layer", logging.WARNING)
             self.viewer.add_net(ns, render=False)
@@ -1265,8 +1286,28 @@ class MainWindow(QMainWindow):
         def done(built):
             self.viewer.render()
             self.log(f"Added {len(added)} net(s); {len(self.viewer.nets())} net(s) shown")
+            self._log_graphics()
 
         self._run(work, done, "Building view", on_partial=on_net)
+
+    def _log_graphics(self):
+        """Name what draws the 3D view, once it has drawn (#205). The view draws on the
+        graphics card through OpenGL; a renderer that draws on the processor instead
+        makes a large board slow to turn."""
+        if self._graphics_logged:
+            return
+        self._graphics_logged = True
+        from kipi.gui.viewer3d import software_renderer
+        name = self.viewer.graphics()
+        if not name:
+            return
+        if software_renderer(name):
+            self.log(f"3D view: drawn by {name}, on the processor rather than a graphics "
+                     "card, so a large board turns slowly. This is usual over Remote "
+                     "Desktop or in a virtual machine; otherwise install the graphics "
+                     "card's driver.", logging.WARNING)
+        else:
+            self.log(f"3D view: drawn by {name}")
 
     # ============================================================ PI Models markers
     def _sync_pi_markers(self):
@@ -1488,7 +1529,8 @@ class MainWindow(QMainWindow):
 
     def import_pdn(self):
         """Replace the power tree with the one in a Tomachie .pdn.json (#120), or merge a
-        HyperLynx session file's power nets, series links and capacitor groups (#132)."""
+        HyperLynx session file's power nets, series links, capacitor groups, VRMs and DC
+        loads (#132)."""
         if self.snapshot is None:
             QMessageBox.information(self, "KiPI", "Load or open the board first.")
             return
@@ -1927,7 +1969,7 @@ class MainWindow(QMainWindow):
 
     def _apply_stackup(self, snap, st):
         from kipi.core.model.stackup import to_setup
-        from kipi.core.viz.meshes import board_body, board_coatings
+        from kipi.core.viz.meshes import board_body
         snap.stackup = st
         self.solve_panel.setup.stackup = to_setup(st) if st.edited else None
         self.log(f"Stackup: {'edited in KiPI' if st.edited else 'from KiCad'}, "
@@ -1939,7 +1981,7 @@ class MainWindow(QMainWindow):
         self._populate_layers()
         self._show_board_summary()
         self.viewer.set_board(*board_body(snap), reset_view=False)
-        self.viewer.set_coatings(board_coatings(snap))
+        self._coatings_wanted = True
         for i in range(self.layer_list.count()):
             it = self.layer_list.item(i)
             if it.checkState() != Qt.Checked:
@@ -2292,7 +2334,7 @@ class MainWindow(QMainWindow):
 
         pad_hit = pth_obj
         from shapely.geometry import Point
-        from kipi.core.geometry.copper import poly_to_shapely
+        from kipi.core.geometry.copper import poly_to_shapely, track_at
         p0 = Point(x, y)
         for p in ([] if pad_hit is not None or best_via is not None else s.pads):
             if p.net not in shown or cu.id not in p.shapes:
@@ -2338,6 +2380,11 @@ class MainWindow(QMainWindow):
                     lines.append(f"Copper of net <b>{html.escape(net)}</b>")
                     hit_net = net
                     break
+            track = track_at(s.tracks, cu.id, x, y, hit_net) if hit_net else None
+            if track is not None and track.id:      # one the editor can select
+                self._picked = ("track", track.id)
+                lines.append(f"{'Arc track' if track.is_arc else 'Track'} "
+                             f"{track.width_mm:.3f} mm wide")
         if self.mode == "noise":
             # A clicked part's or net's field joins the field view when it is on (#146).
             part = pad_hit.footprint if pad_hit is not None else ""
@@ -2347,6 +2394,8 @@ class MainWindow(QMainWindow):
         self.info.setHtml("<br>".join(lines))
         self.btn_select.setEnabled(self._picked is not None and self._source is not None
                                    and self._source.can_select())
+        if self.btn_select.isEnabled() and self.chk_follow.isChecked():
+            self._follow_in_source(cu.id)
         if self._barrel_status:
             self.statusBar().showMessage(self._barrel_status)
         elif not probe_html:
@@ -2372,6 +2421,15 @@ class MainWindow(QMainWindow):
             self.log(f"Selected {self._picked[0]} in {source.name}")
         except Exception as e:  # noqa: BLE001
             self.log(f"Could not select in {source.name}: {e}", logging.WARNING)
+
+    def _follow_in_source(self, layer_id: int):
+        """Select the picked item in the editor and bring its view there (#208)."""
+        source = self._source
+        try:
+            source.focus(*self._picked, layer_id)
+        except Exception as e:  # noqa: BLE001
+            self.log(f"Could not show the {self._picked[0]} in {source.name}: {e}",
+                     logging.WARNING)
 
     def _unsaved(self) -> bool:
         if self.snapshot is None or self._saved is None:

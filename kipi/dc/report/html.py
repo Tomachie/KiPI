@@ -2,11 +2,17 @@
 """Self-contained HTML (or PDF) report for a solved power tree.
 
 One ``.html`` file with:
-* a summary and the load / VRM / DC connection / pin / loss / via tables,
-* per net group: an interactive 3D view (Plotly, rotate and zoom in the browser), a
-  per-layer table and top-down voltage and current-density maps for every layer, with a
-  tickbox per layer that hides or shows it in the view and the maps (#181),
-* the board temperature map and iteration history when an electro-thermal solve ran.
+* a summary,
+* the board temperature map when an electro-thermal solve ran,
+* per net group: an interactive 3D view (Plotly, rotate and zoom in the browser;
+  collapsed until clicked open, #222) and
+  top-down voltage and current-density maps for every layer, with a tickbox per layer that
+  hides or shows it in the view and the maps (#181),
+* after every plot (#222), the load / VRM / DC connection / pin / loss / via tables, the
+  thermal tables and each group's per-layer table, then the notes.
+
+Click an image to see it full screen; the 3D views have a button that fills the window
+with them (#222).
 
 Plotly's JavaScript is embedded once, so the report works offline and can be shared
 as a single file. Images are rendered with matplotlib's Agg backend (thread safe).
@@ -92,7 +98,13 @@ PDF_MAP_SIZE = (7.0, 5.6)            # inches, about the box's size, so the text
 PDF_MAP_BOX = (690, 440)
 
 
-def _png(fig, dpi: int = 110) -> str:
+# A web page's images are drawn at twice the resolution they are shown at, so they stay
+# sharp when clicked to full screen (#222).
+WEB_DPI = 220
+SHOWN_DPI = 110
+
+
+def _png(fig, dpi: int = WEB_DPI) -> str:
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     FigureCanvasAgg(fig)
     buf = io.BytesIO()
@@ -137,13 +149,10 @@ def vunit_selector() -> str:
 
 
 VUNIT_JS = r"""
-(function () {
-  var sel = document.getElementById("vunit");
-  if (!sel) return;
-  sel.addEventListener("change", function () {
-    document.documentElement.setAttribute("data-vunit", sel.value);
-  });
-})();
+document.addEventListener("change", function (e) {
+  if (e.target.id === "vunit")
+    document.documentElement.setAttribute("data-vunit", e.target.value);
+});
 """
 
 
@@ -180,7 +189,7 @@ def _layer_map(lr, values, cell: bool, title: str, cmap: str, unit: str,
                             f"{title}, {lo:.6f} to {hi:.6f} V", cmap, label, clip_pct, outline,
                             size)
         cb.formatter.set_useOffset(False)
-    return _png(fig, PDF_MAP_DPI if pdf else 110)
+    return _png(fig, PDF_MAP_DPI if pdf else WEB_DPI)
 
 
 def _has_offset(fig, cb) -> bool:
@@ -256,7 +265,7 @@ def _thermal_map(th, outline, layer, title, vmin, vmax, pdf: bool = False) -> st
     ax.tick_params(labelsize=7)
     cb = fig.colorbar(m, ax=ax, shrink=0.85)
     cb.set_label("°C", fontsize=8)
-    return _png(fig, PDF_MAP_DPI if pdf else 110)
+    return _png(fig, PDF_MAP_DPI if pdf else WEB_DPI)
 
 
 def _decimate(sheet, keep: float):
@@ -332,8 +341,19 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
                       scene=dict(aspectmode="data", xaxis_title="x (mm)",
                                  yaxis_title="y (mm)", zaxis_title=f"z ×{Z_EXAGGERATION:g}"),
                       legend=dict(orientation="h"))
-    return pio.to_html(fig, include_plotlyjs=False, full_html=False, div_id=div_id,
-                       config={"displaylogo": False})
+    # Drawn only when opened (#222): the figure waits in the page as data, which costs the
+    # browser nothing until then. "</" is escaped so the data cannot end its script.
+    data = pio.to_json(fig, validate=False).replace("</", r"<\/")
+    return (f"<div style='height:560px; width:100%;'><div id='{_e(div_id)}' "
+            "class='plotly-graph-div lazy-plot' style='height:100%; width:100%;'></div></div>"
+            f"<script type='application/json' class='plot-data' data-for='{_e(div_id)}'>"
+            f"{data}</script>")
+
+
+def _view3d(name: str, plot: str, note: str = "") -> str:
+    """A group's 3D view, collapsed until clicked open (#222)."""
+    return (f"<details class='view3d'><summary>3D view: {_e(name)}</summary>{plot}"
+            + (f"<p class='note'>{note}</p>" if note else "") + "</details>")
 
 
 # ---------------------------------------------------------------------------
@@ -341,40 +361,115 @@ def _plotly_3d(scene, snap: BoardSnapshot, div_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 CSS = """
-body { font-family: Segoe UI, Helvetica, Arial, sans-serif; margin: 24px auto; max-width: 1180px;
-       color: #222; background: #fafafa; }
-h1 { margin-bottom: 0; } h2 { border-bottom: 2px solid #ddd; padding-bottom: 4px; margin-top: 36px; }
-h3 { margin-top: 26px; }
-.meta { color: #666; margin-top: 4px; }
-table { border-collapse: collapse; margin: 8px 0 16px; font-size: 13px; background: white; }
-th, td { border: 1px solid #ddd; padding: 4px 8px; text-align: right; }
-th { background: #f0f0f0; } td:first-child, th:first-child { text-align: left; }
-.pass { color: #1a8f2c; font-weight: bold; } .fail { color: #c62828; font-weight: bold; }
-.unjudged { color: #b26a00; font-weight: bold; }
-.maps { display: flex; flex-wrap: wrap; gap: 12px; }
-.maps figure { margin: 0; background: white; border: 1px solid #ddd; padding: 6px; }
-.maps img { width: 520px; max-width: 100%; }
-.note { color: #666; font-size: 12px; }
-nav a { margin-right: 12px; }
+:root { --fg: #1f2937; --muted: #6b7280; --line: #e5e7eb; --card: #ffffff; --bg: #f4f6f9;
+        --accent: #2563eb; --accent-soft: #eff4ff; --head: #f8fafc; --sub: #374151;
+        --th: #4b5563; --input: #d1d5db; --faint: #9ca3af; --bar: rgba(244, 246, 249, 0.92);
+        --pass: #15803d; --pass-bg: #dcfce7; --fail: #b91c1c; --fail-bg: #fee2e2;
+        --warn: #b45309; --warn-bg: #fef3c7; color-scheme: light; }
+:root[data-theme=dark] { --fg: #e5e7eb; --muted: #9ca3af; --line: #2b3444; --card: #161b26;
+        --bg: #0d1117; --accent: #60a5fa; --accent-soft: #1c2738; --head: #1b2230;
+        --sub: #cbd5e1; --th: #a3aec0; --input: #3a4556; --faint: #6b7280;
+        --bar: rgba(13, 17, 23, 0.9); --pass: #4ade80; --pass-bg: rgba(34, 197, 94, 0.16);
+        --fail: #f87171; --fail-bg: rgba(239, 68, 68, 0.16); --warn: #fbbf24;
+        --warn-bg: rgba(245, 158, 11, 0.16); color-scheme: dark; }
+.theme-toggle { float: right; font-size: 13px; color: var(--muted); cursor: pointer;
+                padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px;
+                background: var(--card); user-select: none; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+       margin: 0 auto; padding: 32px 28px 64px; max-width: 1240px; color: var(--fg);
+       background: var(--bg); line-height: 1.5; font-size: 14px;
+       -webkit-font-smoothing: antialiased; }
+h1 { font-size: 26px; font-weight: 650; letter-spacing: -0.02em; margin: 0; }
+h2 { font-size: 19px; font-weight: 600; letter-spacing: -0.01em; margin: 44px 0 12px;
+     padding-left: 12px; border-left: 4px solid var(--accent); scroll-margin-top: 70px; }
+h3 { font-size: 15px; font-weight: 600; margin: 26px 0 8px; color: var(--sub); }
+a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+.meta { color: var(--muted); margin: 6px 0 18px; font-size: 13px; }
+table { border-collapse: separate; border-spacing: 0; margin: 8px 0 18px; font-size: 13px;
+        background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+        box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+        display: block; width: fit-content; max-width: 100%; overflow-x: auto;
+        font-variant-numeric: tabular-nums; }
+th, td { padding: 7px 12px; text-align: right; border-bottom: 1px solid var(--line); }
+tbody tr:last-child td { border-bottom: none; }
+tbody tr:hover td { background: var(--accent-soft); }
+th { background: var(--head); color: var(--th); font-weight: 600; white-space: nowrap; }
+td:first-child, th:first-child { text-align: left; }
+.pass, .fail, .unjudged { display: inline-block; padding: 1px 9px; border-radius: 999px;
+                          font-size: 12px; font-weight: 600; }
+.pass { color: var(--pass); background: var(--pass-bg); }
+.fail { color: var(--fail); background: var(--fail-bg); }
+.unjudged { color: var(--warn); background: var(--warn-bg); }
+.maps { display: flex; flex-wrap: wrap; gap: 16px; }
+.maps figure { margin: 0; background: var(--card); border: 1px solid var(--line);
+               border-radius: 10px; padding: 8px; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05);
+               transition: box-shadow 0.15s; }
+.maps figure:hover { box-shadow: 0 6px 18px rgba(16, 24, 40, 0.12); }
+.maps img { width: 560px; max-width: 100%; display: block; }
+.note { color: var(--muted); font-size: 12.5px; }
+nav { position: sticky; top: 0; z-index: 3; display: flex; flex-wrap: wrap; gap: 6px;
+      padding: 10px 0; margin: 0 0 8px; background: var(--bar);
+      backdrop-filter: blur(6px); border-bottom: 1px solid var(--line); }
+nav a { padding: 4px 12px; border-radius: 999px; background: var(--card);
+        border: 1px solid var(--line); color: var(--sub); font-size: 13px; }
+nav a:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+              text-decoration: none; }
 .vu { display: none; }
 html:not([data-vunit]) .vu-mv, html[data-vunit=mv] .vu-mv, html[data-vunit=pct] .vu-pct,
 html[data-vunit=v] .vu-v { display: inline; }
-.vunit { position: sticky; top: 0; background: #fafafa; padding: 6px 0; margin: 8px 0;
-         z-index: 2; }
-.layer-toggles { font-size: 13px; margin: 6px 0; }
-.layer-toggles label { margin-right: 12px; white-space: nowrap; cursor: pointer; }
-details > summary { cursor: pointer; margin: 6px 0; }
+.vunit { padding: 8px 14px; margin: 8px 0; background: var(--card);
+         border: 1px solid var(--line); border-radius: 10px; }
+select, button { font: inherit; font-size: 13px; padding: 4px 10px; border-radius: 8px;
+                 border: 1px solid var(--input); background: var(--card); color: var(--fg); }
+button { cursor: pointer; } button:hover { border-color: var(--accent); color: var(--accent); }
+.layer-toggles { font-size: 13px; margin: 8px 0; }
+.layer-toggles label { margin-right: 14px; white-space: nowrap; cursor: pointer; }
+input[type=checkbox] { accent-color: var(--accent); }
+details { margin: 8px 0; }
+details > summary { cursor: pointer; padding: 9px 14px; background: var(--card);
+                    border: 1px solid var(--line); border-radius: 10px; list-style: none;
+                    user-select: none; transition: background 0.15s; }
+details > summary::-webkit-details-marker { display: none; }
+details > summary::before { content: "\\25B8"; display: inline-block; width: 1.2em;
+                            color: var(--muted); transition: transform 0.15s; }
+details[open] > summary::before { transform: rotate(90deg); }
+details > summary:hover { background: var(--accent-soft); }
+details[open] > summary { margin-bottom: 8px; }
+.view3d > summary { font-weight: 600; }
+.view3d .plotly-graph-div { border: 1px solid var(--line); border-radius: 10px;
+                            overflow: hidden; background: var(--card); }
 thead th { cursor: pointer; user-select: none; }
+thead th:hover { color: var(--accent); }
 thead th[data-sort=asc]::after { content: " \\25B2"; } thead th[data-sort=desc]::after { content: " \\25BC"; }
-#user-notes-text { min-height: 4em; background: white; border: 1px solid #ccc; padding: 8px 10px;
-                   border-radius: 3px; white-space: pre-wrap; outline: none; }
-#user-notes-text:focus { border-color: #4a90d9; }
-#user-notes-text.empty::before { content: attr(data-placeholder); color: #999; }
+ul { padding-left: 22px; } li { margin: 3px 0; }
+fieldset { border: 1px solid var(--line); border-radius: 10px; background: var(--card);
+           padding: 8px 14px; }
+#user-notes-text { min-height: 5em; background: var(--card); border: 1px solid var(--line);
+                   padding: 10px 14px; border-radius: 10px; white-space: pre-wrap; outline: none; }
+#user-notes-text:focus { border-color: var(--accent);
+                         box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+#user-notes-text.empty::before { content: attr(data-placeholder); color: var(--faint); }
 #user-notes-text img { max-width: 100%; }
-.notes-bar { margin-top: 6px; font-size: 12px; color: #666; }
+.notes-bar { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .notes-bar button { margin-right: 10px; }
-@media print { .notes-bar { display: none; } #user-notes-text { border: none; padding: 0; }
+@media print { body { background: white; padding: 0; } nav, .theme-toggle { display: none; }
+               table, .maps figure { box-shadow: none; }
+               .notes-bar { display: none; } #user-notes-text { border: none; padding: 0; }
                #user-notes-text.empty::before { content: none; } .notes-empty { display: none; } }
+img { cursor: zoom-in; } #user-notes-text img { cursor: auto; }
+.lightbox { position: fixed; inset: 0; z-index: 100; background: rgba(15, 23, 42, 0.88);
+            backdrop-filter: blur(3px); display: flex; align-items: center;
+            justify-content: center; cursor: zoom-out; }
+.lightbox img { width: 96vw; height: 96vh; object-fit: contain; cursor: zoom-out;
+                border-radius: 6px; }
+.plot-expand { font-size: 12px; margin: 4px 0 8px; }
+.plot-expand.on { position: fixed; top: 10px; left: 10px; z-index: 101;
+                  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2); }
+.plotly-graph-div.plot-full { position: fixed !important; inset: 0; z-index: 100;
+                              width: 100vw !important; height: 100vh !important;
+                              background: var(--card); border-radius: 0 !important; }
+@media print { .lightbox, .plot-expand { display: none; } }
 """
 
 # Notes anyone reading the report can type in (#128). A report is a file opened from disk,
@@ -408,7 +503,10 @@ NOTES_JS = r"""
   });
   document.getElementById("user-notes-save").addEventListener("click", function () {
     var root = document.documentElement.cloneNode(true);
-    root.querySelectorAll(".plotly-graph-div").forEach(function (d) { d.innerHTML = ""; });
+    root.querySelectorAll(".plotly-graph-div").forEach(function (d) {
+      d.innerHTML = ""; d.classList.remove("plot-full"); });
+    root.querySelectorAll(".plot-expand, .lightbox").forEach(function (b) { b.remove(); });
+    root.removeAttribute("data-theme");             // the reader's own choice applies
     root.querySelectorAll("head style:not([data-kipi])").forEach(function (s) { s.remove(); });
     var st = root.querySelector("#user-notes-status");
     if (st) st.textContent = "Notes are kept in this browser as you type.";
@@ -419,6 +517,167 @@ NOTES_JS = r"""
     document.body.appendChild(a);
     a.click();
     setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+})();
+"""
+
+
+# Full screen (#222): click an image to see it over the page, as large as the window takes,
+# and click again or press Esc to close it. An interactive plot gets a button that fills
+# the window with it, Plotly drawing it again at that size.
+EXPAND_JS = r"""
+(function () {
+  var box = null, full = null;
+  function close() {
+    if (box) { box.remove(); box = null; }
+    if (full) {
+      var f = full;
+      full = null;
+      f.div.classList.remove("plot-full");
+      f.button.classList.remove("on");
+      f.button.textContent = "⤢ Full screen";
+      if (window.Plotly) Plotly.relayout(f.div, {width: null, height: f.height});
+    }
+  }
+  document.addEventListener("click", function (e) {
+    if (box) { close(); return; }
+    var img = e.target.closest ? e.target.closest("img") : null;
+    if (!img || img.closest("#user-notes-text")) return;
+    box = document.createElement("div");
+    box.className = "lightbox";
+    box.title = "Click or press Esc to close";
+    var big = document.createElement("img");
+    big.src = img.src;
+    box.appendChild(big);
+    document.body.appendChild(box);
+  });
+  document.addEventListener("keydown", function (e) { if (e.key === "Escape") close(); });
+  // A plot drawn while collapsed has no width to fit: fit it once it is opened.
+  document.addEventListener("toggle", function (e) {
+    if (!e.target.open || !window.Plotly) return;
+    e.target.querySelectorAll(".plotly-graph-div").forEach(function (d) {
+      if (d.layout) Plotly.Plots.resize(d); });
+  }, true);
+  function expand(div, button) {
+    if (full) { close(); return; }
+    full = {div: div, button: button, height: div.layout ? div.layout.height : null};
+    div.classList.add("plot-full");
+    button.classList.add("on");
+    button.textContent = "✕ Close full screen";
+    if (window.Plotly) Plotly.relayout(div, {width: window.innerWidth,
+                                             height: window.innerHeight});
+  }
+  document.addEventListener("DOMContentLoaded", function () {
+    document.querySelectorAll(".plotly-graph-div").forEach(function (div) {
+      // Before Plotly's wrapper, which is the plot's height: inside, it pushes the plot
+      // over what follows.
+      var host = div.parentNode, prev = host.previousElementSibling;
+      if (prev && prev.classList.contains("plot-expand")) return;
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "plot-expand";
+      b.textContent = "⤢ Full screen";
+      b.addEventListener("click", function () { expand(div, b); });
+      host.parentNode.insertBefore(b, host);
+    });
+  });
+})();
+"""
+
+
+# A 3D view is drawn when it is opened and let go when it is closed (#222). A big board's
+# views would otherwise all be read and drawn as the page loads, slowly, and a browser keeps
+# only so many 3D (WebGL) views at once, dropping the oldest. Once drawn, the view gets its
+# layer tickboxes' state and the page's colours.
+LAZY_JS = r"""
+(function () {
+  function draw(div) {
+    if (div._kipiDrawn || !window.Plotly) return;
+    var src = document.querySelector("script.plot-data[data-for='" + div.id + "']");
+    if (!src) return;
+    div._kipiDrawn = true;
+    var fig = JSON.parse(src.textContent);
+    Plotly.newPlot(div, fig.data, fig.layout, {displaylogo: false}).then(function () {
+      var box = document.querySelector(".layer-toggles[data-plot='" + div.id + "'] input");
+      if (box) box.dispatchEvent(new Event("change", {bubbles: true}));
+      document.dispatchEvent(new CustomEvent("kipi-plot-drawn", {detail: div}));
+    });
+  }
+  document.addEventListener("toggle", function (e) {
+    var d = e.target;
+    if (!d.querySelectorAll) return;
+    d.querySelectorAll(".lazy-plot").forEach(function (div) {
+      if (d.open) { draw(div); return; }
+      if (!div._kipiDrawn) return;
+      Plotly.purge(div);
+      div.innerHTML = "";
+      div._kipiDrawn = div._kipiDark = div._kipiLight = undefined;
+    });
+  }, true);
+})();
+"""
+
+
+# Dark mode: a tickbox at the top of every web report. The choice is kept in the browser
+# (for every report); until one is made the page follows the system's setting. Plotly's
+# plots are recoloured with it, the images keep their white backgrounds.
+THEME_TOGGLE = ("<label class='theme-toggle'><input type='checkbox' id='dark-mode'> "
+                "Dark mode</label>")
+THEME_JS = r"""
+(function () {
+  var KEY = "kipi-theme", root = document.documentElement;
+  function saved() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+  var dark = saved() ? saved() === "dark"
+             : !!(window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches);
+  var DARK = {paper: "#161b26", grid: "#2b3444", zero: "#4b5563", font: "#d1d5db"};
+  function get(o, path) {
+    path.split(".").forEach(function (k) { o = o == null ? undefined : o[k]; });
+    return o;
+  }
+  function recolour(div) {
+    var L = div.layout;
+    if (!L || !window.Plotly) return;
+    var want = {"paper_bgcolor": DARK.paper, "plot_bgcolor": DARK.paper,
+                "font.color": DARK.font};
+    Object.keys(L).forEach(function (k) {
+      if (/^[xy]axis\d*$/.test(k)) {
+        want[k + ".gridcolor"] = DARK.grid;
+        want[k + ".zerolinecolor"] = DARK.zero;
+      } else if (/^scene\d*$/.test(k)) {
+        want[k + ".bgcolor"] = DARK.paper;
+        ["xaxis", "yaxis", "zaxis"].forEach(function (a) {
+          want[k + "." + a + ".gridcolor"] = DARK.grid;
+          want[k + "." + a + ".backgroundcolor"] = DARK.paper;
+        });
+      }
+    });
+    if (!div._kipiLight) {
+      div._kipiLight = {};
+      Object.keys(want).forEach(function (k) {
+        var v = get(L, k);
+        div._kipiLight[k] = v === undefined ? null : v;
+      });
+    }
+    if (div._kipiDark === dark) return;
+    div._kipiDark = dark;
+    Plotly.relayout(div, dark ? want : div._kipiLight);
+  }
+  function apply() {
+    if (dark) root.setAttribute("data-theme", "dark");
+    else root.removeAttribute("data-theme");
+    var box = document.getElementById("dark-mode");
+    if (box) box.checked = dark;
+    document.querySelectorAll(".plotly-graph-div").forEach(recolour);
+  }
+  apply();
+  document.addEventListener("kipi-plot-drawn", function (e) { recolour(e.detail); });
+  document.addEventListener("DOMContentLoaded", apply);
+  window.addEventListener("load", apply);
+  document.addEventListener("change", function (e) {
+    if (e.target.id !== "dark-mode") return;
+    dark = e.target.checked;
+    try { localStorage.setItem(KEY, dark ? "dark" : "light"); } catch (err) { /* kept for now */ }
+    apply();
   });
 })();
 """
@@ -543,6 +802,13 @@ def png_size(data_url: str) -> Optional[Tuple[int, int]]:
     return int.from_bytes(raw[16:20], "big"), int.from_bytes(raw[20:24], "big")
 
 
+def web_img(src: str, style: str = "") -> str:
+    """A web page's image, shown at the size it was drawn for: half its pixels (#222)."""
+    size = png_size(src)
+    width = f" width='{size[0] * SHOWN_DPI // WEB_DPI}'" if size else ""
+    return f"<img src='{src}'{width}" + (f" style='{style}'" if style else "") + ">"
+
+
 def _fit_width(image: str, box=PDF_MAP_BOX) -> int:
     """The width to show ``image`` at on a PDF page so it fills ``box`` (w, h) without
     overflowing it."""
@@ -587,11 +853,11 @@ def page(title: str, body: str, css: str, script: str = "") -> str:
     """A web page that works offline: Plotly's JavaScript in it."""
     import plotly.offline
     js = plotly.offline.get_plotlyjs()
-    extra = f"<script type='text/javascript'>{script}</script>" if script else ""
+    extra = f"<script type='text/javascript'>{THEME_JS}{script}</script>"
     return (f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
             f"<title>{_e(title)}</title><style data-kipi>{css}</style>"
             f"<script type='text/javascript'>{js}</script>{extra}</head><body>"
-            + body + "</body></html>")
+            + THEME_TOGGLE + body + "</body></html>")
 
 
 def finish(path: Path, title: str, parts: List[str], css: str, pdf: bool,
@@ -604,7 +870,9 @@ def finish(path: Path, title: str, parts: List[str], css: str, pdf: bool,
         return write_pdf(f"<html><head><meta charset='utf-8'><title>{_e(title)}</title>"
                          f"</head><body>{body}</body></html>", path, title,
                          attachments=attachments)
-    path.write_text(page(title, body, css, SORT_JS + LAYERS_JS + VUNIT_JS), encoding="utf-8")
+    path.write_text(page(title, body, css, SORT_JS + LAYERS_JS + VUNIT_JS + EXPAND_JS
+                         + LAZY_JS),
+                    encoding="utf-8")
     return path
 
 
@@ -628,7 +896,7 @@ def views_page(title: str, meta: str, views: List[tuple]) -> bytes:
             f"<p class='note'>{_e(VIEW_NOTE)}</p>"]
     for name, view in views:
         body.append(f"<h2>{_e(name)}</h2>{view}")
-    return page(title, "".join(body), CSS, LAYERS_JS).encode("utf-8")
+    return page(title, "".join(body), CSS, LAYERS_JS + EXPAND_JS + LAZY_JS).encode("utf-8")
 
 
 def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, setup,
@@ -647,7 +915,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
     views: List[tuple] = []                     # a PDF's 3D views, attached (#133)
     outline = [p.outline for p in snap.outline] if snap.outline else None
     names = {c.id: c.name for c in snap.stackup.copper}
-    parts: List[str] = []
+    parts: List[str] = []                       # the summary and the plots
+    tables: List[str] = []                      # then the tables (#222)
     now = _dt.datetime.now().strftime("%Y-%m-%d %H:%M")
     th = getattr(tree, "thermal", None)
 
@@ -658,13 +927,17 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
             f"{tree.solve_s:.1f} s · {_e(corner)} currents and resistances")
     parts.append(f"<h1>KiPI power-integrity report</h1><div class='meta'>{meta}</div>")
     parts.append(source_meta(setup))
-    nav = (["<a href='#import'>Import</a>"] if getattr(setup, "import_notes", None) else []) + [
-           "<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
-           "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",
-           "<a href='#vias'>Vias</a>"]
+    nav = ["<a href='#import'>Import</a>"] if getattr(setup, "import_notes", None) else []
     if th is not None:
         nav.append("<a href='#thermal'>Thermal</a>")
     nav += [f"<a href='#g{i}'>{_e(n)}</a>" for i, n in enumerate(tree.groups)]
+    nav += ["<a href='#loads'>Loads</a>", "<a href='#vrms'>VRMs</a>",
+            "<a href='#pins'>Pins</a>", "<a href='#losses'>Losses</a>",
+            "<a href='#vias'>Vias</a>"]
+    if th is not None:
+        nav.append("<a href='#thermal-tables'>Thermal tables</a>")
+    if tree.groups:
+        nav.append("<a href='#layers'>Layers</a>")
     nav.append("<a href='#user-notes'>User notes</a>")
     if not pdf:
         parts.append("<nav>" + " ".join(nav) + "</nav>")
@@ -692,9 +965,9 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      + "".join(f"<li>{_e(n)}</li>" for n in setup.import_notes) + "</ul>")
 
     # ---------------- tables
-    parts.append("<h2 id='loads'>Loads</h2>")
+    tables.append("<h2 id='loads'>Loads</h2>")
     if hasattr(tree, "summary"):
-        parts.append(f"<p><b>{_e(tree.summary())}</b></p>")
+        tables.append(f"<p><b>{_e(tree.summary())}</b></p>")
 
     def load_row(l):
         cells = {u: vunits.load_cells(l, u) for u, _ in vunits.UNITS}
@@ -703,11 +976,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                 _mv(getattr(l, "copper_margin", None)), _ma(getattr(l, "unknown_room_a", None)),
                 _verdict(l.passed, getattr(l, "answer", l.status))]
 
-    parts.append(_table(["Load", "Group", "I (A)", "Target (V)",
+    tables.append(_table(["Load", "Group", "I (A)", "Target (V)",
                          *[_vhead(n, pdf) for n in vunits.LOAD_COLUMNS],
                          "Pre-layout margin (mV)", "Unknowns may add (mA)", "Voltage at pins"],
                         [load_row(l) for l in tree.loads]))
-    parts.append("<p class='note'>Each load's mean voltage and its lowest and highest supply "
+    tables.append("<p class='note'>Each load's mean voltage and its lowest and highest supply "
                  "pins (less the ground pins), "
                  + ("each in mV and % from the target voltage and in volts. " if pdf else "")
                  + "From the target, negative is a drop below it and positive a boost above "
@@ -738,11 +1011,11 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
            _vcell(vmax, l.nominal, pdf)]
           for l in tree.loads for n, a, vm, vmin, vmax in l.pin_groups]
     if pg:
-        parts.append("<h3>Load pin groups</h3>" +
+        tables.append("<h3>Load pin groups</h3>" +
                      _table(["Load", "Pin group", "I (A)", _vhead("Mean", pdf),
                              _vhead("Lowest pin", pdf), _vhead("Highest pin", pdf)], pg))
-    parts.append("<h2 id='vrms'>VRMs</h2>")
-    parts.append(_table(
+    tables.append("<h2 id='vrms'>VRMs</h2>")
+    tables.append(_table(
         ["VRM", "Type", "Group", "V set", "Load line (mΩ)", "V target", _vhead("V out", pdf),
          "V sense", "V gnd sense", "I out (A)",
          "V in", "I in (A)", "P out (W)", "P in (W)", "Loss (W)", _vhead("Rail lowest", pdf),
@@ -756,13 +1029,13 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
           _num(v.current_limit_a, "g"), _verdict(v.passed)]
          for v in tree.vrms for d, _pct in [tree.rail_drop(v)]
          for ref in [v.v_set if tree.rail_target(v) is None else tree.rail_target(v)]]))
-    parts.append("<p class='note'>Rail lowest: the lowest voltage anywhere on the copper of "
+    tables.append("<p class='note'>Rail lowest: the lowest voltage anywhere on the copper of "
                  "the rail the VRM drives. V out and it are from the rail's target voltage, "
                  "the target V set less the load line's droop.</p>")
     phases = [[_e(v.name), str(p.index), _num(p.v_out, ".5f"), _num(p.i_out), _num(p.v_in, ".5f"),
                _num(p.i_in), _num(p.p_loss)] for v in tree.vrms for p in v.phases]
     if phases:
-        parts.append("<h3>VRM phases</h3>" +
+        tables.append("<h3>VRM phases</h3>" +
                      _table(["VRM", "Phase", "V out", "I out (A)", "V in", "I in (A)",
                              "Loss (W)"], phases))
     ratings = {k.name: k for k in getattr(tree, "link_ratings", [])}
@@ -773,18 +1046,18 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
               if sr.name in ratings else ""]
              for g in tree.groups.values() for sr in g.result.fields.series]
     if links:
-        parts.append("<h3>DC connections</h3>" +
+        tables.append("<h3>DC connections</h3>" +
                      _table(["Part", "Group", "R (mΩ)", "I (A)", "P (mW)", "Rated (A)",
                              "Current against rating"], links))
     pins = pin_rows(tree, snap)
-    parts.append("<h2 id='pins'>Pins</h2>")
+    tables.append("<h2 id='pins'>Pins</h2>")
     if pins:
         for name in tree.groups:
             rows = [r for r in pins if r.group == name]
             if not rows:
                 continue
             title = f"<b>{_e(name)}</b>: {len(rows)} pin(s)"
-            parts.append(
+            tables.append(
                 (f"<h3>{title}</h3>" if pdf else f"<details><summary>{title}</summary>") +
                 _table(["Terminal", "Role", "Pin", "x (mm)", "y (mm)", _vhead("V", pdf),
                         "I (mA)", "I is"],
@@ -794,7 +1067,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                          _num(None if r.current is None else r.current * 1e3, ".4g"),
                          _e(r.current_is)] for r in rows]) +
                 ("" if pdf else "</details>"))
-        parts.append("<p class='note'>Every pin each group was solved with: VRM outputs, "
+        tables.append("<p class='note'>Every pin each group was solved with: VRM outputs, "
                      "phases, inputs and sense pins, load supply and ground pins and the pins "
                      "of DC connections. I is the current drawn from the copper at the pin; "
                      "negative is delivered into it (a VRM output, or a DC connection's far "
@@ -803,31 +1076,32 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      "the pins on each side. V is from the VRM target voltage (0 V for a "
                      "ground), or in volts.</p>")
     else:
-        parts.append("<p class='note'>These results were saved before KiPI kept each pin "
+        tables.append("<p class='note'>These results were saved before KiPI kept each pin "
                      "(0.7.2); solve again to list them.</p>")
     losses = loss_rows(tree, snap)
     layers = [c.name for c in snap.stackup.copper if any(c.name in r.by_layer for r in losses)]
-    parts.append("<h2 id='losses'>Losses</h2>")
-    parts.append(_table(["Group", *[f"{n} (mW)" for n in layers], "Vias (mW)",
+    tables.append("<h2 id='losses'>Losses</h2>")
+    tables.append(_table(["Group", *[f"{n} (mW)" for n in layers], "Vias (mW)",
                          "DC parts (mW)", "Total (mW)"],
                         [[_e(r.group), *[_num(r.by_layer.get(n, 0) * 1e3, ".3f") for n in layers],
                           _num(r.vias * 1e3, ".3f"), _num(r.links * 1e3, ".3f"),
                           _num(r.total * 1e3, ".3f")] for r in losses]))
     vr = via_rows(tree, snap, setup.via_current_limit_a)[:25]
-    parts.append("<h2 id='vias'>Highest via currents</h2>")
-    parts.append(_table(["Group", "Via / pad", "x (mm)", "y (mm)", "Drill (mm)", "I (mA)",
+    tables.append("<h2 id='vias'>Highest via currents</h2>")
+    tables.append(_table(["Group", "Via / pad", "x (mm)", "y (mm)", "Drill (mm)", "I (mA)",
                          "P (mW)", "Result"],
                         [[_e(r.group), _e(r.label), _num(r.x, ".3f"), _num(r.y, ".3f"),
                           _num(r.drill_mm, ".3f"), _num(r.current * 1e3, ".2f"),
                           _num(r.power * 1e3, ".4f"), _verdict(r.passed)] for r in vr]))
     if setup.via_current_limit_a:
-        parts.append(f"<p class='note'>Via current limit {setup.via_current_limit_a * 1e3:g} mA.</p>")
+        tables.append(f"<p class='note'>Via current limit {setup.via_current_limit_a * 1e3:g} mA.</p>")
 
     # ---------------- thermal
     if th is not None:
         info("Report: thermal map")
         x, y, tmax = th.hottest()
         parts.append("<h2 id='thermal'>Electro-thermal</h2>")
+        thermal_tables: List[str] = []
         loads_w = getattr(th, "load_heat_w", {}) or {}
         with_loads = getattr(th.settings, "load_power", False)
         parts.append(f"<p>{th.heat_w:.3g} W into the board"
@@ -845,24 +1119,25 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                       for g in tree.groups.values() for s in g.result.fields.series
                       if s.power > 0]
         if heat_rows:
-            parts.append("<h3>Component power dissipation</h3>" + _table(
+            thermal_tables.append("<h3>Component power dissipation</h3>" + _table(
                 ["Part", "Kind", "Power (W)"], heat_rows))
-            parts.append("<p class='note'>Heat put into the board at each part's pins. A DC "
-                         "connection dissipates I²R. "
-                         + ("A load dissipates the sum over its supply and ground pins of pin "
-                            "current × pin voltage." if with_loads else
-                            "Load power is not included (Thermal settings tab).") + "</p>")
+            thermal_tables.append(
+                "<p class='note'>Heat put into the board at each part's pins. A DC "
+                "connection dissipates I²R. "
+                + ("A load dissipates the sum over its supply and ground pins of pin "
+                   "current × pin voltage." if with_loads else
+                   "Load power is not included (Thermal settings tab).") + "</p>")
         temps = layer_temps(tree, snap, setup.thermal)
         if temps:
             verdict = thermal_passed(temps)
-            parts.append("<h3>Copper temperature by layer</h3>" + _table(
+            thermal_tables.append("<h3>Copper temperature by layer</h3>" + _table(
                 ["Layer", "Peak (°C)", "Rise (°C)", "x (mm)", "y (mm)", "Group", "Result"],
                 [[_e(r.layer), _num(r.t_max, ".1f"), _num(r.rise, ".1f"), _num(r.x, ".1f"),
                   _num(r.y, ".1f"), _e(r.group), _verdict(r.passed)] for r in temps]))
             lim = limits_text(setup.thermal)
-            parts.append("<p class='note'>The hottest solved copper on each layer. "
-                         + (f"Limits: {lim}; overall {_verdict(verdict)}." if lim
-                            else "No temperature limits were set.") + "</p>")
+            thermal_tables.append("<p class='note'>The hottest solved copper on each layer. "
+                                  + (f"Limits: {lim}; overall {_verdict(verdict)}." if lim
+                                     else "No temperature limits were set.") + "</p>")
         parts.append(maps_html(_thermal_maps(th, snap, outline, pdf), pdf, large=True))
         if th.dielectrics:
             from kipi.dc.thermal.materials import coating_k
@@ -871,7 +1146,7 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      _num(coating_k(c), "g"), _num(coating_k(c), "g")]
                     for c in snap.stackup.coatings]
             n_top = sum(1 for c in snap.stackup.coatings if c.side == "top")
-            parts.append("<h3>Laminate (thermal conductivity)</h3>" + _table(
+            thermal_tables.append("<h3>Laminate (thermal conductivity)</h3>" + _table(
                 ["Stackup material", "Thickness (mm)", "Taken as", "In-plane k (W/m·K)",
                  "Through-plane k (W/m·K)"],
                 coat[:n_top]
@@ -880,11 +1155,15 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                     _num(i.k_through, "g")]
                    for m, t, i in th.dielectrics]
                 + coat[n_top:]))
-        parts.append(_table(["Iteration", "Heat (W)", "Peak (°C)", "Max change (°C)"],
-                            [[str(h["iteration"]), _num(h["heat_w"]), _num(h["t_max"], ".2f"),
-                              _num(h["dt_max"], ".3f")] for h in th.history]))
+        thermal_tables.append("<h3>Iterations</h3>" + _table(
+            ["Iteration", "Heat (W)", "Peak (°C)", "Max change (°C)"],
+            [[str(h["iteration"]), _num(h["heat_w"]), _num(h["t_max"], ".2f"),
+              _num(h["dt_max"], ".3f")] for h in th.history]))
+        tables.append("<h2 id='thermal-tables'>Electro-thermal tables</h2>")
+        tables += thermal_tables
 
     # ---------------- groups
+    layer_tables: List[str] = []
     for gi, (name, g) in enumerate(tree.groups.items()):
         info(f"Report: {name}")
         scene = scenes[name]
@@ -896,13 +1175,13 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         toggles = layer_toggles(f"plot{gi}", [names.get(lid, str(lid)) for lid in scene.layers],
                                 bool(len(scene.via_segments)))
         if pdf:
-            views.append((name, toggles + _plotly_3d(scene, snap, f"plot{gi}")))
+            views.append((name, toggles + _view3d(name, _plotly_3d(scene, snap, f"plot{gi}"))))
             parts.append(f"<p class='note'>Interactive 3D view: {_views_link(path)}</p>")
         else:
             parts.append(toggles)
-            parts.append(_plotly_3d(scene, snap, f"plot{gi}"))
-            parts.append(f"<p class='note'>{_e(VIEW_NOTE)} The tickboxes hide or show a "
-                         "layer in the view and its maps.</p>")
+            parts.append(_view3d(name, _plotly_3d(scene, snap, f"plot{gi}"),
+                                 f"{_e(VIEW_NOTE)} The tickboxes hide or show a layer in the "
+                                 "view and its maps."))
         rows = []
         tri_layer = g.result.mesh.tri_layer
         for lid, lr in scene.layers.items():
@@ -916,12 +1195,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                          _num(np.percentile(j, 99.5) if len(j) else None, ".3g"),
                          _num(j.max() if len(j) else None, ".3g"),
                          _num(float(f.tri_power[sel].sum()) * 1e3, ".3f")])
-        parts.append(_table(["Layer", "Copper (mm²)", _vhead("V min", pdf),
-                             _vhead("V max", pdf), "|J| p99.5 (A/mm²)", "|J| max",
-                             "Loss (mW)"], rows))
-        parts.append(f"<p class='note'>V min and V max are from the {scene.v_ref:g} V "
-                     + ("target voltage" if g.kind == "rail" else "ground reference")
-                     + ", or in volts.</p>")
+        layer_tables.append(f"<h3>{_e(name)}</h3>" + _table(
+            ["Layer", "Copper (mm²)", _vhead("V min", pdf), _vhead("V max", pdf),
+             "|J| p99.5 (A/mm²)", "|J| max", "Loss (mW)"], rows))
+        layer_tables.append(f"<p class='note'>V min and V max are from the {scene.v_ref:g} V "
+                            + ("target voltage" if g.kind == "rail" else "ground reference")
+                            + ", or in volts.</p>")
         maps, tags = [], []
         vmin, vmax = scene.ranges["voltage"]
         for lid, lr in scene.layers.items():
@@ -934,6 +1213,12 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
         parts.append(maps_html(maps, pdf, tags, large=True))
         parts.append("<p class='note'>Current-density maps clip at the 99.5th percentile; pad "
                      "corners are singular and would otherwise wash out the map.</p>")
+
+    # ---------------- tables, after every plot (#222)
+    parts += tables
+    if layer_tables:
+        parts.append("<h2 id='layers'>Layers</h2>")
+        parts += layer_tables
 
     if tree.warnings:
         parts.append("<h2>Notes</h2><ul>" + "".join(f"<li>{_e(w)}</li>" for w in tree.warnings)

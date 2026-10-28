@@ -4,7 +4,159 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.4 (in development)
+## 0.9.5 (in development)
+
+### Added
+- **The Log names what draws the 3D view** (#205). Once the board has drawn, the Log names
+  the OpenGL renderer (the graphics card). It warns when that is a renderer that draws on
+  the processor instead, as over Remote Desktop or with no graphics driver, which makes a
+  large board slow to turn.
+- **KiCad follows clicks in the 3D view** (#208). As a KiCad plugin, a pad, via or track
+  clicked in the 3D view is selected in the PCB editor. The editor centres its view on it
+  and makes its copper layer the active one. KiCad's API can't move the view to a bare
+  point, so a click on zone copper with no track under it leaves the view where it is.
+  Untick **Follow in KiCad**, under the Info box, to keep the editor's view still;
+  **Select in KiCad** now also selects a picked track.
+- **HyperLynx session files: VRMs and DC loads** (#132). **Import…** now also reads a
+  `.bud` file's VRMs and DC sinks. Each VRM (`PI_VRM`) becomes an ideal source at its
+  voltage, since HyperLynx says nothing of what a VRM draws from its input. It gets each
+  phase's output and ground pins, the remote sense (`SL_PWR_PIN`) and ground sense
+  (`SL_REF_PIN`) pins; the phases' `R` and `L` are ignored. A VRM of the same name is replaced. The DC sinks (`PI_SIGNAL_SOURCES`) become one load
+  per part and net, drawing the pins' currents (in pin groups where they differ). Each
+  load is grounded on the part's pins on a VRM's reference net. A load already on that
+  part and net gets the new current and keeps its tolerances. The phases' `PERCENT` and
+  the sink resistance `R` aren't modelled, and the Log says so.
+- **Large pads can be solved as copper** (#207). In the Mesh tab, tick **Model large pads
+  as copper shapes**. Load, VRM and series-part pads at least as large as the **Pads larger
+  than** slider sets (10 mm² by default) are then solved as copper, rather than as one
+  equipotential. The part connects only at its contact: an SMD pad's outline shrunk about
+  its centre to the **Contact area** share (25% by default), or a plated hole's wall for a
+  mounting hole or through-hole lead. Current density shows inside these pads, and the
+  drop is higher than with equipotential pads; for a soldered power tab the truth lies
+  between the two. Off by default, so existing results don't change.
+- **VRMs can share ground pins** (#219). Offboard supplies on one connector often share
+  its ground pins. The DC solve used to stop with "Sources … are connected directly (same
+  copper node)"; it now solves them, since each holds those pins at 0 V. The current
+  returning through shared pins is split between the VRMs by the current each one
+  delivers. Sources that share copper but are set to different voltages are still an
+  error, now one that names both voltages.
+- **Report plots open full screen** (#222). In the DC, AC and Coupled Noise web reports,
+  click any plot image to see it as large as the window allows; click again or press Esc
+  to close it. Images are now drawn at twice the resolution they are shown at, so they
+  stay sharp full screen. The interactive 3D views and Plotly plots get a "Full screen"
+  button that redraws them to fill the window.
+- **Reports have a new look, with 3D views collapsed** (#222). The DC, AC and Coupled Noise
+  web reports are restyled: a sticky bar of section links, card-style tables and figures,
+  PASS / FAIL badges, and collapsible sections. Wide tables scroll sideways instead of
+  running off the page. Each net group's 3D view in the DC report starts collapsed; click
+  its bar to open it.
+- **Dark mode for reports** (#222). Every web report, and a PDF report's 3D views page, has
+  a Dark mode tickbox at the top. Until it is used, the report follows the system's light
+  or dark setting. The choice is kept in the browser for every report. Plotly plots are
+  recoloured with the page; plot images keep their white backgrounds.
+
+### Changed
+- **The welcome screen names its author**. An Author row, with name and email address, heads
+  the welcome screen's table.
+- **Big DC reports open quickly** (#222). A net group's 3D view is now drawn only when its
+  bar is opened, and let go again when it is closed. Before, every view was read and drawn
+  as the page loaded, which was slow on a large board. Past about 16 views, the browser
+  also blanked the oldest, since it keeps only so many 3D views at once. The PDF report's
+  3D views page works the same way.
+- **Reports put their tables after the plots** (#222). The DC, AC and Coupled Noise
+  reports (web page and PDF) now show the summary and every plot first. The setup and
+  results tables follow, then the notes and User notes. The navigation bar follows the
+  new order. The DC report's per-layer tables are gathered under a new Layers section,
+  and its thermal tables under Electro-thermal tables.
+- **Large boards' 3D view builds faster** (#205). The view's net meshes are now read
+  straight from VTK's arrays when they are merged for drawing. On KiCad's Jetson AGX Thor
+  demo (1,387 nets, 9.6 M triangles) the merge, during which the window doesn't respond,
+  drops from 13.3 s to 6.9 s.
+- **The window keeps responding while a board's 3D view builds** (#209). The solder masks
+  and silkscreens are now built in the background after the nets, rather than in the
+  window as the board loads, and merging the nets' meshes for drawing costs about half
+  as much. On the Jetson AGX Thor demo, the longest freeze while loading drops from
+  6.2 s to 0.7 s.
+- **A large board's 3D view builds in several processes** (#210). On a board with 40 nets
+  or more, the nets' copper and the solder masks and silkscreens are built by up to eight
+  worker processes at once, the biggest first, and a net bigger than a worker's share is
+  built a layer to a task. On the Jetson AGX Thor demo, the view builds in about 8 s
+  rather than 27 s. Where workers can't be started, the view is built in one process as
+  before and the Log says why; `KIPI_SERIAL=1` builds it in one process anyway.
+- **Large meshes for the DC, AC and Coupled Noise solves are built in several processes**
+  (#211). Each copper layer of a net is meshed apart from the others, so when a mesh is
+  large (about 1.5 M triangles or more, spread over more than one layer), its layers are
+  meshed by up to eight worker processes at once, the largest first. Each net is then
+  joined through its plated holes as before, and the mesh is exactly the one a single
+  process makes. On the Jetson AGX Thor demo, meshing GND for a DC solve drops from
+  18.5 s to 7.3 s, and a rail with its ground for an AC solve from 17.1 s to 6.1 s. Where
+  workers can't be started, or one stops, the layers left are meshed in one process and
+  the Log says why; `KIPI_SERIAL=1` meshes in one process anyway.
+- **AC and Coupled Noise field solves without PARDISO solve several frequencies at once**
+  (#213). Without PARDISO, each field frequency is factorized by SuperLU on one core.
+  After the first frequency, the rest are now solved in threads, up to eight at once, as
+  many as half the free memory holds given the first one's size. The results are the
+  same as one at a time. In a 290 k-unknown test on the Jetson AGX Thor demo, nine field
+  solves drop from 15.8 s to 6.5 s. With PARDISO, which already uses every core, nothing
+  changes. If a thread fails (out of memory, say), the frequencies left are solved one at
+  a time and the Log says why.
+- **A large board's 3D part models load sooner** (#212). kicad-cli, which exports the
+  models, reads the whole board file before exporting a single part, and on a large board
+  that is most of its time. KiPI now hands it a copy of the board without its tracks,
+  vias and zones, which the models don't need. On the Jetson AGX Thor demo (85 MB, 793
+  parts with models), loading the models drops from about 7.4 s to 5.5 s, with the same
+  models. Running several kicad-cli exports at once was tried first; it gained under half
+  a second, since each one reads the board again. Boards under 4 MB, and boards with a
+  model path relative to the project folder, are exported as they are. If kicad-cli
+  can't export from the copy, it exports from the board itself.
+- **Large DC and thermal solves use PARDISO while memory allows** (#214). Above 1M
+  unknowns, a system used to go to AMG-CG even with PARDISO installed. Now PARDISO
+  factorizes it as long as the factorization, reckoned at 2 kB an unknown, fits in half
+  the memory free. On the Jetson AGX Thor demo, a +3V3 rail with its 4.9M-unknown ground
+  solves in 42 s instead of 134 s (the ground factorizes in 10 s where AMG-CG took 104 s),
+  with the same voltages to 2e-14 V. If PARDISO fails on such a system, it is solved by
+  AMG-CG as before, and the Log says why.
+- **Large AC models solve each frequency faster** (#215). After factorizing, the field
+  solve works through one right-hand side per port and floating conductor. These were
+  solved 512 MB at a time, which on a large model is only a few at once, and each solve
+  reads the whole factorization. Now a solve takes as many as a quarter of the memory free
+  holds. The factorization is also checked with the first of those blocks instead of a
+  solve of its own. On the Jetson AGX Thor demo (4.6M unknowns, 45 right-hand sides), a
+  frequency drops from 27.8 s to 18.6 s, with the same impedances; the default 111
+  frequencies take about 34 minutes instead of 51.
+- **Large AC models build faster** (#216). Building the AC model (also used by Coupled
+  Noise) finds the mesh's outer edges and the matrix's sparsity pattern by sorting
+  integer keys, not with `np.unique` on rows. It also tests triangles for facing copper in
+  several threads, each on its own copy of the copper. The model built is identical. On the
+  Jetson AGX Thor demo (4.75M triangles) the build drops from 61 s to 43 s.
+- **DC result views build faster** (#217). After a DC solve, the plated holes are drawn
+  from one cylinder, scaled and moved for each hole with numpy, as the 3D view's vias
+  already were (#210). Before, each hole was a pyvista cylinder of its own. The copper
+  slabs' edges are found by sorting (#216). On the Jetson AGX Thor demo, building the
+  result views drops from 16.9 s to 10.1 s (GND's 1,456 holes: 4.1 s to 0.01 s).
+- **Iterative DC and thermal solves are faster** (#218). The AMG preconditioner, used for
+  systems too big to factorize (above 200k unknowns without PARDISO, as on Apple Silicon),
+  now smooths its interpolation by energy minimization. It solves 8-17% faster to the same
+  answer on every large system tried (the Jetson AGX Thor demo's ground: 88 s to 75 s).
+  If CG doesn't converge with it, the usual hierarchy is set up once before falling back
+  to a direct solve. Forward/backward Gauss-Seidel smoothing, which helped on the Thor
+  board, stopped two of the DSP board's rails from converging, so it is not used.
+
+### Fixed
+- **The DC report's voltage unit selector did nothing** (#222). Its script ran before the
+  selector was on the page, so the tables stayed in mV from the target whatever was
+  picked. Volts and % now switch the tables as intended.
+- **Loads on negative rails pulled their pins the wrong way** (#220). A load's current
+  was taken out of the copper whatever the rail's polarity, so a 1 A load on a -12 V rail
+  read about -12.1 V instead of rising toward 0 V. A load's current is now what it draws
+  from its rail on either polarity, and it flows into a negative rail's copper. VRMs on
+  negative rails sink their output current, and their input and quiescent currents are
+  drawn from the rail feeding them with its polarity, so negative LDO chains and
+  switchers fed from a negative rail are solved too (the latter stopped with "input
+  voltage collapsed"). Setups that entered a negative current on a negative rail to get
+  the right direction should enter it positive now.
+
+## 0.9.4
 
 ### Added
 - **HyperLynx PI models for DC loads** (#149). The Loads tab's **Model ▾** menu now also

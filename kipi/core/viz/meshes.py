@@ -21,6 +21,7 @@ from shapely.geometry.base import BaseGeometry
 
 from kipi.core.geometry.copper import drill_holes, iter_polygons, poly_to_shapely
 from kipi.core.model.board import BoardSnapshot, CopperLayer
+from kipi.core.sorting import edge_keys, single_mask
 from kipi.core.viz.layer_colors import DEFAULT_COPPER, coating_rgb, layer_key
 
 # Copper layer colors, keyed like a KiCad color theme ("f", "in1".., "b"): KiCad's default
@@ -172,11 +173,9 @@ def slab_from_triangles(pts2: np.ndarray, tris: np.ndarray, z_bottom: float,
     top = tris + n                               # faces up
     # Directed edges of CCW triangles; boundary edges have no reversed twin, so they are
     # the edges that only one triangle has.
-    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    e, key = edge_keys(tris, n)
     e_tri = np.tile(np.arange(m), 3)
-    key = np.minimum(e[:, 0], e[:, 1]).astype(np.int64) * n + np.maximum(e[:, 0], e[:, 1])
-    _, which, count = np.unique(key, return_inverse=True, return_counts=True)
-    is_boundary = count[which.ravel()] == 1
+    is_boundary = single_mask(key)
     boundary = e[is_boundary]
     wall_tri = e_tri[is_boundary]
     i, j = boundary[:, 0], boundary[:, 1]
@@ -333,10 +332,12 @@ def board_body(snap: BoardSnapshot) -> Tuple[Optional[pv.PolyData], Optional[pv.
 COATING_GAP_MM = 0.002     # coatings off the copper, so their faces do not z-fight
 
 
-def board_coatings(snap: BoardSnapshot) -> List[Tuple[str, pv.PolyData, Tuple[float, ...]]]:
+def board_coatings(snap: BoardSnapshot, sides=("top", "bottom")
+                   ) -> List[Tuple[str, pv.PolyData, Tuple[float, ...]]]:
     """The solder masks and silkscreens as slabs over the board (#82): ``(kind, mesh,
-    color)`` for each. A mask is open over the pads of the copper under it; a silkscreen
-    is what it prints (see :func:`~kipi.core.geometry.silkscreen.printed_silk`)."""
+    color)`` for each, on ``sides``. A mask is open over the pads of the copper under it;
+    a silkscreen is what it prints (see
+    :func:`~kipi.core.geometry.silkscreen.printed_silk`)."""
     from kipi.core.geometry.silkscreen import mask_openings, printed_silk
     st = snap.stackup
     if not snap.outline or not st.coatings or not st.copper:
@@ -344,7 +345,7 @@ def board_coatings(snap: BoardSnapshot) -> List[Tuple[str, pv.PolyData, Tuple[fl
     board = shapely.union_all([g for g in (poly_to_shapely(p) for p in snap.outline)
                                if g is not None])
     out = []
-    for side in ("top", "bottom"):
+    for side in sides:
         cu = st.copper[0] if side == "top" else st.copper[-1]
         z = cu.z_top_mm if side == "top" else cu.z_bottom_mm
         openings = mask_openings(snap, side)
@@ -363,8 +364,9 @@ def board_coatings(snap: BoardSnapshot) -> List[Tuple[str, pv.PolyData, Tuple[fl
 
 
 def build_net_scene(snap: BoardSnapshot, net: str, layers: Dict[int, BaseGeometry],
-                    progress=None) -> NetScene:
-    """Build the meshes for one net from its per-layer copper geometry."""
+                    progress=None, holes: bool = True) -> NetScene:
+    """Build the meshes for one net from its per-layer copper geometry; with ``holes``
+    False, only its copper (as for a part of a net built in pieces)."""
     st = snap.stackup
     n = len(st.copper)
     ns = NetScene(net=net)
@@ -380,8 +382,9 @@ def build_net_scene(snap: BoardSnapshot, net: str, layers: Dict[int, BaseGeometr
         if progress is not None:
             progress.debug(f"  mesh {net} / {cu.name}: {m.n_cells} cells")
             progress.check_cancel()
-    ns.vias = via_tubes(snap, [net])
-    ns.pads = pad_tops(snap, [net])
+    if holes:
+        ns.vias = via_tubes(snap, [net])
+        ns.pads = pad_tops(snap, [net])
     return ns
 
 

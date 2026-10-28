@@ -53,10 +53,11 @@ from kipi.ac.solver.near_rail import near_rail
 from kipi.ac.solver.physics import (
     EPS0_F_PER_MM, MU0_H_PER_MM, slab_difference, slab_impedance,
 )
-from kipi.core.geometry.copper import net_layer_copper
-from kipi.core.mesh.mesher import NetMesh, combine_meshes, mesh_net
+from kipi.core.geometry.copper import contains_xy, net_layer_copper
+from kipi.core.mesh.mesher import MeshOptions, NetMesh, combine_meshes, mesh_many
 from kipi.core.model.board import BoardSnapshot, Stackup
 from kipi.core.progress import NULL, ProgressReporter
+from kipi.core.sorting import boundary_nodes, pattern
 from kipi.core.solver import direct
 from kipi.core.temperature import at as temperature_at
 from kipi.dc.solver.fem import _merge_groups, triangle_geometry
@@ -114,10 +115,7 @@ class ACStats:
 
 def _boundary_nodes(tris: np.ndarray) -> np.ndarray:
     """Nodes on edges that belong to only one triangle."""
-    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
-    e.sort(axis=1)
-    uniq, counts = np.unique(e, axis=0, return_counts=True)
-    return np.unique(uniq[counts == 1].ravel())
+    return boundary_nodes(tris, int(tris.max()) + 1 if len(tris) else 0)
 
 
 def mesh_rail_and_ground(snap: BoardSnapshot, rail_nets: Sequence[str],
@@ -137,21 +135,15 @@ def mesh_rail_and_ground(snap: BoardSnapshot, rail_nets: Sequence[str],
     graded = None
     if ac_settings.grade_near_rail_only:
         graded = near_rail(snap, rail_nets, terminal_ids, dc_settings.circle_quad_segs)
-    meshes: List[NetMesh] = []
-    kinds = []
+    opts = MeshOptions(max_edge_mm=ac_settings.max_edge_mm,
+                       min_angle_deg=dc_settings.min_angle_deg,
+                       simplify_mm=dc_settings.simplify_mm,
+                       circle_quad_segs=dc_settings.circle_quad_segs,
+                       min_edge_mm=ac_settings.min_edge_mm, grading=ac_settings.grading)
+    jobs = [(net, [pid for pid in terminal_ids if pad_net.get(pid) == net]) for net in nets]
     with progress.timed("Meshing rail and ground"):
-        for net in nets:
-            progress.check_cancel()
-            progress.info(f"-- {net}")
-            mine = [pid for pid in terminal_ids if pad_net.get(pid) == net]
-            meshes.append(mesh_net(
-                snap, net, mine, max_edge_mm=ac_settings.max_edge_mm,
-                min_angle_deg=dc_settings.min_angle_deg,
-                simplify_mm=dc_settings.simplify_mm,
-                circle_quad_segs=dc_settings.circle_quad_segs,
-                min_edge_mm=ac_settings.min_edge_mm, grading=ac_settings.grading,
-                progress=progress, graded=graded))
-            kinds.append(1 if net in gnd_nets else 0)
+        meshes = mesh_many(snap, jobs, opts, progress, graded)
+    kinds = [1 if net in gnd_nets else 0 for net in nets]
     mesh = combine_meshes(meshes, " + ".join(nets), [c.id for c in snap.stackup.copper])
     node_kind = np.concatenate([np.full(m.n_nodes, k, dtype=np.int8)
                                 for m, k in zip(meshes, kinds)])
@@ -406,8 +398,7 @@ class ACSystem:
         diag = np.arange(self.n)
         r = np.concatenate([r, diag])          # every kept unknown gets a diagonal entry
         cc = np.concatenate([cc, diag])
-        key = r * self.n + cc
-        uniq, inv = np.unique(key, return_inverse=True)
+        uniq, inv = pattern(r, cc, self.n)      # np.unique(r * n + cc), faster (#216)
         self._n_entries = len(uniq)
         ur, uc = uniq // self.n, uniq % self.n
         self._indices = uc.astype(np.int32 if self.n < 2**31 else np.int64)
@@ -497,9 +488,9 @@ class ACSystem:
                 j = li + step
                 while len(todo) and 0 <= j < len(layers):
                     lj = layers[j].id
-                    hit_r = (shapely.contains_xy(geom[0][lj], cen[todo, 0], cen[todo, 1])
+                    hit_r = (contains_xy(geom[0][lj], cen[todo, 0], cen[todo, 1])
                              if lj in geom[0] else np.zeros(len(todo), bool))
-                    hit_g = (shapely.contains_xy(geom[1][lj], cen[todo, 0], cen[todo, 1])
+                    hit_g = (contains_xy(geom[1][lj], cen[todo, 0], cen[todo, 1])
                              if lj in geom[1] else np.zeros(len(todo), bool))
                     hit = hit_r | hit_g
                     if hit.any():
@@ -645,7 +636,9 @@ class ACSystem:
         X = sp.csr_matrix((xd, (xr, xc)), shape=(self.n, self.n))
         return A, X
 
-    def port_impedance(self, omega: float, progress: ProgressReporter = NULL) -> np.ndarray:
+    def port_impedance(self, omega: float, progress: ProgressReporter = NULL,
+                       series: Optional[direct.ComplexSeries] = None,
+                       with_factor: bool = False):
         """The board's port impedance matrix (ports x ports, ohms) at ``omega``.
 
         The free unknowns (every floating conductor held at its anchor) are solved
@@ -653,13 +646,14 @@ class ACSystem:
         potentials x_A follow from KCL summed over each floating conductor, where the
         copper's own currents cancel exactly and only the capacitive ones remain:
         R X [x_A; x_F] = R b.
+
+        ``series`` factorizes in place of this system's own (a thread's, #213); with
+        ``with_factor``, the factorization is returned too.
         """
         A, X = self.matrix(omega)
         nf = self.n_free
         upper = sp.csr_matrix((A.data[self._up_sel], self._up_indices, self._up_indptr),
                               shape=(nf, nf))
-        factor = self._factors.factorize(upper, progress.warn)
-        self.stats.method = factor.name
         AFA = A[:nf, nf:].tocsc()
         k = AFA.shape[1]                                    # floating conductors
         RX = (self._R @ X).tocsr()
@@ -676,23 +670,44 @@ class ACSystem:
              (np.concatenate([plus[plus >= 0], minus[minus >= 0]]),
               np.concatenate([cols[plus >= 0], cols[minus >= 0]]))), shape=(self.n, P))
         # Solve A_FF y = [A_FA, B_F] in blocks, keeping only what Z needs: y at the port
-        # terminals and the floating conductors' capacitive currents R X_F y.
+        # terminals and the floating conductors' capacitive currents R X_F y. One solve
+        # alone (not a thread's) takes blocks as wide as the memory free allows (#215).
         rows = np.unique(np.concatenate([plus, minus]))
         rows = rows[(rows >= 0) & (rows < nf)]
         at = {int(r): i for i, r in enumerate(rows)}
         Y = np.zeros((len(rows), k + P), complex)
         RY = np.zeros((k, k + P), complex)
-        block = direct.rhs_block(nf)
-        for c0 in range(0, k + P, block):
-            progress.check_cancel()
-            cs = np.arange(c0, min(k + P, c0 + block))
+        width = {}
+
+        def block_rhs(c0):
+            cs = np.arange(c0, min(k + P, c0 + width["block"]))
             rhs = np.zeros((nf, len(cs)), complex, order="F")
             for j, c in enumerate(cs):
                 col = AFA[:, [c]] if c < k else B[:nf, [c - k]]
                 rhs[:, j] = col.toarray().ravel()
-            y = factor(rhs)
+            return rhs
+
+        def first_block():                  # once factorized, so the factor's memory counts
+            width["block"] = direct.rhs_block(nf, max_cols=k + P, memory=series is None)
+            return block_rhs(0)
+        solver = series or self._factors
+        factor = solver.factorize(upper, progress.warn, check=first_block)
+        self.stats.method = factor.name
+        if "block" not in width:
+            width["block"] = direct.rhs_block(nf, max_cols=k + P, memory=series is None)
+        checked = solver.checked                # the first block, solved by the check
+        for c0 in range(0, k + P, width["block"]):
+            progress.check_cancel()
+            if c0 == 0 and checked is not None:
+                rhs, y = checked
+                checked = solver.checked = None
+            else:
+                rhs = block_rhs(c0)
+                y = factor(rhs)
+            cs = np.arange(c0, c0 + rhs.shape[1])
             Y[:, cs] = y[rows]
             RY[:, cs] = RX_F @ y
+            del rhs, y
         # x_F = y_F − W x_A, with W = A_FF⁻¹ A_FA (the first k columns).
         x_port = Y[:, k:]
         x_anchor = np.zeros((k, P), complex)
@@ -710,7 +725,8 @@ class ACSystem:
                     out[i] = x_port[at[int(u)]]
             return out
         Z = potential(plus) - potential(minus)
-        return 0.5 * (Z + Z.T)              # symmetric up to round-off
+        Z = 0.5 * (Z + Z.T)                 # symmetric up to round-off
+        return (Z, factor) if with_factor else Z
 
     def close(self):
         """Release the solver's memory (the last factorization)."""

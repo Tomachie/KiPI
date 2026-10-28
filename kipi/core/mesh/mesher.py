@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import shapely
-from shapely import STRtree
+from shapely import STRtree, affinity
 import triangle
 from scipy.spatial import cKDTree
 from shapely.geometry import Point, Polygon
@@ -304,6 +304,36 @@ def _pad_geom(pad: Pad, layer: int) -> Optional[BaseGeometry]:
     return shapely.union_all(geoms) if geoms else None
 
 
+def is_large_pad(pad: Pad, opts: "MeshOptions") -> bool:
+    """Whether terminal ``pad`` is solved as copper with a smaller contact (#207): its
+    copper, on its largest layer and less any drill, is at least opts.large_pad_mm2."""
+    if opts.large_pad_mm2 is None:
+        return False
+    areas = [g.area for g in (_pad_geom(pad, lid) for lid in pad.shapes) if g is not None]
+    if not areas:
+        return False
+    hole = 0.0
+    if pad.pad_type == "pth":
+        hole = math.pi / 4 * pad.drill_mm[0] * (pad.drill_mm[1] or pad.drill_mm[0])
+    return max(areas) - hole >= opts.large_pad_mm2
+
+
+def _contact_geom(pad: Pad, layer: int, opts: "MeshOptions") -> Optional[BaseGeometry]:
+    """Where an SMD terminal pad's part connects on ``layer``: the whole pad, or for a
+    large pad its outline scaled about its centroid to opts.pad_contact_share of its area
+    (a power die on its tab, #207). A plated hole's contact is its wall (see _join)."""
+    g = _pad_geom(pad, layer)
+    if (g is None or pad.pad_type == "pth" or opts.pad_contact_share >= 1
+            or not is_large_pad(pad, opts)):
+        return g
+    f = math.sqrt(max(opts.pad_contact_share, 0.01))
+    c = g.centroid
+    origin = c if g.contains(c) else Point(pad.position)
+    contact = shapely.intersection(affinity.scale(g, f, f, origin=origin), g)
+    polys = [q for q in shapely.get_parts(contact) if q.geom_type == "Polygon" and q.area > 0]
+    return shapely.union_all(polys) if polys else g
+
+
 def _nodes_in(geom: BaseGeometry, pts: np.ndarray, tree: cKDTree, offset: int) -> np.ndarray:
     """Global ids of nodes (of one layer) inside ``geom`` grown by RING_EPS_MM."""
     minx, miny, maxx, maxy = geom.bounds
@@ -349,77 +379,183 @@ def _hole_features(snap: BoardSnapshot, net: str, layer: int) -> np.ndarray:
     return np.asarray(rows, dtype=float).reshape(-1, 3)
 
 
+@dataclass(frozen=True)
+class MeshOptions:
+    """How finely :func:`mesh_net` meshes; the defaults are DC's."""
+    max_edge_mm: float = 0.5
+    min_angle_deg: float = 28.0
+    simplify_mm: float = 0.003
+    circle_quad_segs: int = 2
+    min_edge_mm: float = 0.02
+    grading: float = 0.2
+    # Terminal pads with at least this much copper are solved as copper, their part
+    # connected only at a contact inside them (#207); None: every pad is equipotential.
+    large_pad_mm2: Optional[float] = None
+    pad_contact_share: float = 0.25    # an SMD contact's share of its pad's area
+
+    @property
+    def max_area(self) -> float:
+        return math.sqrt(3) / 4 * self.max_edge_mm ** 2
+
+
+@dataclass
+class LayerMesh:
+    """One net's copper on one layer, meshed (:func:`mesh_layer`)."""
+    layer: int
+    points: np.ndarray
+    tris: np.ndarray
+    skipped_rings: int
+
+
+def _terminals(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str]) -> List[Pad]:
+    _, _, pads, _ = snap.items_on_net(net)
+    pad_by_id = {p.id: p for p in pads}
+    missing = [pid for pid in terminal_pad_ids if pid not in pad_by_id]
+    if missing:
+        raise MeshError(f"Terminal pads are not on net {net}: {missing}")
+    return [pad_by_id[pid] for pid in dict.fromkeys(terminal_pad_ids)]
+
+
+def mesh_layer(snap: BoardSnapshot, net: str, lid: int, terminal_pad_ids: Sequence[str],
+               opts: MeshOptions, features: np.ndarray,
+               progress: ProgressReporter = NULL) -> Optional[LayerMesh]:
+    """``net``'s copper on layer ``lid`` meshed, refined toward the plated holes
+    ``features`` ((x, y, radius) rows); None where it has none."""
+    cu = snap.stackup.layer(lid)
+    _, vias, pads, _ = snap.items_on_net(net)
+    terminals = _terminals(snap, net, terminal_pad_ids)
+    geom = net_layer_copper(snap, net, lid, quad_segs=opts.circle_quad_segs)
+    if geom.is_empty:
+        return None
+    if opts.simplify_mm > 0:
+        geom = geom.simplify(opts.simplify_mm, preserve_topology=True)
+    if geom.area >= ANNOUNCE_LAYER_MM2:
+        # Big planes take seconds each; say so before starting, not only after.
+        progress.info(f"  {cu.name}: meshing {geom.area:.0f} mm² of copper...")
+    terminal_geoms = [g for g in (_pad_geom(p, lid) for p in terminals) if g is not None]
+    constraints = [g.boundary for g in terminal_geoms]
+    # A large pad's contact gets nodes of its own (its outline is a constraint too).
+    for p in terminals:
+        contact = _contact_geom(p, lid, opts)
+        if contact is not None and not contact.equals(_pad_geom(p, lid)):
+            constraints.append(contact.boundary)
+    size_fn = graded_size(features, opts.min_edge_mm, opts.max_edge_mm, opts.grading)
+    ring_centers = _via_ring_centers(vias, pads, lid, set(terminal_pad_ids))
+    all_pts, all_tris, n, skipped = [], [], 0, 0
+    for poly in iter_polygons(geom):
+        if poly.area < 1e-6:
+            continue
+        if _is_dead_via_ring(poly, ring_centers, terminal_geoms):
+            skipped += 1
+            continue
+        pts, tris = mesh_polygon(poly, constraints, opts.max_area, opts.min_angle_deg,
+                                 size_fn, warn=progress.warn)
+        if len(tris) == 0:
+            continue
+        all_pts.append(pts)
+        all_tris.append(tris + n)
+        n += len(pts)
+    if not all_pts:
+        return LayerMesh(lid, np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64), skipped)
+    tris = np.vstack(all_tris)
+    progress.info(f"  {cu.name}: {n} nodes, {len(tris)} triangles")
+    return LayerMesh(lid, np.vstack(all_pts), tris, skipped)
+
+
+def _features(snap: BoardSnapshot, net: str, lid: int,
+              graded: Optional[Callable[[np.ndarray], np.ndarray]]) -> Tuple[np.ndarray, int]:
+    """The plated holes to refine ``net``'s mesh on ``lid`` toward, and how many it has."""
+    features = _hole_features(snap, net, lid)
+    n_all = len(features)
+    if graded is not None and n_all:
+        features = features[graded(features[:, :2])]
+    return features, n_all
+
+
 def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = (),
              max_edge_mm: float = 0.5, min_angle_deg: float = 28.0, simplify_mm: float = 0.003,
              circle_quad_segs: int = 2, min_edge_mm: float = 0.02, grading: float = 0.2,
+             large_pad_mm2: Optional[float] = None, pad_contact_share: float = 0.25,
              progress: ProgressReporter = NULL,
              graded: Optional[Callable[[np.ndarray], np.ndarray]] = None) -> NetMesh:
     """The net's copper meshed per layer, joined through its plated holes. The mesh is
     refined toward the holes; ``graded``, if given, picks which (a test of their xy, the
     AC solve's holes near the rail, #123)."""
-    st = snap.stackup
-    _, vias, pads, _ = snap.items_on_net(net)
-    pad_by_id = {p.id: p for p in pads}
-    missing = [pid for pid in terminal_pad_ids if pid not in pad_by_id]
-    if missing:
-        raise MeshError(f"Terminal pads are not on net {net}: {missing}")
-    terminals = [pad_by_id[pid] for pid in dict.fromkeys(terminal_pad_ids)]
-    max_area = math.sqrt(3) / 4 * max_edge_mm ** 2
+    opts = MeshOptions(max_edge_mm, min_angle_deg, simplify_mm, circle_quad_segs,
+                       min_edge_mm, grading, large_pad_mm2, pad_contact_share)
+    return mesh_many(snap, [(net, terminal_pad_ids)], opts, progress, graded)[0]
 
-    all_pts, all_tris, node_layer, tri_layer = [], [], [], []
-    skipped_rings = 0
-    n_holes_all = n_graded = 0
+
+def mesh_many(snap: BoardSnapshot, jobs: Sequence[Tuple[str, Sequence[str]]],
+              opts: Optional[MeshOptions] = None, progress: ProgressReporter = NULL,
+              graded: Optional[Callable[[np.ndarray], np.ndarray]] = None) -> List[NetMesh]:
+    """Each of ``jobs``' nets (with its terminal pad ids) meshed as by :func:`mesh_net`.
+    A large job's layers are meshed in several processes (#211); the meshes are the
+    same either way."""
+    from kipi.core.mesh import parallel
+    opts = opts or MeshOptions()
+    layers = [c.id for c in snap.stackup.copper]
+    for net, ids in jobs:
+        _terminals(snap, net, ids)                  # pads not on the net stop it here
+    features = {(net, lid): _features(snap, net, lid, graded)
+                for net, _ in jobs for lid in layers}
+    pooled = parallel.mesh_layers(snap, jobs, opts, features, progress)
+    try:
+        out = []
+        for k, (net, ids) in enumerate(jobs):
+            if len(jobs) > 1:
+                progress.info(f"-- {net}")
+            t0 = time.perf_counter()
+            if pooled is None:
+                meshed = []
+                for li, lid in enumerate(layers):
+                    progress.check_cancel()
+                    meshed.append(mesh_layer(snap, net, lid, ids, opts, features[net, lid][0],
+                                             progress))
+                    progress.fraction((k + (li + 1) / len(layers)) / len(jobs))
+            else:
+                meshed = pooled.layers(net, progress)
+                progress.fraction((k + 1) / len(jobs))
+            mesh = _join(snap, net, ids, [m for m in meshed if m is not None], opts, progress)
+            n_holes_all = sum(features[net, lid][1] for lid in layers)
+            n_graded = sum(len(features[net, lid][0]) for lid in layers)
+            if graded is not None and n_graded < n_holes_all:
+                progress.info(f"Mesh graded at {n_graded} of {n_holes_all} plated hole rings, "
+                              "those near the rail (the others carry almost none of its "
+                              "current)")
+            progress.info(f"Mesh: {mesh.n_nodes} nodes, {mesh.n_tris} triangles on "
+                          f"{len(mesh.layers)} layer(s), {len(mesh.barrels)} plated holes "
+                          f"({time.perf_counter() - t0:.2f} s)")
+            out.append(mesh)
+        return out
+    finally:
+        if pooled is not None:
+            pooled.close()
+
+
+def _join(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str],
+          meshed: List[LayerMesh], opts: MeshOptions, progress: ProgressReporter) -> NetMesh:
+    """The net's mesh from its layers' (in stackup order), joined through its plated
+    holes, with its terminal pads' nodes."""
+    st = snap.stackup
+    circle_quad_segs = opts.circle_quad_segs
+    _, vias, pads, _ = snap.items_on_net(net)
+    terminals = _terminals(snap, net, terminal_pad_ids)
+    skipped_rings = sum(m.skipped_rings for m in meshed)
+    meshed = [m for m in meshed if len(m.tris)]
+    if not meshed:
+        raise MeshError(f"Net {net} has no copper to mesh")
     layer_ranges: Dict[int, Tuple[int, int]] = {}
     n_nodes = 0
-    t0 = time.perf_counter()
-    copper_layers = [c for c in st.copper]
-    for li, cu in enumerate(copper_layers):
-        progress.check_cancel()
-        geom = net_layer_copper(snap, net, cu.id, quad_segs=circle_quad_segs)
-        if geom.is_empty:
-            continue
-        if simplify_mm > 0:
-            geom = geom.simplify(simplify_mm, preserve_topology=True)
-        if geom.area >= ANNOUNCE_LAYER_MM2:
-            # Big planes take seconds each; say so before starting, not only after.
-            progress.info(f"  {cu.name}: meshing {geom.area:.0f} mm² of copper...")
-        constraints = [g.boundary for g in (_pad_geom(p, cu.id) for p in terminals) if g is not None]
-        features = _hole_features(snap, net, cu.id)
-        n_holes_all += len(features)
-        if graded is not None and len(features):
-            features = features[graded(features[:, :2])]
-        n_graded += len(features)
-        size_fn = graded_size(features, min_edge_mm, max_edge_mm, grading)
-        start = n_nodes
-        n_layer_tris = 0
-        ring_centers = _via_ring_centers(vias, pads, cu.id, set(terminal_pad_ids))
-        terminal_geoms = [g for g in (_pad_geom(p, cu.id) for p in terminals) if g is not None]
-        for poly in iter_polygons(geom):
-            if poly.area < 1e-6:
-                continue
-            if _is_dead_via_ring(poly, ring_centers, terminal_geoms):
-                skipped_rings += 1
-                continue
-            pts, tris = mesh_polygon(poly, constraints, max_area, min_angle_deg, size_fn,
-                                     warn=progress.warn)
-            if len(tris) == 0:
-                continue
-            all_pts.append(pts)
-            all_tris.append(tris + n_nodes)
-            node_layer.append(np.full(len(pts), cu.id))
-            tri_layer.append(np.full(len(tris), cu.id))
-            n_nodes += len(pts)
-            n_layer_tris += len(tris)
-        if n_nodes > start:
-            layer_ranges[cu.id] = (start, n_nodes)
-            progress.info(f"  {cu.name}: {n_nodes - start} nodes, {n_layer_tris} triangles")
-        progress.fraction((li + 1) / len(copper_layers))
-
-    if not all_pts:
-        raise MeshError(f"Net {net} has no copper to mesh")
-    points = np.vstack(all_pts)
-    mesh = NetMesh(net=net, points=points, node_layer=np.concatenate(node_layer),
-                   tris=np.vstack(all_tris), tri_layer=np.concatenate(tri_layer),
+    for m in meshed:
+        layer_ranges[m.layer] = (n_nodes, n_nodes + len(m.points))
+        n_nodes += len(m.points)
+    points = np.vstack([m.points for m in meshed])
+    mesh = NetMesh(net=net, points=points,
+                   node_layer=np.concatenate([np.full(len(m.points), m.layer)
+                                              for m in meshed]),
+                   tris=np.vstack([m.tris + layer_ranges[m.layer][0] for m in meshed]),
+                   tri_layer=np.concatenate([np.full(len(m.tris), m.layer) for m in meshed]),
                    layers=[c.id for c in st.copper if c.id in layer_ranges],
                    barrels=[], pad_nodes={})
 
@@ -480,31 +616,41 @@ def mesh_net(snap: BoardSnapshot, net: str, terminal_pad_ids: Sequence[str] = ()
         if bar.ring_nodes:   # even one layer: the plated wall shorts the hole edge
             mesh.barrels.append(bar)
 
-    # Terminal pads: nodes inside the pad outline on each of its layers.
+    # Terminal pads: nodes inside the pad outline on each of its layers; for a large pad
+    # (#207) only those of its contact, an SMD pad's shrunk outline or a plated hole's wall.
+    n_large = 0
     for p in terminals:
         per_layer: Dict[int, np.ndarray] = {}
-        for lid in p.shapes:
-            if lid not in layer_ranges:
-                continue
-            g = _pad_geom(p, lid)
-            if g is None:
-                continue
-            nodes = ring(lid, g)
-            if len(nodes):
-                per_layer[lid] = nodes
+        large = is_large_pad(p, opts)
+        if large and p.pad_type == "pth":
+            for lid in p.shapes:
+                hole = pad_hole(lid, p.position) if lid in layer_ranges else None
+                if hole is not None:
+                    nodes = ring(lid, hole)
+                    if len(nodes):
+                        per_layer[lid] = nodes
+        if not per_layer:
+            for lid in p.shapes:
+                if lid not in layer_ranges:
+                    continue
+                g = _contact_geom(p, lid, opts) if large else _pad_geom(p, lid)
+                if g is None:
+                    continue
+                nodes = ring(lid, g)
+                if len(nodes):
+                    per_layer[lid] = nodes
         if not per_layer:
             raise MeshError(f"Pad {p.label} on net {net} has no meshed copper")
+        n_large += large
         mesh.pad_nodes[p.id] = per_layer
+    if n_large:
+        progress.info(f"{n_large} terminal pad(s) of {opts.large_pad_mm2:g} mm² or more solved "
+                      f"as copper, connected at their plated hole or the central "
+                      f"{opts.pad_contact_share:.0%} of their area")
 
-    if graded is not None and n_graded < n_holes_all:
-        progress.info(f"Mesh graded at {n_graded} of {n_holes_all} plated hole rings, those "
-                      "near the rail (the others carry almost none of its current)")
     if skipped_rings:
         progress.info(f"Skipped {skipped_rings} isolated via/PTH ring(s): with nothing else "
                       "attached they cannot carry current")
-    progress.info(f"Mesh: {mesh.n_nodes} nodes, {mesh.n_tris} triangles on "
-                  f"{len(mesh.layers)} layer(s), {len(mesh.barrels)} plated holes "
-                  f"({time.perf_counter() - t0:.2f} s)")
     return mesh
 
 
@@ -538,14 +684,12 @@ def mesh_nets(snap: BoardSnapshot, nets: Sequence[str], terminal_pad_ids: Sequen
     if len(nets) == 1:
         return mesh_net(snap, nets[0], terminal_pad_ids, progress=progress, **kwargs)
     pad_net = {p.id: p.net for p in snap.pads}
-    meshes = []
-    for net in nets:
-        progress.info(f"-- {net}")
-        mine = [pid for pid in terminal_pad_ids if pad_net.get(pid) == net]
-        meshes.append(mesh_net(snap, net, mine, progress=progress, **kwargs))
     stray = [pid for pid in terminal_pad_ids if pad_net.get(pid) not in nets]
     if stray:
         raise MeshError(f"Terminal pads are not on any of {list(nets)}: {stray}")
+    graded = kwargs.pop("graded", None)
+    jobs = [(net, [pid for pid in terminal_pad_ids if pad_net.get(pid) == net]) for net in nets]
+    meshes = mesh_many(snap, jobs, MeshOptions(**kwargs), progress, graded)
     mesh = combine_meshes(meshes, name or " + ".join(nets), [c.id for c in snap.stackup.copper])
     progress.info(f"Combined mesh: {mesh.n_nodes} nodes, {mesh.n_tris} triangles, "
                   f"{len(nets)} nets")

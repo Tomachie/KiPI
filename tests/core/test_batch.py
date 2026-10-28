@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 pv = pytest.importorskip("pyvista")
@@ -27,6 +28,10 @@ def test_merges_nets_into_one_chunk_per_category():
     assert m.n_points == plane(2).n_points + plane(3).n_points
     # Triangle indices were offset into the merged point array.
     assert m.faces.reshape(-1, 4)[:, 1:].max() == m.n_points - 1
+    a, b3 = plane(2), plane(3, x=5)
+    assert (m.regular_faces == np.vstack([a.regular_faces,
+                                          b3.regular_faces + a.n_points])).all()
+    assert np.allclose(m.points, np.vstack([a.points, b3.points]))
 
 
 def test_chunk_can_filter_to_included_nets_without_dropping_stored_geometry():
@@ -81,3 +86,17 @@ def test_re_adding_replaces_and_recolor_marks_dirty():
     assert (chunk.build().cell_data["rgb"] == [0, 0, 255]).all()
     b.set_color("A", ("cu", 3), BLUE)
     assert b.take_dirty() == []
+
+
+
+@pytest.mark.parametrize("mesh", [plane(3), pv.Plane(i_resolution=2, j_resolution=1),
+                                  pv.Sphere().merge(pv.Line())],
+                         ids=["triangles", "quads", "with lines"])
+def test_meshes_are_read_as_pyvista_reads_them(mesh):
+    # #205: triangles are read straight from VTK's arrays, the rest through pyvista.
+    from kipi.core.viz.batch import _arrays
+    tri = mesh if mesh.is_all_triangles else mesh.triangulate()
+    pts, tris = _arrays(mesh)
+    assert pts.dtype == np.float32 and tris.dtype == np.int64
+    assert np.array_equal(pts, np.asarray(tri.points, dtype=np.float32))
+    assert np.array_equal(tris, tri.faces.reshape(-1, 4)[:, 1:])

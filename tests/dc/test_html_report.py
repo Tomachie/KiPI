@@ -26,8 +26,9 @@ def test_report_contents(tmp_path, thermal):
     path = write_report(tmp_path / "r.html", tree, scenes, snap, s)
     text = path.read_text(encoding="utf-8")
     assert text.startswith("<!DOCTYPE html>")
-    assert "Plotly.newPlot" in text                     # interactive 3D for each group
-    assert text.count("Plotly.newPlot") == len(tree.groups)
+    # an interactive 3D view for each group, drawn only when opened (#222)
+    assert text.count("class='plot-data'") == len(tree.groups)
+    assert "Plotly.newPlot" in text
     assert text.count("data:image/png;base64,") >= 2 * len(tree.groups)
     for l in tree.loads:
         assert l.name in text
@@ -43,6 +44,16 @@ def test_report_contents(tmp_path, thermal):
     assert "contenteditable='true'" in text and "user-notes-save" in text
     assert text.rindex("<h2") == text.index("<h2 id='user-notes'")       # the last section
     assert "<style data-kipi>" in text      # a saved copy keeps the report's own styles
+    # #222: the tables come after every plot, before the notes; images expand to full
+    # screen, drawn at twice the size they are shown at
+    last_plot = max(text.rindex("class='plot-data'"), text.rindex("data:image/png"))
+    for table in ("id='loads'", "id='vrms'", "id='pins'", "id='losses'", "id='vias'",
+                  "id='layers'"):
+        assert last_plot < text.index(table) < text.index("id='user-notes'"), table
+    assert ("id='thermal-tables'" in text) == thermal
+    assert "lightbox" in text and "plot-expand" in text
+    # each group's 3D view is collapsed until clicked open
+    assert text.count("<details class='view3d'><summary>3D view: ") == len(tree.groups)
 
 
 def test_report_mesh_keeps_copper(tmp_path):
