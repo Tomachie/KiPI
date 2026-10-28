@@ -20,6 +20,7 @@ anything else in the solve looks at it.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -61,6 +62,13 @@ class CornerInfo:
         return out
 
 
+def _below(mx: Optional[float], typ: float) -> bool:
+    """Whether a maximum is below its typical value by more than rounding: a file can
+    state the same figure twice through different arithmetic (1.4 and
+    1.4000000000000001)."""
+    return mx is not None and mx < typ and not math.isclose(mx, typ, rel_tol=1e-9)
+
+
 def corner_errors(setup) -> List[str]:
     """What makes the corners unsolvable: an unknown corner, or a maximum below its
     typical value."""
@@ -69,14 +77,13 @@ def corner_errors(setup) -> List[str]:
         errors.append(f"Unknown solve corner {setup.corner!r}")
     for l in setup.loads:
         pairs = [(l.current, l.current_max)] + [(g.current, g.current_max) for g in l.groups]
-        if any(mx is not None and mx < typ for typ, mx in pairs):
+        if any(_below(mx, typ) for typ, mx in pairs):
             errors.append(f"Load {l.name}: a maximum current is below its typical current")
     for k in setup.links:
-        if k.resistance_max is not None and k.resistance_max < k.resistance:
+        if _below(k.resistance_max, k.resistance):
             errors.append(f"DC connection {k.name}: the maximum resistance is below its "
                           "typical resistance")
-        if (k.diode_vf and k.diode_vf_max is not None
-                and k.diode_vf_max < k.diode_vf):
+        if k.diode_vf and _below(k.diode_vf_max, k.diode_vf):
             errors.append(f"DC connection {k.name}: the maximum forward voltage is below "
                           "its typical forward voltage")
     return errors

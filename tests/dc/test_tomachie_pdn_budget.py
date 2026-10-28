@@ -68,6 +68,18 @@ def test_worst_case_runs_the_vrm_at_the_low_end_of_its_band():
                for n in res.warnings)
 
 
+def test_a_maximum_equal_to_its_typical_but_for_rounding_solves():
+    """A file can state one figure twice through different arithmetic; the worst case
+    solves it rather than calling the maximum below the typical."""
+    pdn = copy.deepcopy(PDN)
+    load = pdn["rails"][1]["loads"][0]
+    load["current"] = {"amps": 1.4000000000000001, "basis": "typ"}
+    load["current_max"] = {"amps": 1.4, "basis": "estimated"}
+    setup, _ = run(pdn)
+    setup.corner = "max"
+    assert by_name(solve_tree(board(), setup).loads, "U2").current == pytest.approx(1.4)
+
+
 def test_supply_max_tightens_the_rails_maximum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_max"] = {"volts": 3.4, "basis": "max",
