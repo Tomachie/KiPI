@@ -770,7 +770,13 @@ timing, solver residuals and warnings: warnings are amber, errors red, stage hea
 <p>While anything runs, the right end of the status bar shows a turning spinner with the
 operation and how long it has taken so far (part 3D models loading in the background
 included). The spinner keeps turning while KiPI works; a stage that cannot say how far it
-is moves the progress bar back and forth instead. While the window itself is busy, drawing
+is moves the progress bar back and forth instead.</p>
+<p>Where it can, the spinner also says about how long the step running now has left. A step
+that reports how far it is (the frequencies of an AC sweep, the nets being meshed) is
+estimated from how fast it is going. A step that cannot, a factorization above all, is
+estimated from how long steps of about its size took before on this computer; KiPI keeps
+those times in <code>timings.json</code> in its data folder, so the first solve of a kind
+has no estimate. While the window itself is busy, drawing
 a big solve's results or saving a snapshot, the mouse pointer shows the wait cursor.</p>
 <p>Each session also writes a log file to <code>kipi/</code> in your temporary folder
 (<code>%TEMP%</code> on Windows, <code>$TMPDIR</code> on macOS, <code>/tmp</code> on Linux).
@@ -913,13 +919,16 @@ as you edit. The VRMs, Loads and Series links tabs share one layout: a list with
     current.</td></tr>
   <tr><td>Output current limit</td><td class="wrap">Optional. The VRM row shows PASS if its total
     output current (all phases) is at most this.</td></tr>
-  <tr><td>Load line</td><td class="wrap">Optional, DC only (adaptive voltage positioning). The
+  <tr><td>Load line</td><td class="wrap">Optional (adaptive voltage positioning). The
     VRM regulates to its regulated voltage less this resistance times its output current: what its
     connected loads and the VRMs it feeds actually draw, so a
     <a href="#ts-no-path">disconnected</a> load adds no droop. Drops are still measured from
     the regulated voltage, so the droop counts against each load's tolerance. The Notes tab, the
     HTML report and the VRM CSV show the droop and the voltage it regulates to
-    (<b>V target</b>). <b>none</b> holds the regulated voltage.</td></tr>
+    (<b>V target</b>). In AC mode the VRM's loop regulates to it in the estimated transient
+    response: the rail settles the load line times the load step below its DC value, and the
+    undershoot and overshoot are measured from that settled voltage. <b>none</b> holds the
+    regulated voltage.</td></tr>
   <tr><td>Dropout</td><td class="wrap">LDO only: the least input-to-output difference at which it
     still regulates.</td></tr>
   <tr><td>Input range</td><td class="wrap">Optional input range, min and max on one row, in
@@ -1464,6 +1473,14 @@ are required.</p>
     (named), an estimate (with why: no part number, no datasheet, not in its datasheet), or
     entered by you. A value you change becomes <b>entered</b>. <b>Questionable</b>: These are simulation values provided by the manufacturer and we question their accuracy when compared to like capacitors.
     The value is still the maker's; hover it for the comparison.</td></tr>
+  <tr><td><b>Import…</b> / <b>Export…</b></td><td class="wrap">Export writes the selected
+    model to a YAML file named after it (<code>GRM188R61A226ME15.yml</code>): its
+    capacitance, ESL and ESR, voltage rating and the capacitance kept at it, dielectric,
+    aging, manufacturing tolerance and SPICE model, everything but the parts that use it.
+    Import adds the models in one or more such files, e.g. to reuse a part's model on
+    another board; each starts with no parts, so tick the capacitors that use it. A model
+    whose name is taken is imported as <i>name</i> (2). The same buttons are in the Coupled
+    Noise mode's Capacitors tab.</td></tr>
   <tr><td>Capacitance</td><td class="wrap">Per part, with no DC bias. For a ceramic, enter
     its <b>Voltage rating</b> to estimate DC bias, or enter the effective value at the rail's
     voltage if the datasheet gives it.</td></tr>
@@ -1741,6 +1758,16 @@ Distribution System Design Methodology and Capacitor Selection for Modern CMOS T
     be most of the mesh on a board stitched with many. All the copper is kept either way, so
     the low-frequency return still takes every path it has. On an 8-layer board it halved the
     solve and changed the impedance by under 0.002 %.</td></tr>
+  <tr><td>Coarsen far from the rail, up to</td><td class="wrap">On by default, 5 mm. Beyond the
+    same margin the elements grow from <b>Max edge</b> by half a mm per mm to this size, holes
+    up to 2 mm across (antipads, ground vias) are filled, the ground vias joined at their
+    centers instead, and islands that touch at most one plated hole, which no current passes
+    through, are left out. A small rail on a large board's ground is otherwise mostly a mesh
+    of ground it hardly uses: on a 10-layer board a 300 mm² rail went from 2.2 M unknowns to
+    0.8 M and solved in a third of the time, its impedance moved by at most 0.05 %. A rail
+    spread over the whole board has little far ground and gains little. Every other piece of
+    copper is kept, so the low-frequency return still takes every path. Untick it to mesh the
+    whole ground at <b>Max edge</b>.</td></tr>
 </table>
 <p>The via plating rules come from the DC setup's Mesh tab; copper resistivity and the
 dielectric <b>Loss tangent</b> and <b>Default εr</b> from the
@@ -1830,19 +1857,24 @@ saved results keep it. Results saved by KiPI before 0.7.2 have no map.</p>
 <b>Load step</b> and <b>slew rate</b>: the load steps up by ΔI, holds until the rail has
 settled, and steps back down. The top plot is the load current. The lower plot is the
 rail's deviation from its DC value: the <b>undershoot</b> when the load steps up and the
-<b>overshoot</b> when it steps back down. Each probe's step is worked out on its own, with
-the other probes drawing nothing extra. A circle marks each peak, and the legend gives them
-in mV. Dashed lines at ± target |Z| × ΔI show the AC tolerance a flat target stands for
+<b>overshoot</b> when it steps back down, each measured from the voltage the rail settles
+to. Without a load line that is the DC value. With one (the VRM's <b>Load line</b>), the
+rail settles the load line times ΔI lower while the load is up, drawn dotted, and the
+undershoot and overshoot are measured from that line, not from the DC value. Each probe's
+step is worked out on its own, with the other probes drawing nothing extra. A circle marks
+each peak, and the legend gives them in mV. Dashed lines at ± target |Z| × ΔI about the
+settled voltage show the AC tolerance a flat target stands for
 (Z<sub>target</sub> = V<sub>AC</sub> / ΔI).</p>
 <p>How it is worked out: the AC solve gives the <b>open-loop</b> impedance, with the VRM out of
 circuit, and a step into that alone would never recover. So the converter's loop is closed
 again from its <b>Control loop bandwidth</b>: the VRM drives the rail from its voltage error
 with a typical proportional-integral compensation, crossing over at the bandwidth with
 about 60° of phase margin. Above the bandwidth the rail sees the PDN's own impedance; at DC
-the loop holds it exactly (the DC solve gives the DC value). The load current's spectrum
+the loop holds it exactly (the DC solve gives the DC value), or at its load line, which
+it regulates to as a real VRM with adaptive voltage positioning does. The load current's spectrum
 times that closed-loop impedance, back in time, is the response. Only the bandwidth comes
 from your setup, so treat the result as an estimate. The converter's real compensation,
-its output impedance and any load-line will change the slow part, while the fast part
+and its output impedance will change the slow part, while the fast part
 (ESL, plane and via inductance, capacitor resonances) comes from the solve. A linear model
 mirrors itself, so the overshoot on release matches the undershoot on the step.</p>
 <table>
@@ -2604,7 +2636,7 @@ README) for a direct solve of up to 1M unknowns, or more while memory allows.</p
 <summary>Solves are slow</summary>
 <div class="body"><p>Raise <b>Max edge</b>, analyze fewer nets at once, and untick unneeded groups
 in the Solve tab. In AC, lower <b>Field solves per decade</b>, raise <b>Min edge</b>, or check
-that <b>Grade only near the rail</b> is ticked. Large planes
+that <b>Grade only near the rail</b> and <b>Coarsen far from the rail</b> are ticked. Large planes
 are cheap; long fine traces are not. PARDISO helps a lot on large boards (Windows and Linux,
 x86-64): it solves DC systems directly as long as the factorization fits in half the free
 memory, and the Log says <i>Direct solve</i> for those. Without it, an AC or Coupled Noise solve works on several field frequencies at once,
@@ -2628,8 +2660,8 @@ machine; otherwise install the graphics card's driver. On a laptop with two grap
 Windows' <b>Graphics settings</b> can set Python to the high-performance one.</p>
 <p>Building the view of a large board is the slow part, and that runs on the processor, not
 the graphics card: shaping each net's copper, and the solder masks and silkscreens, into
-triangles. On a board with many nets KiPI builds them in several processes at once, up to
-eight, so the view comes in several times sooner on a processor with many cores; Task
+triangles. On a board with many nets KiPI builds them in several processes at once, one for
+each core but one (as many as half the free memory holds), so the view comes in several times sooner on a processor with many cores; Task
 Manager shows those processes while it does. If a computer can't start them, KiPI builds
 the view in one process as before and the Log says why. To build in one process anyway, set
 the environment variable <code>KIPI_SERIAL=1</code>.</p>

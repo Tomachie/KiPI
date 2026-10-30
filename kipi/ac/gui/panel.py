@@ -27,7 +27,7 @@ from qtpy.QtWidgets import (
 
 from kipi.ac.checks import capacitor_candidates, default_ground, validate_ac
 from kipi.ac.gui.caps import (
-    CAP_COLUMNS, cap_columns, describe_cap, models_from_values, new_cap,
+    CAP_COLUMNS, add_file_buttons, cap_columns, describe_cap, models_from_values, new_cap,
 )
 from kipi.ac.gui.packages import PackageEditor, describe as describe_package, new_package
 from kipi.ac.model import AGING_PCT_PER_DECADE, CapModel, Probe
@@ -741,6 +741,7 @@ class ACPanel(QWidget, PartSelection):
                             "none yet (capacitance read from the value; enter ESL and ESR)")
         b_values.clicked.connect(self._models_from_values)
         self.cap_list.layout().insertWidget(0, b_values)
+        add_file_buttons(self.cap_list, self)
         self.probe_list = ItemList(lambda: self.setup.probes, ProbeEditor(self),
                                    self._new_probe, self._describe_probe, noun="probe")
         # A probe on a DC load's pins, picked from a dropdown of the setup's loads and
@@ -846,7 +847,9 @@ class ACPanel(QWidget, PartSelection):
                                    "in the sweep without one. Undershoot and overshoot: the "
                                    "estimated dip when the probe's load steps up and rise "
                                    "when it steps back down (the Transient tab), for probes "
-                                   "with a load step")
+                                   "with a load step, from the voltage the rail settles to "
+                                   "(below its DC value by the VRM's load line times the "
+                                   "step, if it has one)")
         make_sortable(self.tbl_probes)
         self.txt_notes = QLabel(g_res)
         self.txt_notes.setWordWrap(True)
@@ -1039,6 +1042,23 @@ class ACPanel(QWidget, PartSelection):
             "current: a board stitched with many of them solves much faster, with the same "
             "result. All the copper is kept either way.", "near_rail", "near"))
         self.chk_near.toggled.connect(self._ac_settings_changed)
+        self.chk_far = QCheckBox("Coarsen far from the rail, up to")
+        self.chk_far.setChecked(s.coarsen_far)
+        self.spin_far_edge = _spin(0.5, 20.0, s.far_max_edge_mm, 1, " mm", 0.5)
+        self.spin_far_edge.setEnabled(s.coarsen_far)
+        f.addRow(self.chk_far, self.spin_far_edge)
+        far_tip = art_tip(
+            "Beyond the same margin, let the mesh grow from 'max edge' to this, fill the "
+            "small holes (antipads, ground vias, which are joined at their centers instead) "
+            "and leave out islands that touch at most one plated hole, which no current "
+            "passes through. Far ground costs most of a small rail's mesh on a large board "
+            "but carries little of its current. All the copper paths are kept, so the "
+            "low-frequency return still takes every one.", "near_rail", "far")
+        tip(f, self.chk_far, far_tip)
+        tip(f, self.spin_far_edge, far_tip)
+        self.chk_far.toggled.connect(self.spin_far_edge.setEnabled)
+        self.chk_far.toggled.connect(self._ac_settings_changed)
+        self.spin_far_edge.valueChanged.connect(self._ac_settings_changed)
         note = QLabel("The mesh decides the plane spreading and via inductance: elements grow "
                       "from 'min edge' at plated holes by 'via grading' per mm, up to 'max "
                       "edge'. Copper resistivity and barrel plating come from the DC setup; the "
@@ -1060,6 +1080,8 @@ class ACPanel(QWidget, PartSelection):
         s.grading = self.spin_grading.value()
         s.min_edge_mm = self.spin_min_edge.value()
         s.grade_near_rail_only = self.chk_near.isChecked()
+        s.coarsen_far = self.chk_far.isChecked()
+        s.far_max_edge_mm = self.spin_far_edge.value()
         s.dc_bias = self.chk_bias.isChecked()
         s.mfg_tolerance = self.chk_mfg.isChecked()
         s.aging = self.chk_aging.isChecked()
@@ -1076,6 +1098,7 @@ class ACPanel(QWidget, PartSelection):
                        (self.spin_fpd, s.field_points_per_decade),
                        (self.spin_edge, s.max_edge_mm), (self.spin_grading, s.grading),
                        (self.spin_min_edge, s.min_edge_mm), (self.spin_hours, s.aging_hours),
+                       (self.spin_far_edge, s.far_max_edge_mm),
                        (self.spin_temp, s.temperature_c)):
             wdg.blockSignals(True)
             wdg.setValue(v)
@@ -1083,12 +1106,14 @@ class ACPanel(QWidget, PartSelection):
         self.report_option.set_value(s.report_format)
         for chk, on in ((self.chk_bias, s.dc_bias),
                         (self.chk_mfg, s.mfg_tolerance), (self.chk_aging, s.aging),
-                        (self.chk_near, s.grade_near_rail_only)):
+                        (self.chk_near, s.grade_near_rail_only),
+                        (self.chk_far, s.coarsen_far)):
             chk.blockSignals(True)
             chk.setChecked(on)
             chk.blockSignals(False)
         self._sync_hours_slider()
         self._show_aging(s.aging)
+        self.spin_far_edge.setEnabled(s.coarsen_far)
         self.cmb_temp.blockSignals(True)
         self.cmb_temp.setCurrentIndex(max(self.cmb_temp.findData(s.temperature), 0))
         self.cmb_temp.blockSignals(False)

@@ -619,7 +619,10 @@ class VrmEditor(_Editor):
                                  "current, i.e. the current its connected loads and the "
                                  "VRMs it feeds actually draw. Drops are still measured "
                                  "from the target voltage, so the droop counts against each "
-                                 "load's tolerance. 'none' holds the target voltage."),
+                                 "load's tolerance. In AC mode the estimated transient "
+                                 "settles this times the load step low, and its undershoot "
+                                 "and overshoot are measured from there. 'none' holds the "
+                                 "target voltage."),
                 (self.cable, "A board input's cable, in the worst case only: the input "
                              "droops by this resistance times the current the board draws "
                              "(a USB Type-C cable is allowed 250 mΩ). With the input's range "
@@ -731,7 +734,7 @@ class VrmEditor(_Editor):
         self.form.setRowVisible(self.cable, kind == "source")
         self.form.setRowVisible(self.btn_accuracy_calc, kind != "source")
         dc = self.mode == "dc"
-        dc_only = (self.kind, self.eff, self.iq, self.i_limit, self.load_line, self.n_phases,
+        dc_only = (self.kind, self.eff, self.iq, self.i_limit, self.n_phases,
                    self.input, self.sense, self.ground_sense, self.dropout, self.mesh,
                    self.n_points)
         # The DC accuracy is used by both: the worst-case DC solve runs the VRM at its low

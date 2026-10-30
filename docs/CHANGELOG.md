@@ -4,7 +4,71 @@ All notable changes to KiPI, newest first. Each minor version is one development
 The code's version number went from 0.1.0 straight to 0.5.0, so 0.2.0 to 0.4.0 name
 milestones rather than versions that were ever set.
 
-## 0.9.5 (in development)
+## 0.9.6 (in development)
+
+### Added
+- **Time left in the status bar** (#224). While a solve runs, the spinner at the right end
+  of the status bar says about how long the step running now has left, next to the time
+  taken. A step that reports how far it is (the frequencies of an AC sweep, the nets being
+  meshed, an iterative solve converging) is extrapolated from how fast it is going. A step
+  that cannot, a factorization or an AC sweep's first frequency, is predicted from its
+  unknowns and how long steps of about that size took before on this computer, which KiPI
+  keeps in `timings.json` in its data folder; the first solve of a kind has no estimate.
+- **Capacitor model files** (#229). **Export…** in the Capacitors tab (AC and Coupled
+  Noise) writes the selected model to a YAML file named after it: its capacitance, ESL
+  and ESR, voltage rating and the capacitance kept at it, dielectric, aging rate,
+  manufacturing tolerance and SPICE model (the subcircuit's text and fitted values).
+  **Import…** adds the models in one or more such files to the setup, with no parts yet;
+  a name already taken gets " (2)". The parts that use a model belong to the board, so
+  they are not saved. Without PyYAML the file is written as JSON, which YAML reads too.
+
+### Fixed
+- **The AC transient follows the VRM's load line** (#227). A VRM with a **Load line**
+  regulates to its set voltage less the load line times its output current, and the
+  estimated transient's loop now does too: while the load is up the rail settles the load
+  line times the load step below its DC value (drawn dotted), rather than recovering to the
+  DC value. The undershoot and overshoot, in the plot's legend, the results table, the Log
+  and the report, are measured from that settled voltage, and the ± target × ΔI lines are
+  drawn about it. The VRM's Load line field is no longer grayed in AC mode.
+
+### Changed
+- **A new icon** (#73), drawn by hand: the plugin's toolbar icons, the window and taskbar
+  icon, the About and welcome screens' animated logo and the README's. The animated logo
+  still flashes its planes through a voltage drop, temperature and current density map.
+  `tools/make_icons.py` makes every size, the .ico and the animation from
+  `resources/kipi_1080.png`.
+- **A small rail on a large board's ground solves several times faster** (#228). Beyond
+  the margin already used for via grading (five board thicknesses of the rail's copper and
+  parts, at least 5 mm), the AC mesh now coarsens: its elements grow from Max edge to
+  **Coarsen far from the rail, up to** (Mesh tab, 5 mm), holes up to 2 mm across
+  (antipads, ground vias) are filled, the ground vias joined at their centers instead, the
+  outlines of larger holes are traced more coarsely, and islands of copper that touch at
+  most one plated hole, which no current passes through, are left out. All other copper
+  is kept, so the low-frequency return still takes every path it has. On the 10-layer
+  Jetson AGX Thor demo board a 300 mm² rail went from 2.2 M unknowns to 0.8 M and from
+  138 s to 45 s, its impedance moved by at most 0.05 %. A rail spread over the whole
+  board has little far ground and gains little (3.2 M unknowns to 2.4 M, in the same
+  time; 0.02 % up to 100 MHz, 0.3 % at a 270 MHz resonance). Coupled Noise's board model
+  meshes the same way.
+- **AC sweeps with many capacitors are several times faster** (#225). With PARDISO, each
+  frequency's factorization now also gives the board's Schur complement on the port
+  terminals, from which the impedance between every pair of ports follows directly. The
+  board was previously solved once for each port (each capacitor, probe and series link),
+  so a rail with hundreds of capacitors spent most of its time there. Only the floating
+  conductors are still solved in full. PARDISO also orders and factorizes in parallel now.
+  On KiCad's Jetson AGX Thor demo (4.6M unknowns, 300 ports), the first frequency takes
+  18 s rather than 65 s, and each one after it 12 s rather than 56 s, with the same
+  impedances. If the Schur complement fails, KiPI warns and solves each port as before;
+  without PARDISO nothing changes.
+- **Every core is used, not at most eight** (#226). Building the 3D view, meshing for a
+  solve, testing points against copper, and an AC sweep's frequencies without PARDISO were
+  each split across at most eight processes or threads. They now use every core but one,
+  counting only the cores KiPI is allowed to run on. Each worker process holds its own copy
+  of the board, so the view and the meshes start only as many as half the free memory
+  holds (eight where the free memory can't be read). On a 20-thread processor, KiCad's
+  Jetson AGX Thor demo builds its 3D view in about 9.5 s rather than 22 s.
+
+## 0.9.5
 
 ### Added
 - **The Log names what draws the 3D view** (#205). Once the board has drawn, the Log names

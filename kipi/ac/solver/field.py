@@ -3,23 +3,22 @@
 With PARDISO each factorization already uses every core, so the frequencies are solved
 one at a time. Without it, each is a SuperLU factorization on one core, which leaves the
 GIL while it works: several frequencies are solved at once, in threads, each with its own
-factorization, as many as memory allows (#213).
+factorization, as many as memory and the spare cores allow (#213, #226).
 """
 
 from __future__ import annotations
 
 import concurrent.futures as cf
-import os
 import time
 
 import numpy as np
 
+from kipi.core import eta
+from kipi.core.cores import spare
 from kipi.core.memory import free_memory
 from kipi.core.progress import Canceled, ProgressReporter
 from kipi.core.solver import direct
 
-#: Most frequencies solved at once.
-MAX_THREADS = 8
 #: Of the memory free, the share the threads' factorizations may take.
 MEMORY_SHARE = 0.5
 #: Threads where the free memory can't be read.
@@ -40,8 +39,14 @@ def field_solves(system, f_field: np.ndarray, progress: ProgressReporter) -> np.
     try:
         progress.check_cancel()
         progress.info(f"  [1/{n}] solving {fmt_hz(f_field[0])}")
-        zb[0], factor = system.port_impedance(2 * np.pi * f_field[0], progress,
-                                              with_factor=True)
+        # The first frequency reports nothing until it is done: predicted from earlier
+        # ones of about its size (#224).
+        rhs = system.n - system.n_free + len(system.ports)
+        with eta.predicted(progress, f"ac-frequency/{direct.backend()}",
+                           eta.factor_work(system.n_free, rhs), upto=1 / n) as step:
+            zb[0], factor = system.port_impedance(2 * np.pi * f_field[0], progress,
+                                                  with_factor=True)
+            step["kind"] = f"ac-frequency/{factor.name.split()[0]}"
         progress.fraction(1 / n)
         progress.info(f"  first frequency took {time.perf_counter() - t1:.2f} s "
                       f"({system.stats.method})")
@@ -69,7 +74,7 @@ def threads(system, factor, n_left: int) -> int:
     nf = system.n_free
     each = factor.nbytes + 2 * 16 * nf * direct.rhs_block(nf) + 64 * system.stats.nnz
     free = free_memory()
-    n = min((os.cpu_count() or 1) - 1, MAX_THREADS, n_left)
+    n = min(spare(), n_left)
     if free is None:
         n = min(n, UNKNOWN_MEMORY_THREADS)
     else:

@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
+import scipy.linalg
 import scipy.sparse as sp
 import shapely
 from scipy.sparse.csgraph import connected_components
@@ -69,6 +70,9 @@ SHIELDED_FACE_HEIGHT = 1000  # x board thickness: the inductance height of a shi
 # Copper at a temperature (#77): triangles whose resistivity is within this fraction share
 # one sheet impedance per frequency, so a board's temperature map costs a few evaluations.
 RHO_STEP = 1e-3
+# Most port terminals the Schur complement is taken on (#225): it is dense, 16 bytes each
+# squared (256 MB here), and factorizing the rest with them last fills it in more.
+SCHUR_MAX_ROWS = 4000
 
 
 class ACError(RuntimeError):
@@ -132,17 +136,22 @@ def mesh_rail_and_ground(snap: BoardSnapshot, rail_nets: Sequence[str],
         raise ACError(f"Pads are not on the rail or its ground: {stray}")
     # Via grading only near the rail: far stitching vias carry almost none of its
     # current, and grading them is most of a large board's mesh (#123).
-    graded = None
-    if ac_settings.grade_near_rail_only:
-        graded = near_rail(snap, rail_nets, terminal_ids, dc_settings.circle_quad_segs)
+    # Coarser ground far from the rail, every piece of copper kept (#228).
+    coarsen = ac_settings.coarsen_far
+    zone = None
+    if ac_settings.grade_near_rail_only or coarsen:
+        zone = near_rail(snap, rail_nets, terminal_ids, dc_settings.circle_quad_segs)
     opts = MeshOptions(max_edge_mm=ac_settings.max_edge_mm,
                        min_angle_deg=dc_settings.min_angle_deg,
                        simplify_mm=dc_settings.simplify_mm,
                        circle_quad_segs=dc_settings.circle_quad_segs,
-                       min_edge_mm=ac_settings.min_edge_mm, grading=ac_settings.grading)
+                       min_edge_mm=ac_settings.min_edge_mm, grading=ac_settings.grading,
+                       far_max_edge_mm=ac_settings.far_max_edge_mm if coarsen else None)
     jobs = [(net, [pid for pid in terminal_ids if pad_net.get(pid) == net]) for net in nets]
     with progress.timed("Meshing rail and ground"):
-        meshes = mesh_many(snap, jobs, opts, progress, graded)
+        meshes = mesh_many(snap, jobs, opts, progress,
+                           zone if ac_settings.grade_near_rail_only else None,
+                           zone if coarsen else None)
     kinds = [1 if net in gnd_nets else 0 for net in nets]
     mesh = combine_meshes(meshes, " + ".join(nets), [c.id for c in snap.stackup.copper])
     node_kind = np.concatenate([np.full(m.n_nodes, k, dtype=np.int8)
@@ -649,6 +658,11 @@ class ACSystem:
 
         ``series`` factorizes in place of this system's own (a thread's, #213); with
         ``with_factor``, the factorization is returned too.
+
+        Where PARDISO can, the factorization also gives A_FF's Schur complement S on the
+        port terminals (#225). The port columns of B are zero elsewhere, so y there is
+        S⁻¹ B, with no solve per port. What the floating conductors need is solved in
+        full: W, and R X_F y through A_FF's symmetry, R X_F A_FF⁻¹ B = (A_FF⁻¹ (R X_F)ᵀ)ᵀ B.
         """
         A, X = self.matrix(omega)
         nf = self.n_free
@@ -678,25 +692,50 @@ class ACSystem:
         Y = np.zeros((len(rows), k + P), complex)
         RY = np.zeros((k, k + P), complex)
         width = {}
+        # With PARDISO's Schur complement S on the port terminals (#225), y there is
+        # S⁻¹ B for the port columns, and only the floating conductors' are solved: A_FA,
+        # and (R X_F)ᵀ, since A_FF is symmetric and so R X_F y = (A_FF⁻¹ (R X_F)ᵀ)ᵀ B. It
+        # pays with more ports than that.
+        solver = series or self._factors
+        schur = bool(len(rows) and P > 2 * k and len(rows) <= SCHUR_MAX_ROWS
+                     and solver.schur_ok)
+        RXT = RX_F.T.tocsc()
+        n_cols = 2 * k if schur else k + P
+
+        def column(c):
+            if c < k:
+                return AFA[:, [c]]
+            return RXT[:, [c - k]] if schur else B[:nf, [c - k]]
 
         def block_rhs(c0):
-            cs = np.arange(c0, min(k + P, c0 + width["block"]))
+            cs = np.arange(c0, min(n_cols, c0 + width["block"]))
             rhs = np.zeros((nf, len(cs)), complex, order="F")
             for j, c in enumerate(cs):
-                col = AFA[:, [c]] if c < k else B[:nf, [c - k]]
-                rhs[:, j] = col.toarray().ravel()
+                rhs[:, j] = column(c).toarray().ravel()
             return rhs
 
         def first_block():                  # once factorized, so the factor's memory counts
-            width["block"] = direct.rhs_block(nf, max_cols=k + P, memory=series is None)
+            width["block"] = direct.rhs_block(nf, max_cols=n_cols, memory=series is None)
             return block_rhs(0)
-        solver = series or self._factors
-        factor = solver.factorize(upper, progress.warn, check=first_block)
+        if schur:
+            factor = solver.factorize(upper, progress.warn, schur=rows,
+                                      check=first_block if k else None)
+            if factor.schur is None:        # it failed: each port is solved after all
+                schur, n_cols = False, k + P
+                solver.checked = None
+                width.clear()
+        else:
+            factor = solver.factorize(upper, progress.warn, check=first_block)
         self.stats.method = factor.name
+        if schur:
+            self.stats.method = f"{factor.name}, Schur complement on {len(rows)} terminals"
+            B_s = B[rows].toarray()
+            Y[:, k:] = scipy.linalg.solve(factor.schur, B_s, assume_a="sym",
+                                          check_finite=False)
         if "block" not in width:
-            width["block"] = direct.rhs_block(nf, max_cols=k + P, memory=series is None)
+            width["block"] = direct.rhs_block(nf, max_cols=n_cols, memory=series is None)
         checked = solver.checked                # the first block, solved by the check
-        for c0 in range(0, k + P, width["block"]):
+        for c0 in range(0, n_cols, width["block"]):
             progress.check_cancel()
             if c0 == 0 and checked is not None:
                 rhs, y = checked
@@ -705,8 +744,14 @@ class ACSystem:
                 rhs = block_rhs(c0)
                 y = factor(rhs)
             cs = np.arange(c0, c0 + rhs.shape[1])
-            Y[:, cs] = y[rows]
-            RY[:, cs] = RX_F @ y
+            if schur:
+                w = cs < k                      # W's columns; the rest A_FF⁻¹ (R X_F)ᵀ
+                Y[:, cs[w]] = y[rows][:, w]
+                RY[:, cs[w]] = RX_F @ y[:, w]
+                RY[cs[~w] - k, k:] = y[rows][:, ~w].T @ B_s
+            else:
+                Y[:, cs] = y[rows]
+                RY[:, cs] = RX_F @ y
             del rhs, y
         # x_F = y_F − W x_A, with W = A_FF⁻¹ A_FA (the first k columns).
         x_port = Y[:, k:]
