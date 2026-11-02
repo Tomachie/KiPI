@@ -86,3 +86,48 @@ def test_a_pad_outline_is_clipped_the_same_with_the_edge_band_built_once():
     a = mesh_polygon(plane, [pad], 0.5, 28.0)
     b = mesh_polygon(plane, [pad, far], 0.5, 28.0)
     assert len(a[1]) == len(b[1]) and len(a[0]) == len(b[0])
+
+
+def test_meshed_without_pad_outlines_each_pad_still_holds_a_node(monkeypatch):
+    """When the pad outlines will not mesh the polygon is meshed without them; a pad
+    smaller than the mesh then held no node and its terminal was lost ("Pad U75.1 on
+    net VCC has no meshed copper": a 10-layer board with the coarse mesh). One node
+    is placed inside each pad on the polygon, and none for a pad off it."""
+    from shapely.geometry import Point
+    plane = box(0, 0, 30, 30)
+    pads = [box(10.1, 10.1, 10.4, 10.4), box(21.3, 4.6, 21.5, 4.9)]
+    off = box(40, 40, 40.3, 40.3)
+    coarse = math.sqrt(3) / 4 * 1.5 ** 2
+    # Without the fix's nodes the coarse mesh misses both pads.
+    pts, _ = M.mesh_polygon(plane, [], coarse, 28.0)
+    assert not any(p.contains(Point(x, y)) for p in pads for x, y in pts)
+
+    real = M._triangulate
+    calls = {"n": 0}
+
+    def fail_first(data, opts, cap):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise M.MeshCapHit()        # the pass with the pad outlines does not converge
+        return real(data, opts, cap)
+
+    monkeypatch.setattr(M, "_triangulate", fail_first)
+    notes = []
+    pts, tris = M.mesh_polygon(plane, [p.boundary for p in pads + [off]], coarse, 28.0,
+                               warn=notes.append)
+    assert notes and "meshing without them" in notes[0]
+    assert len(tris) > 0
+    for p in pads:
+        assert sum(p.contains(Point(x, y)) for x, y in pts) >= 1
+    assert all(-1e-9 <= x <= 30 + 1e-9 and -1e-9 <= y <= 30 + 1e-9 for x, y in pts)
+
+
+def test_a_pad_node_stays_clear_of_the_copper_edge():
+    """A pad overlapping the copper's edge gets its node inside the copper, clear of
+    the edge, so it never sits on a boundary segment."""
+    from shapely.geometry import Point
+    plane = box(0, 0, 10, 10)
+    pad = box(9.8, 4, 10.3, 4.5)
+    (x, y), = M._pad_nodes(plane, [pad.boundary])
+    assert plane.contains(Point(x, y)) and 10 - x >= M.CONSTRAINT_CLEARANCE_MM - 1e-9
+    assert len(M._pad_nodes(plane, [box(20, 20, 21, 21).boundary])) == 0

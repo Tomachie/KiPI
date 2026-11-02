@@ -202,6 +202,25 @@ def _triangulate(data: dict, switches: str, cap: int) -> dict:
     return out
 
 
+def _pad_nodes(poly: Polygon, outlines: Sequence[BaseGeometry]) -> np.ndarray:
+    """One point inside the copper of each pad outline that lies on ``poly``, clear of
+    the copper's edges where the overlap allows: the nodes that find a pad by position
+    when the mesh is built without the pad outlines. (0, 2) when none lies on it."""
+    tol = CONSTRAINT_CLEARANCE_MM
+    out = []
+    for line in outlines:
+        area = shapely.build_area(line)
+        if area.is_empty:
+            continue
+        overlap = shapely.intersection(area, poly)
+        if overlap.is_empty or overlap.area <= 0:
+            continue
+        clear = overlap.buffer(-tol)
+        p = (clear if not clear.is_empty else overlap).representative_point()
+        out.append((p.x, p.y))
+    return np.array(out, dtype=float).reshape(-1, 2)
+
+
 def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: float,
                  min_angle: float, size_fn=None, warn=None,
                  points: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -236,6 +255,13 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
             raise MeshCapHit()      # treat malformed input like a non-converging mesh
         if points is not None and len(points):
             verts = np.vstack([verts, points])
+        if not with_constraints:
+            # Without the outlines a pad smaller than the mesh holds no node, and its
+            # terminal is then not found ("no meshed copper": a 10-layer board with
+            # the coarse mesh, 2026-11-03); one node inside each pad keeps it.
+            inside = _pad_nodes(poly, near)
+            if len(inside):
+                verts = np.vstack([verts, inside])
         data = {"vertices": verts, "segments": segs}
         if holes:
             data["holes"] = np.array([[h.x, h.y] for h in holes])
