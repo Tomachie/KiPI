@@ -18,6 +18,7 @@ from __future__ import annotations
 import gc
 import json
 import os
+import sys
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -42,6 +43,15 @@ class _Print(ProgressReporter):
     def __init__(self):
         super().__init__()
         self.t0 = time.monotonic()
+        # A console or a redirected file in a legacy code page (cp1252 on Windows) cannot
+        # encode "εr" or "µm": the print raised inside the AC solve and every rail was
+        # listed not swept (2026-11-02). Print what it can, a "?" for the rest.
+        for stream in (sys.stdout, sys.stderr):
+            if hasattr(stream, "reconfigure"):
+                try:
+                    stream.reconfigure(errors="replace")
+                except (ValueError, OSError):
+                    pass
 
     def message(self, text, level=20):
         if level < 20:                  # debug detail: the log file's, not the console's
