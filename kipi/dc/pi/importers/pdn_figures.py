@@ -18,6 +18,10 @@ DC_RESISTANCE_SPECS = ("dcr", "dc_resistance", "resistance", "rds_on", "jumper_r
                        "cold_resistance", "r_dc", "rdc", "on_resistance", "contact_resistance")
 # A 0 ohm jumper's own figure: the most it may measure.
 JUMPER_SPECS = ("jumper_resistance",)
+# The prefixes of a DC-resistance spec that name a part's own pass element
+# ("switch_on_resistance", "channel_resistance", "pass_fet_on_resistance") rather than
+# another pin's FET ("flag_on_resistance", "discharge_resistance").
+OWN_SWITCH_PREFIXES = ("switch", "channel", "pass", "pass_fet", "fet", "main", "output")
 OHMS_PER_UNIT = {"ohm": 1.0, "ohms": 1.0, "Ω": 1.0, "mohm": 1e-3, "mΩ": 1e-3,
                  "kohm": 1e3, "kΩ": 1e3, "uohm": 1e-6, "µΩ": 1e-6}
 _NUMBER = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
@@ -76,6 +80,13 @@ def _own_figures(element: dict) -> List[dict]:
     if len({p for _, p in figs if p}) > 1 and pn:
         own = [(f, p) for f, p in figs if not p or p in pn or pn in p]
         figs = own if any(p for _, p in own) else figs
+    if len({p for _, p in figs if p}) > 1:
+        # Several prefixes and none is the part number: the ones that name the part's
+        # own pass element win over another pin's FET (2026-11-02, AP22615: the
+        # "switch_on_resistance" 40 mOhm beside "flag_on_resistance" 40 ohm; the flag
+        # figure had been taken and five USB rails solved to -117 V).
+        own = [(f, p) for f, p in figs if p in OWN_SWITCH_PREFIXES]
+        figs = own if own else figs
     return [f for f, _ in figs]
 
 
