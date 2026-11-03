@@ -21,11 +21,10 @@ def _input_volts(rail: dict) -> tuple:
     return (lo if lo is not None else nom), (hi if hi is not None else nom)
 
 
-def _feeding_bandwidth_hz(setup: PISetup, v: Vrm, net: str) -> Optional[float]:
+def _feeding_vrm(setup: PISetup, v: Vrm, net: str) -> Optional[Vrm]:
     group = net_groups(setup, [net]).get(net, frozenset([net]))
-    u = next((u for u in setup.vrms if u.name != v.name
-              and any(ph.output.net in group for ph in u.all_phases())), None)
-    return u.bandwidth_khz * 1e3 if u is not None and u.bandwidth_khz else None
+    return next((u for u in setup.vrms if u.name != v.name
+                 and any(ph.output.net in group for ph in u.all_phases())), None)
 
 
 def _add(setup: PISetup, name: str, supply, ground) -> Optional[Probe]:
@@ -77,11 +76,16 @@ def _stability(setup, v, name, supply, ground, v_lo, i_out, eff, targets_set,
         targets_missing.setdefault("no control loop bandwidth for the converter",
                                    []).append(probe.name)
         return
-    feed = _feeding_bandwidth_hz(setup, v, supply.net)
+    u = _feeding_vrm(setup, v, supply.net)
+    feed = u.bandwidth_khz * 1e3 if u is not None and u.bandwidth_khz else None
     if feed and feed >= bw:
-        targets_missing.setdefault("the supply of its input rail regulates up to and beyond "
-                                   "the converter's control loop bandwidth", []).append(
-            probe.name)
+        why = (f"its input rail comes from a board input ({u.name}), taken to hold the rail "
+               f"up to {_hz(feed)}, beyond the converter's control loop bandwidth; what "
+               "feeds that input is not on the board"
+               if u.kind == "source" else
+               f"the supply of its input rail ({u.name}) regulates up to {_hz(feed)}, "
+               "beyond the converter's control loop bandwidth")
+        targets_missing.setdefault(why, []).append(probe.name)
         return
     probe.target_ohm, probe.target_hz = ohm, bw
     probe.target_from = (f"input stability: V_in^2 / P_in = {v_lo:g} V^2 / {p_in:.4g} W, "

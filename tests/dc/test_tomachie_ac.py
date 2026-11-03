@@ -313,3 +313,13 @@ def test_a_switching_converters_input_gets_a_stability_and_a_ripple_probe():
 def test_a_linear_regulators_input_gets_no_probe():
     setup, _ = run(_ac_pdn())
     assert not [p for p in setup.probes if "input" in p.name]
+
+
+def test_a_converter_slower_than_its_board_input_gets_no_stability_target():
+    pdn = _buck_pdn()
+    pdn["regulators"][0]["ac"]["bandwidth"] = {"hz": 2e4, "basis": "estimated", "from": "f_sw / 10"}
+    setup, notes = TomachiePdnImporter(pdn, _cap_board()).run()
+    s = by_name(setup.probes, "U1 +3V3 input (stability)")
+    assert s.target_ohm is None
+    assert any("comes from a board input (J1 VIN), taken to hold the rail up to 50 kHz" in n
+               and n.endswith("U1 +3V3 input (stability)") for n in notes)
