@@ -466,19 +466,25 @@ class TomachiePdnImporter:
         for e in path:
             self._link(e, loop_of=ref if in_loop else None)
 
-    def _input_filter(self, reg: dict):
+    def _input_filter(self, reg: dict, entry: Optional[dict] = None):
         """The parts between a regulator's input rail and its input pins (a ferrite or an
         inductor ahead of it), as DC connections: a real drop, before any regulation."""
-        for e in (self._regulator_entry(reg) or {}).get("input_filter") or []:
+        for e in (entry or self._regulator_entry(reg) or {}).get("input_filter") or []:
             self._link(e)
 
-    def _regulator_entry(self, reg: dict) -> Optional[dict]:
-        """The regulator's load entry on its input rail."""
+    def _regulator_entries(self, reg: dict) -> List[dict]:
+        """The regulator's load entries on its input rails, one per input."""
+        out = []
         for rail_name in reg.get("input_rails", []):
             for l in self.rails.get(rail_name, {}).get("loads", []):
                 if l["role"] == "regulator" and l["refdes"] == reg["refdes"]:
-                    return l
-        return None
+                    out.append(l)
+                    break
+        return out
+
+    def _regulator_entry(self, reg: dict) -> Optional[dict]:
+        """The regulator's load entry on its (first) input rail."""
+        return next(iter(self._regulator_entries(reg)), None)
 
     def _load_switch(self, reg: dict, src: dict, rail: str):
         """A power or load switch regulates nothing: its output is its input less I times
@@ -488,22 +494,37 @@ class TomachiePdnImporter:
         output pins and its rail are DC connections too. Its quiescent current is drawn
         at its input pins, as an LDO VRM's is."""
         ref = reg["refdes"]
-        vin = self._regulator_input(reg)
+        inputs = [(l, self.idx.pin_ref(l["pins"], self.notes, f"{ref} input"))
+                  for l in self._regulator_entries(reg)]
+        inputs = [(l, p) for l, p in inputs if p is not None]
         out = self._source_pins(src, f"{ref} output")
-        if vin is None or out is None:
+        if not inputs or out is None:
             self.notes.append(f"Rail {rail}: load switch {ref} "
-                              f"{'input' if vin is None else 'output'} pins not found on the "
+                              f"{'input' if not inputs else 'output'} pins not found on the "
                               "board; its loads are not imported")
             self.skipped_rails.add(rail)
             return
         self.linked.add(ref)
         typ, mx, fig_notes = dc_resistance({"datasheet_figures":
                                             reg.get("datasheet_resistances") or []})
-        self._add_link(ref, vin, out, typ, mx, fig_notes, "on-resistance",
-                       rated_a=amps(reg.get("max_output_current")))
-        self.notes.append(f"{ref} ({rail}): load switch, imported as a DC connection from "
-                          f"{vin.net} to {out.net}, not a regulator")
-        self._input_filter(reg)
+        vin = inputs[0][1]
+        mux = ref if len(inputs) > 1 else ""
+        first = self._add_link(ref, vin, out, typ, mx, fig_notes, "on-resistance",
+                               rated_a=amps(reg.get("max_output_current")),
+                               name=f"{ref} ({vin.net})" if mux else None, mux=mux)
+        for k, (entry, pins) in enumerate(inputs[1:], 1):
+            self.setup.mux_links.append(dataclasses.replace(
+                first, name=self._unique(f"{ref} ({pins.net})"), side_a=pins, mux_input=k))
+            self._input_filter(reg, entry)
+        if mux:
+            self.notes.append(f"{ref} ({rail}): power mux, a DC connection to {out.net} "
+                              f"from each of its {len(inputs)} inputs "
+                              f"({', '.join(p.net for _, p in inputs)}), one closed at a "
+                              "time; each input is solved as a path of its own")
+        else:
+            self.notes.append(f"{ref} ({rail}): load switch, imported as a DC connection "
+                              f"from {vin.net} to {out.net}, not a regulator")
+        self._input_filter(reg, inputs[0][0])
         self._output_path(ref, src, rail)
         iq = amps(reg.get("quiescent_current"))
         if iq is not None:
@@ -553,7 +574,8 @@ class TomachiePdnImporter:
                   fig_notes: List[str], what: str = "DC resistance",
                   forward_v: Optional[float] = None, forward_v_max: Optional[float] = None,
                   esl_h: Optional[float] = None, vf_curve: Optional[list] = None,
-                  rated_a: Optional[float] = None):
+                  rated_a: Optional[float] = None, name: Optional[str] = None,
+                  mux: str = "") -> DcLink:
         self.notes.extend(f"{ref}: {n}" for n in fig_notes)
         if typ is None and mx is None:
             self.notes.append(f"{ref}: {what} not known; modeled as a short")
@@ -563,12 +585,14 @@ class TomachiePdnImporter:
             typ = mx
         elif mx is not None and mx != typ:
             self.max_resistance.append(f"{ref} {_ohms(mx)}")
-        self.setup.links.append(DcLink(self._unique(ref), a, b, typ,
+        self.setup.links.append(DcLink(self._unique(name or ref), a, b, typ,
                                        resistance_max=mx if mx is not None and mx != typ
                                        else None,
                                        diode_vf=forward_v or 0.0, diode_vf_max=forward_v_max,
-                                       esl_h=esl_h, vf_curve=vf_curve, rated_current_a=rated_a))
+                                       esl_h=esl_h, vf_curve=vf_curve, rated_current_a=rated_a,
+                                       mux=mux))
         diode_ref(self.setup.links[-1])       # a diode: its model from the datasheet's
+        return self.setup.links[-1]
 
     def _ground_links(self):
         """The parts joining one ground net to another (a common-mode choke's return
@@ -593,6 +617,30 @@ class TomachiePdnImporter:
         for r in self.rails.values():
             for e in r.get("series_from_parent", []):
                 self._link(e)
+        for r in self.rails.values():
+            self._other_feeds(r)
+
+    def _other_feeds(self, rail: dict):
+        """Another rail feeding this one through a diode chain, beside its own source:
+        the chain's parts as a path of its own, closed one path at a time."""
+        k = 0
+        for f in rail.get("other_feeds") or []:
+            if not isinstance(f, dict) or not f.get("series"):
+                continue
+            n0 = len(self.setup.links)
+            for e in f["series"]:
+                self._link(e)
+            chain = self.setup.links[n0:]
+            del self.setup.links[n0:]
+            if not chain:
+                continue
+            k += 1
+            for link in chain:
+                link.mux, link.mux_input = f"{rail['name']} feeds", k
+            self.setup.mux_links.extend(chain)
+            self.notes.append(f"Rail {rail['name']}: also fed from {f.get('rail')} through "
+                              f"{', '.join(x.name for x in chain)}; solved as a path of its "
+                              "own")
 
     # ------------------------------------------------------------ loads
     def _tolerance(self, rail: dict, l: dict, label: str = "") -> dict:

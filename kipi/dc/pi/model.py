@@ -343,6 +343,10 @@ class DcLink:
     # The part's continuous rated current, amps (a ferrite's, a fuse's hold current, a
     # jumper's): its solved current is judged against it. None = not given.
     rated_current_a: Optional[float] = None
+    # A power mux's input (``mux`` the part, ``mux_input`` which input): one closed at a
+    # time, the first in ``PISetup.links``, the others in ``PISetup.mux_links``.
+    mux: str = ""
+    mux_input: int = 0
     # The part's SPICE model (#51): with it in use, AC takes the impedance from it, and
     # the resistance and ESL are fitted to it. A diode's model (#191) also gives DC its
     # current at each voltage; side A is its anode.
@@ -461,6 +465,7 @@ class PISetup:
     # source, a regulator whose input nothing powers): kept with the setup so the
     # report says why a rail is missing, not only the import's Log.
     import_notes: List[str] = field(default_factory=list)
+    mux_links: List[DcLink] = field(default_factory=list)
     # The power-tree file the setup was imported from (its name, the tool and version that
     # wrote it, its date and a short hash), printed on the reports: a report says which
     # power tree its currents and tolerances came from.
@@ -492,11 +497,35 @@ class PISetup:
                  for r in (ph.high_side, ph.low_side) if r]
                 + [r for v in self.victims for r in (v.driver, v.receiver) if r])
 
+    def mux_paths(self) -> List[Tuple[str, int, List[DcLink]]]:
+        """The mux inputs other than the ones in ``links``, each a path of its own:
+        ``(mux, input, its links)``."""
+        out: Dict[Tuple[str, int], List[DcLink]] = {}
+        for k in self.mux_links:
+            out.setdefault((k.mux, k.mux_input), []).append(k)
+        return [(m, i, ks) for (m, i), ks in out.items()]
+
+    def with_mux_input(self, mux: str, k: int) -> "PISetup":
+        """This setup with input ``k`` of ``mux`` closed and its other inputs open."""
+        closed = [x for x in self.mux_links if x.mux == mux and x.mux_input == k]
+        links = [x for x in self.links if x.mux != mux] + closed
+        others = ([x for x in self.links if x.mux == mux]
+                  + [x for x in self.mux_links if not any(x is c for c in closed)])
+        s = dataclasses.replace(self, links=links, mux_links=others)
+        if closed:
+            # Two sources joined by the closed input: the path keeps the one feeding it.
+            net = closed[0].side_a.net
+            feed = net_groups(self, [net]).get(net, frozenset([net]))
+            joined = net_groups(s, [net]).get(net, frozenset([net]))
+            drives = lambda v, g: any(ph.output.net in g for ph in v.all_phases())  # noqa: E731
+            s.vrms = [v for v in s.vrms if not drives(v, joined) or drives(v, feed)]
+        return s
+
     # ------------------------------------------------------------------ file
     def to_dict(self) -> dict:
         d = dataclasses.asdict(self)
         d.pop("legacy_laminate_k")
-        for k in d["links"]:
+        for k in d["links"] + d["mux_links"]:
             k.pop("bias_a")
             k.pop("temp_c")
         for m in d["caps"]:
@@ -577,6 +606,7 @@ class PISetup:
             noise=noise_settings(d.get("noise", {})),
             import_notes=[str(n) for n in d.get("import_notes", [])],
             import_source=str(d.get("import_source", "")),
+            mux_links=[_link(k, pin) for k in d.get("mux_links", [])],
         )
 
     def save(self, path) -> Path:
@@ -674,7 +704,8 @@ def _link(k: dict, pin) -> DcLink:
                   diode_vf=float(k.get("diode_vf", k.get("forward_v")) or 0.0),
                   diode_vf_max=k.get("diode_vf_max", k.get("forward_v_max")),
                   vf_curve=k.get("vf_curve"),
-                  rated_current_a=k.get("rated_current_a"))
+                  rated_current_a=k.get("rated_current_a"),
+                  mux=str(k.get("mux", "")), mux_input=int(k.get("mux_input", 0)))
     # 0.9.2's constant forward drop (#161) becomes a diode model with that drop (#191);
     # a datasheet forward curve, a model fitted to the curve.
     if link.spice is None and (link.diode_vf > 0 or link.vf_curve):

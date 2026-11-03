@@ -14,8 +14,9 @@ from __future__ import annotations
 import re
 from typing import List, Optional, Tuple
 
-DC_RESISTANCE_SPECS = ("dcr", "dc_resistance", "resistance", "rds_on", "jumper_resistance",
-                       "cold_resistance", "r_dc", "rdc", "on_resistance", "contact_resistance")
+DC_RESISTANCE_SPECS = ("dcr", "dc_resistance", "resistance", "rds_on", "rdson", "ron", "r_on",
+                       "jumper_resistance", "cold_resistance", "r_dc", "rdc", "on_resistance",
+                       "contact_resistance")
 # A 0 ohm jumper's own figure: the most it may measure.
 JUMPER_SPECS = ("jumper_resistance",)
 # The prefixes of a DC-resistance spec that name a part's own pass element

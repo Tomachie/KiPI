@@ -100,14 +100,89 @@ def _incomplete_off_rail(setup, snap, typ, vrm: str) -> list:
             and not set(m.refs) & on_rail]
 
 
+def _dc_cases(snap, setup, progress, path: str = ""):
+    """DC at the worst case, let go once written, then the typical, returned for the AC
+    sweeps' DC bias (holding both doubled the peak): ``(cases, typical tree, error)``."""
+    from kipi.dc.pi.tree import solve_tree
+    cases, typ, mesh_cache, dc_error = [], None, {}, None
+    for corner in ("max", "typ"):
+        setup.corner = corner
+        label = f"{pdn_results.CASE_NAMES[corner]} case" + (f", {path}" if path else "")
+        progress.stage(f"DC, {label}")
+        try:
+            tree = solve_tree(snap, setup, progress, mesh_cache=mesh_cache)
+        except Exception as e:  # noqa: BLE001 - said in the file; out of memory above all
+            dc_error = f"{label}: {_failure(e)}"
+            progress.message(f"DC not solved: {dc_error}")
+            gc.collect()
+            continue
+        case = pdn_results.dc_case(tree, setup, corner)
+        case["peak_memory_gb"] = _gb(limits.peak_memory_gb())
+        if path:
+            case["path"] = path
+        cases.insert(0 if corner == "typ" else len(cases), case)
+        progress.message(tree.summary())
+        if corner == "typ":
+            typ = tree
+        del tree
+        gc.collect()
+    setup.corner = "typ"
+    return cases, typ, dc_error
+
+
+def _feeding_vrm(setup, net: str):
+    """The VRM whose rail ``net`` is on, through the setup's series links."""
+    from kipi.dc.pi.model import net_groups
+    group = net_groups(setup, [net]).get(net, frozenset([net]))
+    return next((v for v in setup.vrms
+                 if any(ph.output.net in group for ph in v.all_phases())), None)
+
+
+def _sweep(snap, setup, typ, name: str, out_dir: Path, progress, path: str = "",
+           suffix: str = "") -> dict:
+    """The rail driven by ``name`` swept at the typical case ``typ``; the file's entry."""
+    from kipi.ac.html_report import write_ac_report
+    from kipi.ac.solver.sweep import ACError, solve_ac
+    if typ is None:
+        entry = pdn_results.ac_not_solved(name, "no typical DC solve to take the DC bias from")
+        return dict(entry, path=path) if path else entry
+    v = next(x for x in setup.vrms if x.name == name)
+    progress.stage(f"AC, {name}" + (f", {path}" if path else ""))
+    left_out = _incomplete_off_rail(setup, snap, typ, name)
+    for m in left_out:
+        setup.caps.remove(m)
+        progress.message(f"{name}: capacitor model {m.name} ({', '.join(m.refs)}) is "
+                         "missing a value and is on another rail; left out of this sweep")
+    try:
+        r = solve_ac(snap, setup, name, v.ground.net if v.ground else "",
+                     progress, dc_result=typ)
+        html = write_ac_report(out_dir / f"ac_{name.split()[0]}{suffix}.html", r, snap, setup)
+        entry = pdn_results.ac_rail(r, setup, Path(html).name)
+        entry.update(unknowns=r.stats.n_unknowns, peak_memory_gb=_gb(limits.peak_memory_gb()))
+        del r                       # its factor and fields, before the next rail
+    except ACError as e:
+        entry = pdn_results.ac_not_solved(name, str(e))
+        progress.message(f"{name}: not swept: {e}")
+    except Exception as e:  # noqa: BLE001 - out of memory above all; the next rail
+        entry = pdn_results.ac_not_solved(name, _failure(e))  # may still fit
+        progress.message(f"{name}: not swept: {_failure(e)}")
+    finally:
+        setup.caps.extend(left_out)
+        gc.collect()
+    if left_out:
+        entry["capacitor_models_left_out"] = [
+            {"model": m.name, "refdes": list(m.refs), "why": "missing_value_other_rail"}
+            for m in left_out]
+    if path:
+        entry["path"] = path
+    return entry
+
+
 def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         progress: Optional[ProgressReporter] = None,
         memory_gb: Optional[float] = None) -> Path:
     """``memory_gb``: the cap :func:`kipi.core.limits.apply` set, recorded in the file."""
-    from kipi.ac.html_report import write_ac_report
-    from kipi.ac.solver.sweep import ACError, solve_ac
     from kipi.dc.pi.importers.tomachie_pdn import TomachiePdnImporter, source_text
-    from kipi.dc.pi.tree import solve_tree
     from kipi.fork import VERSION
     from kipi.sources import registry
 
@@ -126,63 +201,29 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         for k, v in COARSE_AC.items():
             setattr(setup.ac, k, v)
 
-    # The worst case first, let go once written; then the typical, kept for the AC sweeps'
-    # DC bias. Holding both at once doubled the peak (a 4 GB cap stopped the second).
-    cases, typ, mesh_cache, dc_error = [], None, {}, None
-    for corner in ("max", "typ"):
-        setup.corner = corner
-        progress.stage(f"DC, {pdn_results.CASE_NAMES[corner]} case")
-        try:
-            tree = solve_tree(snap, setup, progress, mesh_cache=mesh_cache)
-        except Exception as e:  # noqa: BLE001 - said in the file; out of memory above all
-            dc_error = f"{pdn_results.CASE_NAMES[corner]} case: {_failure(e)}"
-            progress.message(f"DC not solved: {dc_error}")
-            gc.collect()
-            continue
-        case = pdn_results.dc_case(tree, setup, corner)
-        case["peak_memory_gb"] = _gb(limits.peak_memory_gb())
-        cases.insert(0 if corner == "typ" else len(cases), case)
-        progress.message(tree.summary())
-        if corner == "typ":
-            typ = tree
-        del tree
-        gc.collect()
-
-    setup.corner = "typ"
+    cases, typ, dc_error = _dc_cases(snap, setup, progress)
     # Without the typical DC solve there is no DC bias to sweep with: each rail asked for
     # is listed with why, rather than left out of the file.
-    rails = [] if typ is not None else [
-        pdn_results.ac_not_solved(name, "no typical DC solve to take the DC bias from")
-        for name in _ac_rails(setup, ac)]
-    for name in (_ac_rails(setup, ac) if typ is not None else []):
-        v = next(x for x in setup.vrms if x.name == name)
-        progress.stage(f"AC, {name}")
-        left_out = _incomplete_off_rail(setup, snap, typ, name)
-        for m in left_out:
-            setup.caps.remove(m)
-            progress.message(f"{name}: capacitor model {m.name} ({', '.join(m.refs)}) is "
-                             "missing a value and is on another rail; left out of this sweep")
-        try:
-            r = solve_ac(snap, setup, name, v.ground.net if v.ground else "",
-                         progress, dc_result=typ)
-            html = write_ac_report(out_dir / f"ac_{name.split()[0]}.html", r, snap, setup)
-            rails.append(pdn_results.ac_rail(r, setup, Path(html).name))
-            rails[-1].update(unknowns=r.stats.n_unknowns,
-                             peak_memory_gb=_gb(limits.peak_memory_gb()))
-            del r                       # its factor and fields, before the next rail
-        except ACError as e:
-            rails.append(pdn_results.ac_not_solved(name, str(e)))
-            progress.message(f"{name}: not swept: {e}")
-        except Exception as e:  # noqa: BLE001 - out of memory above all; the next rail
-            rails.append(pdn_results.ac_not_solved(name, _failure(e)))  # may still fit
-            progress.message(f"{name}: not swept: {_failure(e)}")
-        finally:
-            setup.caps.extend(left_out)
-            gc.collect()
-        if left_out:
-            rails[-1]["capacitor_models_left_out"] = [
-                {"model": m.name, "refdes": list(m.refs), "why": "missing_value_other_rail"}
-                for m in left_out]
+    rails = []
+    for name in _ac_rails(setup, ac):
+        rails.append(_sweep(snap, setup, typ, name, out_dir, progress))
+    del typ
+    gc.collect()
+
+    # A power mux: DC and the rail feeding the input, once per input.
+    for mux, k, group in setup.mux_paths():
+        path = f"through {', '.join(x.name for x in group)}"
+        setup2 = setup.with_mux_input(mux, k)
+        cases2, typ2, err2 = _dc_cases(snap, setup2, progress, path)
+        cases += cases2
+        if err2:
+            dc_error = f"{dc_error}; {path}: {err2}" if dc_error else f"{path}: {err2}"
+        feed = _feeding_vrm(setup2, group[0].side_a.net)
+        if feed is not None and feed.name in _ac_rails(setup2, ac):
+            rails.append(_sweep(snap, setup2, typ2, feed.name, out_dir, progress, path,
+                                f"_{group[0].name.split()[0]}"))
+        del typ2
+        gc.collect()
 
     solve = {"dc_mesh": {k: getattr(setup.settings, k) for k in COARSE_DC},
              "ac_mesh": {k: getattr(setup.ac, k) for k in COARSE_AC},
