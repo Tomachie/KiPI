@@ -34,7 +34,8 @@ QUESTIONABLE = ("These are simulation values provided by the manufacturer and we
                 "their accuracy when compared to like capacitors")
 # Why an imported capacitor's values are defaults (estimates).
 DEFAULTS_WHY = {"no_part_number": "no part number", "no_datasheet": "no datasheet",
-                "not_in_datasheet": "not in its datasheet"}
+                "not_in_datasheet": "not in its datasheet",
+                "not_published_by_maker": "not published by its maker"}
 _VALUE_NAMES = {"C": "capacitance", "rating": "voltage rating", "kept": "kept at rating",
                 "tolerance": "tolerance"}
 REPORT_FORMATS = ("html", "pdf")          # what a report can be written as (#119)

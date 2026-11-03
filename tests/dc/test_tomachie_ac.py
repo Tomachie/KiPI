@@ -214,6 +214,26 @@ def test_capacitor_models_say_where_their_values_came_from():
     assert {x.name: x for x in setup.caps}["PN100N"].values_from_text() == "values needed"
 
 
+def test_an_esl_the_maker_does_not_publish_is_marked_as_a_substitute():
+    """A molded capacitor's ESL from a case table: the model says it is not the maker's,
+    and the notes name the parts and the source the file gives."""
+    pdn = _ac_pdn()
+    for c in pdn["rails"][1]["decoupling"]:
+        c["esl"] = {"h": 3e-9, "basis": "estimated", "because": "not_published_by_maker",
+                    "from": "molded case 7343: NIC Components NTC-T datasheet ESL by case"}
+        c["ac"] = dict(c["ac"], esr={"ohm": 0.015, "basis": "datasheet", "page": 3})
+    setup, notes = TomachiePdnImporter(pdn, _cap_board()).run()
+    m = {x.name: x for x in setup.caps}["PN22U"]
+    assert (m.esl_h, m.defaults_because) == (pytest.approx(3e-9), "not_published_by_maker")
+    assert m.values_from_text() == "ESR datasheet, ESL estimate - not published by its maker"
+    assert "estimates because: not published by its maker" in m.values_from_detail()
+    note = next(n for n in notes if n.startswith("Capacitor ESL (AC)"))
+    assert "PN22U (" in note and "3 nH, molded case 7343: NIC Components NTC-T" in note
+    # A case estimate without that mark is an estimate and nothing more.
+    _, plain = run(_ac_pdn())
+    assert not any(n.startswith("Capacitor ESL (AC)") for n in plain)
+
+
 def test_an_equivalent_parts_file_and_a_maker_figure_not_trusted():
     """An equivalent part's measured file is named as that part's, never this one's; a
     maker's figure that is used but doubted is marked and said why, its value kept."""

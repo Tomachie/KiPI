@@ -832,6 +832,7 @@ class TomachiePdnImporter:
         models = {m.name: m for m in self.setup.caps}
         assigned = {ref for m in self.setup.caps for ref in m.refs}
         added = filled = esr_from_file = esr_estimates = 0
+        substituted: List[str] = []
         for pn, caps in sorted(by_pn.items()):
             farads = next((f for f in (parse_capacitance(str(c.get("value", "")).split("/")[0])
                                        for c in caps) if f), 0.0)
@@ -851,6 +852,14 @@ class TomachiePdnImporter:
                 filled += before != (m.capacitance_f, m.esl_h)
                 if not before[1] and m.esl_h:
                     m.values_from["ESL"] = esl_basis
+            # An ESL its maker does not publish, substituted from another source the file
+            # names: said on the model and in the notes, so it is never taken as the part's.
+            sub = next((c["esl"] for c in caps if isinstance(c.get("esl"), dict)
+                        and c["esl"].get("because") and _henries(c["esl"]) == m.esl_h), None)
+            if sub:
+                m.defaults_because = m.defaults_because or str(sub["because"])
+                refs = ", ".join(c["refdes"] for c in caps)
+                substituted.append(f"{pn} ({refs}) {m.esl_h * 1e9:g} nH, {sub.get('from', '')}")
             esr_filled, esr_estimated = fill_cap_model(m, caps, esl)
             esr_from_file += esr_filled
             esr_estimates += esr_estimated
@@ -863,6 +872,9 @@ class TomachiePdnImporter:
                           f"part number (by value and ESL where none is given), with their "
                           f"ESL; {esr}{no_esr} have no ESR in the file, to be entered before "
                           "an AC sweep")
+        if substituted:
+            self.notes.append("Capacitor ESL (AC): not published by the maker, a substitute "
+                              "is used for " + "; ".join(substituted))
 
     # ------------------------------------------------------------ what nothing powers
     def _drop_unpowered(self):
