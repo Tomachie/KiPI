@@ -88,6 +88,21 @@ def test_a_pad_outline_is_clipped_the_same_with_the_edge_band_built_once():
     assert len(a[1]) == len(b[1]) and len(a[0]) == len(b[0])
 
 
+def test_a_slit_in_the_copper_does_not_empty_the_mesh():
+    """A hole ring that encloses no area (a slit a zone fill or the simplification
+    leaves) put its seed in the copper, and Triangle then removed every triangle around
+    it: pads on a 6-layer board's ground pour were cut off from it (2026-11-03)."""
+    from shapely.geometry import Polygon
+    slit = [(2.0, 2.0), (2.0, 2.04), (2.0 + 1e-9, 2.02), (2.0, 2.0)]
+    hole = [(4.0, 4.0), (5.0, 4.0), (5.0, 5.0), (4.0, 5.0)]
+    copper = Polygon([(0, 0), (6, 0), (6, 6), (0, 6)], [slit, hole])
+    pts, tris = M.mesh_polygon(copper, [], MAX_AREA, 28.0)
+    p = pts[tris]
+    area = 0.5 * np.abs((p[:, 1, 0] - p[:, 0, 0]) * (p[:, 2, 1] - p[:, 0, 1])
+                        - (p[:, 2, 0] - p[:, 0, 0]) * (p[:, 1, 1] - p[:, 0, 1])).sum()
+    assert area == pytest.approx(copper.area, rel=1e-6)    # the real hole stays a hole
+
+
 def test_meshed_without_pad_outlines_each_pad_still_holds_a_node(monkeypatch):
     """When the pad outlines will not mesh the polygon is meshed without them; a pad
     smaller than the mesh then held no node and its terminal was lost ("Pad U75.1 on

@@ -202,6 +202,13 @@ def _triangulate(data: dict, switches: str, cap: int) -> dict:
     return out
 
 
+def _hole_seed(ring) -> Optional[Point]:
+    """A point inside a hole of the copper, clear of its edge; None when the ring encloses
+    no width at the noding grid (a slit: snapped, its edges meet and nothing is inside)."""
+    inner = Polygon(ring).buffer(-10 * NODING_GRID_MM)
+    return None if inner.is_empty else inner.representative_point()
+
+
 def _pad_nodes(poly: Polygon, outlines: Sequence[BaseGeometry]) -> np.ndarray:
     """One point inside the copper of each pad outline that lies on ``poly``, clear of
     the copper's edges where the overlap allows: the nodes that find a pad by position
@@ -242,7 +249,17 @@ def mesh_polygon(poly: Polygon, constraints: Sequence[BaseGeometry], max_area: f
         near_edge = edge.buffer(CONSTRAINT_CLEARANCE_MM, quad_segs=2)
         clipped_constraints = [g for g in (_clip_constraint(c, poly, edge, near_edge)
                                            for c in near) if g is not None]
-    holes = [Polygon(r).representative_point() for r in poly.interiors if len(r.coords) >= 4]
+    # A hole's seed, only where it falls outside the copper: Triangle removes every
+    # triangle it can reach from a seed, and a ring that encloses no area (a slit the
+    # fill or the simplification leaves) puts its seed in the copper itself, which then
+    # meshes to nothing around it (pads cut off from their pour, 2026-11-03).
+    seeds = [s for s in (_hole_seed(r) for r in poly.interiors if len(r.coords) >= 4)
+             if s is not None]
+    if seeds:
+        shapely.prepare(poly)
+        in_copper = shapely.contains_xy(poly, [s.x for s in seeds], [s.y for s in seeds])
+        seeds = [s for s, inside in zip(seeds, in_copper) if not inside]
+    holes = seeds
 
     def first_pass(with_constraints: bool):
         lines: List[BaseGeometry] = [poly.exterior, *poly.interiors]
