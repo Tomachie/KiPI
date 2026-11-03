@@ -33,17 +33,27 @@ def _board(second="U1"):
             pad("u1_3", "GND", "U1", "3", box(10, 0, 11, 1), B),
             pad("u2_2", "GND", "U2", "2", box(21, 0, 22, 1), B)]
     out = box(12, 0, 22, 1)
+    zones = [Zone("a", "VIN", "", 0, {F: [poly(box(0, 0, 10, 1))]}),
+             Zone("a2", "VIN2", "", 0, {F: [poly(box(0, 2, 10, 3))]}),
+             Zone("c", "GND", "", 0, {B: [poly(box(0, 0, 22, 3))]})]
+    nets = [Net(1, "VIN"), Net(2, "VIN2"), Net(3, "OUT"), Net(4, "GND")]
     if second == "U1":
         pads.append(pad("u1_4", "VIN2", "U1", "4", box(9, 2, 10, 3)))
-    else:
+    elif second == "D1":
         pads += [pad("d1_1", "VIN2", "D1", "1", box(9, 2, 10, 3)),
                  pad("d1_2", "OUT", "D1", "2", box(12, 2, 13, 3))]
         out = box(12, 0, 22, 3)
-    zones = [Zone("a", "VIN", "", 0, {F: [poly(box(0, 0, 10, 1))]}),
-             Zone("a2", "VIN2", "", 0, {F: [poly(box(0, 2, 10, 3))]}),
-             Zone("b", "OUT", "", 0, {F: [poly(out)]}),
-             Zone("c", "GND", "", 0, {B: [poly(box(0, 0, 22, 3))]})]
-    nets = [Net(1, "VIN"), Net(2, "VIN2"), Net(3, "OUT"), Net(4, "GND")]
+    else:
+        # U2.1 on N, fed by D2 from OUT and D1 from VIN2.
+        pads[4] = pad("u2_1", "N", "U2", "1", box(21, 0, 22, 1))
+        pads += [pad("d2_1", "OUT", "D2", "1", box(13, 0, 14, 1)),
+                 pad("d2_2", "N", "D2", "2", box(15, 0, 16, 1)),
+                 pad("d1_1", "VIN2", "D1", "1", box(9, 2, 10, 3)),
+                 pad("d1_2", "N", "D1", "2", box(15, 2, 16, 3))]
+        out = box(12, 0, 14, 1)
+        zones.append(Zone("n", "N", "", 0, {F: [poly(box(15, 0, 22, 3))]}))
+        nets.append(Net(5, "N"))
+    zones.append(Zone("b", "OUT", "", 0, {F: [poly(out)]}))
     return BoardSnapshot("mux", "", st, nets, [], [], pads, [], zones, [])
 
 
@@ -63,13 +73,18 @@ def _pdn(second="U1"):
                           "input_rails": ["VIN", "VIN2"], "output_rails": ["OUT"],
                           "datasheet_resistances": [{"spec": "rds_on", "typ": "0.05",
                                                      "unit": "ohm"}]}]
+    def diode(ref, net_in, net_out):
+        return {"refdes": ref, "class": "diode", "net_in": net_in, "net_out": net_out,
+                "resistance_ohm": "unknown",
+                "datasheet_figures": [{"spec": "vf", "typ": "0.3", "unit": "V", "if": "1 A"}]}
     if second != "U1":
         vin2["loads"] = []
         pdn["regulators"][0]["input_rails"] = ["VIN"]
-        out["other_feeds"] = [{"rail": "VIN2", "series": [
-            {"refdes": "D1", "class": "diode", "net_in": "VIN2", "net_out": "OUT",
-             "resistance_ohm": "unknown",
-             "datasheet_figures": [{"spec": "vf", "typ": "0.3", "unit": "V", "if": "1 A"}]}]}]
+    if second == "D1":
+        out["other_feeds"] = [{"rail": "VIN2", "series": [diode("D1", "VIN2", "OUT")]}]
+    elif second == "ored":
+        out["loads"][0].update(input_net="N", input_filter=[diode("D2", "OUT", "N")],
+                               other_feeds=[{"rail": "VIN2", "series": [diode("D1", "VIN2", "N")]}])
     return pdn
 
 
@@ -127,3 +142,18 @@ def test_the_headless_solve_runs_each_path(tmp_path):
         ("typical", "through U1 (VIN2)"), ("worst", "through U1 (VIN2)")]
     [u2] = [x for x in doc["dc"]["cases"][2]["loads"] if x["refdes"] == "U2"]
     assert 9.9 < u2["v_low"] < 10.0
+
+
+def test_a_loads_diode_ored_node_is_a_path_per_feed():
+    setup, notes = TomachiePdnImporter(_pdn("ored"), _board("ored")).run()
+    d2 = by_name(setup.links, "D2")
+    [d1] = setup.mux_links
+    assert (d2.mux, d2.mux_input, d1.name, d1.mux, d1.mux_input) == ("U2 feeds", 0, "D1", "U2 feeds", 1)
+    assert any(n.startswith("U2: also fed from VIN2 through D1") for n in notes)
+    u2 = by_name(solve_tree(_board("ored"), setup).loads, "U2")
+    assert 11.6 < u2.v_effective < 11.75
+    path = setup.with_mux_input("U2 feeds", 1)
+    assert [v.name for v in path.vrms] == ["J1 VIN", "J3 VIN2"]
+    assert [k.name for k in path.links] == ["U1", "D1"]
+    u2b = by_name(solve_tree(_board("ored"), path).loads, "U2")
+    assert 9.6 < u2b.v_effective < 9.75

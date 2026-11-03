@@ -618,15 +618,19 @@ class TomachiePdnImporter:
             for e in r.get("series_from_parent", []):
                 self._link(e)
         for r in self.rails.values():
-            self._other_feeds(r)
+            self._feed_paths(f"{r['name']} feeds", r.get("other_feeds"), f"Rail {r['name']}")
 
-    def _other_feeds(self, rail: dict):
-        """Another rail feeding this one through a diode chain, beside its own source:
-        the chain's parts as a path of its own, closed one path at a time."""
-        k = 0
-        for f in rail.get("other_feeds") or []:
-            if not isinstance(f, dict) or not f.get("series"):
-                continue
+    def _feed_paths(self, mux: str, feeds, who: str, own=()):
+        """Other rails feeding a rail or a load's node through a diode chain, beside its
+        own: each chain's parts as a path of its own, closed one path at a time; the
+        own path's parts named in ``own`` open with it."""
+        feeds = [f for f in feeds or [] if isinstance(f, dict) and f.get("series")]
+        if not feeds:
+            return
+        for link in self.setup.links:
+            if link.name in own:
+                link.mux, link.mux_input = mux, 0
+        for k, f in enumerate(feeds, 1):
             n0 = len(self.setup.links)
             for e in f["series"]:
                 self._link(e)
@@ -634,11 +638,10 @@ class TomachiePdnImporter:
             del self.setup.links[n0:]
             if not chain:
                 continue
-            k += 1
             for link in chain:
-                link.mux, link.mux_input = f"{rail['name']} feeds", k
+                link.mux, link.mux_input = mux, k
             self.setup.mux_links.extend(chain)
-            self.notes.append(f"Rail {rail['name']}: also fed from {f.get('rail')} through "
+            self.notes.append(f"{who}: also fed from {f.get('rail')} through "
                               f"{', '.join(x.name for x in chain)}; solved as a path of its "
                               "own")
 
@@ -738,6 +741,9 @@ class TomachiePdnImporter:
             # connections, so the load is reached through them.
             for e in l.get("input_filter") or []:
                 self._link(e)
+            self._feed_paths(f"{label} feeds", l.get("other_feeds"), label,
+                             [e["refdes"] for e in l.get("input_filter") or []
+                              if e.get("class") == "diode"])
             returns = _return_part(l)
             ground = (self.idx.pin_ref(drv["return_pins"], self.notes,
                                        f"Return of {l['refdes']} on {name}")
