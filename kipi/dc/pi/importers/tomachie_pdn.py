@@ -51,6 +51,7 @@ from kipi.core.model.board import BoardSnapshot
 from kipi.ac.model import CapModel, Probe
 from kipi.core.model.parts import parse_capacitance, parse_resistance
 from kipi.dc.pi.importers.pad_index import PadIndex
+from kipi.dc.pi.importers.tomachie_converter_inputs import converter_input_probes
 from kipi.dc.pi.importers.tomachie_ac import (
     MODULE_NO_STEP, STEP_BECAUSE, defaults_notes, doubt_notes, fill_cap_model, load_rise, load_step,
     maker_target, vrm_bandwidth_khz,
@@ -163,6 +164,7 @@ class TomachiePdnImporter:
         self.targets_not_needed: List[str] = []
         self.rail_levels: Dict[str, List[float]] = {}   # rail -> its selectable voltages
         self.probes_without_ground: List[str] = []
+        self.vrm_regs: Dict[str, dict] = {}
 
     # ------------------------------------------------------------ helpers
     def _unique(self, name: str) -> str:
@@ -400,6 +402,7 @@ class TomachiePdnImporter:
                                        bandwidth_khz=bandwidth_khz,
                                        levels=self.rail_levels.get(name, []),
                                        **self._accuracy(r, reg["refdes"])))
+            self.vrm_regs[self.setup.vrms[-1].name] = reg
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind in SWITCHING_KINDS)
@@ -916,6 +919,8 @@ class TomachiePdnImporter:
         self._unreferenced_grounds()
         self._caps()
         self._probe_targets()
+        converter_input_probes(self.setup, self.vrm_regs, self.rails, self.targets_set,
+                               self.targets_missing, self.probes_without_ground)
         self._ac_notes()
         self._range_notes()
         self.setup.import_notes = list(self.notes)

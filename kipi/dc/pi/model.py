@@ -562,6 +562,7 @@ class PISetup:
             probes=[Probe(p["name"], pin(p["rail"]), pin(p["ground"]), p.get("target_ohm"),
                           p.get("target_hz"), bool(p.get("target_custom", False)),
                           [(float(f), float(z)) for f, z in p.get("target_points", [])],
+                          target_from_hz=p.get("target_from_hz"),
                           step_a=p.get("step_a"), slew_a_per_us=p.get("slew_a_per_us"),
                           package=str(p.get("package", "")),
                           die_port=int(p.get("die_port", 0)),

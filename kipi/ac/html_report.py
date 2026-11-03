@@ -106,11 +106,12 @@ def _si(x: float, unit: str) -> str:
 
 
 def _target_text(c) -> str:
-    above = f" above {_hz(c.above_hz)}" if c.above_hz else ""
+    start = c.starts_hz
+    above = f" above {_hz(start)}" if start else ""
     if c.target_points:
         return f"custom ({len(c.target_points)} points){above}"
     if c.target_ohm:
-        span = (f" from {_hz(c.above_hz)} to {_hz(c.target_hz)}" if c.above_hz and c.target_hz
+        span = (f" from {_hz(start)} to {_hz(c.target_hz)}" if start and c.target_hz
                 else above or (f" to {_hz(c.target_hz)}" if c.target_hz else ""))
         return f"{_ohms(c.target_ohm)}{span}"
     return ""

@@ -1,6 +1,7 @@
 """The AC values of a Tomachie power-tree file (spec revision 9)."""
 
 import copy
+import math
 
 import pytest
 
@@ -278,3 +279,37 @@ def test_a_rail_with_selectable_levels_takes_its_default_and_keeps_the_others():
                for n in notes)
     again = next(x for x in PISetup.from_dict(setup.to_dict()).vrms if x.name == v.name)
     assert again.levels == [1.8, 3.3]
+
+
+def _buck_pdn():
+    pdn = _ac_pdn()
+    pdn["rails"][0]["voltage"].update(min=10.8, max=13.2)
+    pdn["regulators"][0].update(type="switching", efficiency=0.9,
+                                output_current={"amps": 1.0, "basis": "rollup"},
+                                input_voltage_min={"volts": 4.5, "basis": "min"},
+                                input_voltage_max={"volts": 17.0, "basis": "max"})
+    return pdn
+
+
+def test_a_switching_converters_input_gets_a_stability_and_a_ripple_probe():
+    from kipi.ac.target import target_at
+    setup, notes = TomachiePdnImporter(_buck_pdn(), _cap_board()).run()
+    s = by_name(setup.probes, "U1 +3V3 input (stability)")
+    r = by_name(setup.probes, "U1 +3V3 input (ripple)")
+    assert (s.rail.net, s.ground.net, r.rail.net) == ("VIN", "GND", "VIN")
+    p_in = 3.3 * 1.0 / 0.9
+    assert s.target_ohm == pytest.approx(10.8 ** 2 / p_in / 2)
+    assert s.target_hz == pytest.approx(1e5)
+    d = 3.3 / (0.9 * 10.8)
+    i1 = 2 / math.pi * math.sin(math.pi * d)
+    z1 = (17.0 - 13.2) / i1
+    assert r.target_custom and r.target_from_hz == pytest.approx(1e6)
+    assert r.target_points[0] == (pytest.approx(1e6), pytest.approx(z1))
+    t = target_at([5e5, 1e6, 1e7], points=r.target_mask(), from_hz=r.target_from_hz)
+    assert math.isnan(t[0]) and t[1] == pytest.approx(z1) and t[2] == pytest.approx(10 * z1)
+    assert any("U1 +3V3 input (ripple)" in n for n in notes if n.startswith("Probe targets"))
+
+
+def test_a_linear_regulators_input_gets_no_probe():
+    setup, _ = run(_ac_pdn())
+    assert not [p for p in setup.probes if "input" in p.name]

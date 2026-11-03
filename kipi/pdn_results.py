@@ -143,7 +143,10 @@ def _probe(p, freqs, setup) -> dict:
     return {"load": p.name,
             "refdes": probe.rail.ref if probe else p.name.split()[0],
             "target_ohm": _num(p.target_ohm), "target_hz": _num(p.target_hz),
-            "target_from": (probe.target_from if probe else "") or None,
+            "target_points": ([[_num(f), _num(z)] for f, z in p.target_points]
+                              if p.target_points else None),
+            "target_from_hz": _num(p.from_hz),
+            "target_from":(probe.target_from if probe else "") or None,
             "result": "no_target" if passed is None else ("pass" if passed else "fail"),
             "worst_ohm": _num(worst_ohm), "worst_hz": _num(worst_hz),
             "z_at": {f"{hz:g}": _num(np.interp(hz, freqs, p.mag)) for hz in Z_AT_HZ

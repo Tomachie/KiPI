@@ -438,7 +438,7 @@ def _target_text(c) -> str:
         text = f"{c.target_ohm * 1e3:g}"
     else:
         return ""
-    above = getattr(c, "above_hz", None)
+    above = getattr(c, "starts_hz", None) or getattr(c, "above_hz", None)
     return f"{text} above {_fmt_hz(above)}" if above else text
 
 
