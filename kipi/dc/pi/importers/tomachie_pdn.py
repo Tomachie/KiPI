@@ -740,6 +740,10 @@ class TomachiePdnImporter:
             # The parts between the rail and pins behind a ferrite (input_net): DC
             # connections, so the load is reached through them.
             for e in l.get("input_filter") or []:
+                if e.get("refdes") == l["refdes"]:
+                    self.notes.append(f"{label}: listed in its own input filter; not a "
+                                      "series part")
+                    continue
                 self._link(e)
             self._feed_paths(f"{label} feeds", l.get("other_feeds"), label,
                              [e["refdes"] for e in l.get("input_filter") or []
