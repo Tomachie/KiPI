@@ -649,7 +649,8 @@ class TomachiePdnImporter:
     def _tolerance(self, rail: dict, l: dict, label: str = "") -> dict:
         """The load's PASS / FAIL range: the rail's stated minimum and maximum, in % from
         nominal, or in volts when the datasheet's minimum supply voltage (``supply_min``)
-        is higher than the rail's minimum and takes its place. A load whose datasheet
+        is higher than the rail's minimum and takes its place; on a rail a board input
+        feeds, the datasheet's range always takes it. A load whose datasheet
         states no supply range has none: the rail's range is its source's (a battery's
         10 V minimum), and a worst case solved there fails it at any copper drop. An IC
         so left is named, its range being a value still to find."""
@@ -664,8 +665,12 @@ class TomachiePdnImporter:
         if not nom:
             return {}
         if smin is not None or smax is not None:
-            low = smin if smin is not None and (lo is None or smin > lo) else lo
-            high = smax if smax is not None and (hi is None or smax < hi) else hi
+            # A board input's range is the source's own (USB's 4.75 V, a PXIe slot's
+            # 2.97 V), where the worst case solves it: as a load's floor it fails the load
+            # at any copper drop. There the datasheet's range is the load's.
+            from_source = (rail.get("source") or {}).get("role") in SOURCE_ROLES
+            low = smin if smin is not None and (from_source or lo is None or smin > lo) else lo
+            high = smax if smax is not None and (from_source or hi is None or smax < hi) else hi
             if nom < 0 or (smin or 0) < 0 or (smax or 0) < 0:
                 self.notes.append(f"{l['refdes']} on {rail['name']}: supply range "
                                   f"{_volts_range(smin, smax)} not applied on a negative "

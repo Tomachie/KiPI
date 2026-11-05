@@ -97,6 +97,17 @@ def test_a_load_with_no_stated_supply_range_is_not_judged():
     assert note.endswith(": U2")
 
 
+def test_on_a_board_input_rail_the_datasheet_range_is_the_loads():
+    """A board input's stated range is the source's, the voltage the worst case solves it
+    at: the load is judged against its datasheet's 3.0 V, not the input's 3.135 V."""
+    pdn = copy.deepcopy(PDN)
+    rail = pdn["rails"][1]
+    rail["source"] = {"role": "board_input", "refdes": "J2", "pins": ["U1_2"],
+                      "output_net": "+3V3", "output_path": []}
+    u2 = by_name(run(pdn)[0].loads, "U2")
+    assert (u2.tol_pct, u2.tol_min, u2.tol_max) == (False, 3.0, 3.465)
+
+
 def test_supply_max_tightens_the_rails_maximum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_max"] = {"volts": 3.4, "basis": "max",
