@@ -108,6 +108,25 @@ def test_on_a_board_input_rail_the_datasheet_range_is_the_loads():
     assert (u2.tol_pct, u2.tol_min, u2.tol_max) == (False, 3.0, 3.465)
 
 
+def test_an_outputs_own_rating_comes_before_the_parts():
+    """A part with several outputs rates each: the rail source's max_output_current is
+    the limit of the output making it, before the regulator's single figure."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0]["max_output_current"] = {"amps": 0.5, "basis": "max"}
+    u1 = by_name(run(pdn)[0].vrms, "U1 +3V3")
+    assert u1.current_limit_a == 0.5
+    pdn["rails"][1]["source"]["max_output_current"] = {"amps": 4.0, "basis": "typ",
+                                                       "chosen_by": "tool"}
+    u1 = by_name(run(pdn)[0].vrms, "U1 +3V3")
+    assert u1.current_limit_a == 4.0
+    # Several outputs, none rated for this one: the part's figure is not applied.
+    del pdn["rails"][1]["source"]["max_output_current"]
+    pdn["regulators"][0]["output_rails"] = ["+3V3", "+1V8"]
+    setup, notes = run(pdn)
+    assert by_name(setup.vrms, "U1 +3V3").current_limit_a is None
+    assert any("no rating for this output of a part with several" in n for n in notes)
+
+
 def test_supply_max_tightens_the_rails_maximum():
     pdn = copy.deepcopy(PDN)
     pdn["rails"][1]["loads"][0]["supply_max"] = {"volts": 3.4, "basis": "max",

@@ -335,6 +335,22 @@ class TomachiePdnImporter:
         l = self._regulator_entry(reg)
         return self.idx.pin_ref(l["pins"], self.notes, f"{reg['refdes']} input") if l else None
 
+    def _output_rating(self, src: dict, reg: dict, rail: str) -> Optional[float]:
+        """The rated current of the output making this rail: the rail source's own
+        ``max_output_current`` (one channel of a multi-output part, a PMIC's switcher D
+        4 A beside its 0.5 A LDO), else the regulator's when it has one output. A part
+        with several outputs and no figure for this one is not rated: its one figure is
+        some output's, not necessarily this one's."""
+        own = amps(src.get("max_output_current"))
+        if own is not None:
+            return own
+        part = amps(reg.get("max_output_current"))
+        if part is not None and len(reg.get("output_rails") or []) > 1:
+            self.notes.append(f"{reg['refdes']} ({rail}): no rating for this output of a "
+                              f"part with several; its {part:g} A is not applied")
+            return None
+        return part
+
     def _regulator_kind(self, reg: dict, rail: str) -> Tuple[str, float]:
         kind = VRM_KIND.get(reg.get("type"))
         eff = number(reg.get("efficiency"))
@@ -396,8 +412,9 @@ class TomachiePdnImporter:
                                        dropout_v=_volts(reg.get("dropout_voltage")) or 0.0,
                                        vin_min=_volts(reg.get("input_voltage_min")),
                                        vin_max=_volts(reg.get("input_voltage_max")),
-                                       # Its datasheet's rated output current.
-                                       current_limit_a=amps(reg.get("max_output_current")),
+                                       # Its datasheet's rated output current: this
+                                       # output's own on a part with several outputs.
+                                       current_limit_a=self._output_rating(src, reg, name),
                                        ground=ground, input_ground=input_ground,
                                        bandwidth_khz=bandwidth_khz,
                                        levels=self.rail_levels.get(name, []),
