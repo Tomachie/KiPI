@@ -436,10 +436,13 @@ class TomachiePdnImporter:
             return
         point = sense.get("at") if isinstance(sense.get("at"), dict) else sense
         pins = self.idx.pin_ref(point.get("pins", []), self.notes, f"{vrm.name} sense")
-        if pins is None or pins.net != vrm.output.net:
+        # The sense sits on the regulated rail: a switcher's output pins are on its
+        # switch node, the rail is the far side of its inductor, one DC link away.
+        rail_net = self.idx.board_net(rail)
+        if pins is None or pins.net not in {vrm.output.net, rail_net}:
             where = f" on {pins.net}" if pins is not None else ""
             self.notes.append(f"{vrm.name}: sense pins {', '.join(point.get('pins', []))}"
-                              f"{where} are not on its output net; regulated at its output pins")
+                              f"{where} are not on its rail; regulated at its output pins")
             return
         vrm.sense = pins
         names = ", ".join(sense.get("pin_names") or sense.get("pins", []))

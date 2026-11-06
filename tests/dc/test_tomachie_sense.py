@@ -63,7 +63,7 @@ def test_sense_off_the_output_net_is_refused_and_said():
     setup, notes = run(pdn)
     u1 = by_name(setup.vrms, "U1 +3V3")
     assert u1.sense is None and u1.ground_sense is None
-    assert any("U1_1 on VIN are not on its output net" in n for n in notes)
+    assert any("U1_1 on VIN are not on its rail" in n for n in notes)
 
 
 def test_no_sense_block_changes_nothing():
