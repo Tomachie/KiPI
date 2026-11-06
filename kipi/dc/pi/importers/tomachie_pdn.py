@@ -420,9 +420,39 @@ class TomachiePdnImporter:
                                        levels=self.rail_levels.get(name, []),
                                        **self._accuracy(r, reg["refdes"])))
             self.vrm_regs[self.setup.vrms[-1].name] = reg
+            self._remote_sense(self.setup.vrms[-1], src, name)
             if vin is not None:
                 self._input_filter(reg)
             self._output_path(reg["refdes"], src, name, in_loop=kind in SWITCHING_KINDS)
+
+    def _remote_sense(self, vrm, src: dict, rail: str):
+        """The file's ``source.sense``: the pads the regulator holds at its set voltage -
+        its own sense pins when the feedback is tied straight to the rail, else the
+        divider's top-resistor pads on the rail (``at``) - and its return-sense pads on
+        the rail's ground, when the VRM's ground is simulated. Solved at the output pad
+        instead, a remote-sensed rail reads the whole copper drop as a load deficit."""
+        sense = src.get("sense")
+        if not isinstance(sense, dict) or not sense.get("pins"):
+            return
+        point = sense.get("at") if isinstance(sense.get("at"), dict) else sense
+        pins = self.idx.pin_ref(point.get("pins", []), self.notes, f"{vrm.name} sense")
+        if pins is None or pins.net != vrm.output.net:
+            where = f" on {pins.net}" if pins is not None else ""
+            self.notes.append(f"{vrm.name}: sense pins {', '.join(point.get('pins', []))}"
+                              f"{where} are not on its output net; regulated at its output pins")
+            return
+        vrm.sense = pins
+        names = ", ".join(sense.get("pin_names") or sense.get("pins", []))
+        ret = sense.get("return") if isinstance(sense.get("return"), dict) else None
+        gsense = None
+        if ret and vrm.ground is not None:
+            gsense = self.idx.pin_ref(ret.get("pins", []), self.notes, f"{vrm.name} return sense")
+            if gsense is not None and gsense.net == vrm.ground.net:
+                vrm.ground_sense = gsense
+            else:
+                gsense = None
+        self.notes.append(f"{vrm.name}: remote sense at {pins.label()} ({names}) on {pins.net}"
+                          + (f", return sense at {gsense.label()}" if gsense else ""))
 
     def _accuracy(self, rail: dict, ref: str) -> dict:
         """The VRM's DC accuracy in volts from the rail's ``regulator_band``: the band at
@@ -887,11 +917,24 @@ class TomachiePdnImporter:
 
     # ------------------------------------------------------------ capacitors (AC)
     def _file_caps(self) -> List[dict]:
+        """Every capacitor the file lists: a rail's decoupling, a load's local and
+        input-node capacitors (revision 11), and the capacitance to ground of each
+        feedthrough capacitor in a series chain (``shunt_cap``, revision 11)."""
+        def shunts(chain):
+            return [e["shunt_cap"] for e in chain or [] if e.get("shunt_cap")]
+
         out = []
         for r in self.rails.values():
             out += r.get("decoupling") or []
+            out += shunts(r.get("series_from_parent"))
+            for f in r.get("other_feeds") or []:
+                out += shunts(f.get("series"))
             for l in r.get("loads", []):
                 out += l.get("local_caps") or []
+                out += l.get("input_caps") or []
+                out += shunts(l.get("input_filter"))
+                for f in l.get("other_feeds") or []:
+                    out += shunts(f.get("series"))
         return out
 
     def _caps(self):
