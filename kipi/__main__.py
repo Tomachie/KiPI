@@ -48,6 +48,10 @@ def main(argv=None) -> int:
     ap.add_argument("--memory-gb", type=float, metavar="GB",
                     help="with --solve: at most GB of memory; a rail that needs more is "
                          "listed not solved instead of starving the machine")
+    ap.add_argument("--overrides", metavar="PATH",
+                    help="with --solve: a JSON file of figures the engineer states (regulator "
+                         "f_sw_hz / bandwidth_hz by refdes, load i_step_a / t_rise_s by rail:refdes), "
+                         "merged into the pdn.json before import as basis user")
     ap.add_argument("--normal-priority", action="store_true",
                     help="with --solve: run at normal priority (default: below normal)")
     args = ap.parse_args(argv)
@@ -60,7 +64,7 @@ def main(argv=None) -> int:
         capped = limits.apply(args.threads, args.memory_gb, not args.normal_priority)
         from kipi.headless import run
         run(args.solve, path, args.pdn_json, ac=args.ac, coarse=args.coarse,
-            memory_gb=capped)
+            memory_gb=capped, overrides=args.overrides)
         return 0
     missing = missing_packages()
     if missing:

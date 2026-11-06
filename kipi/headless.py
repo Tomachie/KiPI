@@ -180,8 +180,10 @@ def _sweep(snap, setup, typ, name: str, out_dir: Path, progress, path: str = "",
 
 def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
         progress: Optional[ProgressReporter] = None,
-        memory_gb: Optional[float] = None) -> Path:
-    """``memory_gb``: the cap :func:`kipi.core.limits.apply` set, recorded in the file."""
+        memory_gb: Optional[float] = None, overrides: Optional[str] = None) -> Path:
+    """``memory_gb``: the cap :func:`kipi.core.limits.apply` set, recorded in the file.
+    ``overrides``: a file of figures the engineer states (pdn_overrides), merged into the
+    pdn.json before import with basis ``user``."""
     from kipi.dc.pi.importers.tomachie_pdn import TomachiePdnImporter, source_text
     from kipi.fork import VERSION
     from kipi.sources import registry
@@ -193,7 +195,17 @@ def run(out_dir, board, pdn_json, ac: str = "all", coarse: bool = False,
     fmt = registry.format_for(board)
     snap = registry.open_board(board).load(progress)
     pdn = json.loads(Path(pdn_json).read_text(encoding="utf-8"))
+    stated: list = []
+    if overrides:
+        from kipi.dc.pi.importers.pdn_overrides import apply_overrides, load_overrides
+        applied, unmatched = apply_overrides(pdn, load_overrides(overrides))
+        for a in applied:
+            progress.info(f"Stated: {a}")
+        if unmatched:
+            raise SystemExit("overrides name nothing in the pdn.json: " + ", ".join(unmatched))
+        stated = ["Stated by the engineer (overrides file): " + "; ".join(applied)] if applied else []
     setup, notes = TomachiePdnImporter(pdn, snap).run()
+    notes = list(notes) + stated
     setup.import_source = source_text(pdn, pdn_json)
     if coarse:
         for k, v in COARSE_DC.items():
