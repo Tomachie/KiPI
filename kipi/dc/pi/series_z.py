@@ -76,6 +76,29 @@ def curves_from(ac: dict) -> List[Dict]:
             and c.get("points")]
 
 
+def inductance_at(points: Sequence[Sequence[float]], amps: float) -> float:
+    pts = sorted((float(p[0]), float(p[1])) for p in points
+                 if isinstance(p, (list, tuple)) and len(p) == 2)
+    if not pts:
+        return 0.0
+    a = abs(float(amps or 0.0))
+    if a <= pts[0][0]:
+        return pts[0][1]
+    for (a0, l0), (a1, l1) in zip(pts, pts[1:]):
+        if a <= a1:
+            t = 0.0 if a1 == a0 else (a - a0) / (a1 - a0)
+            return (1 - t) * l0 + t * l1
+    return pts[-1][1]
+
+
+def l_points_from(e: dict) -> List[List[float]]:
+    db = e.get("dc_bias") if isinstance(e.get("dc_bias"), dict) else {}
+    return [[float(p[0]), float(p[1])] for p in db.get("points") or []
+            if isinstance(p, (list, tuple)) and len(p) == 2
+            and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in p)
+            and p[1] > 0]
+
+
 def points_from(ac: dict) -> List[List[float]]:
     zp = ac.get("z_points") if isinstance(ac.get("z_points"), dict) else {}
     return [list(p) for p in zp.get("points") or [] if isinstance(p, (list, tuple)) and len(p) == 3]

@@ -645,9 +645,13 @@ class TomachiePdnImporter:
                 typ, fig_notes = dcr, []
         link = self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl, rated_a=rated_current(e))
         if not loop_of and e.get("class") in ("inductor", "ferrite"):
-            self._maker_z(link, ac)
+            self._maker_z(link, ac, e)
 
-    def _maker_z(self, link: DcLink, ac: dict):
+    def _maker_z(self, link: DcLink, ac: dict, e: dict):
+        l_points = series_z.l_points_from(e)
+        if len(l_points) >= 2:
+            link.l_by_current = l_points
+            self.maker_z.setdefault("maker's inductance at each DC current", []).append(link.name)
         circuit = series_z.circuit_from(ac) if ac.get("basis") == "maker_equivalent_circuit" else None
         curves = series_z.curves_from(ac)
         points = series_z.points_from(ac)

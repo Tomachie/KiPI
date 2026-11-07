@@ -366,6 +366,7 @@ class DcLink:
     z_by_current: List[Dict] = field(default_factory=list)
     circuit: Optional[Dict[str, float]] = None
     z_basis: str = ""
+    l_by_current: List[List[float]] = field(default_factory=list)
 
     @property
     def uses_spice(self) -> bool:
@@ -429,7 +430,9 @@ class DcLink:
             return series_z.by_current_impedance(self.z_by_current, self.bias_a or 0.0, omega)
         if self.z_points:
             return series_z.table_impedance(self.z_points, omega)
-        return self.resistance + 1j * omega * (self.esl_h or 0.0) + 0 * omega
+        henries = (series_z.inductance_at(self.l_by_current, self.bias_a or 0.0)
+                   if self.l_by_current else (self.esl_h or 0.0))
+        return self.resistance + 1j * omega * henries + 0 * omega
 
     def admittance(self, omega) -> np.ndarray:
         """A multi-pin part's admittance between its sides, (F, N, N)."""
@@ -438,7 +441,7 @@ class DcLink:
     def is_short(self) -> bool:
         """Whether the part is a short in AC as in DC (merged away)."""
         return (self.resistance <= SHORT_OHMS and not self.esl_h and not self.uses_spice
-                and not self.has_maker_z)
+                and not self.has_maker_z and not self.l_by_current)
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -724,7 +727,8 @@ def _link(k: dict, pin) -> DcLink:
                   mux=str(k.get("mux", "")), mux_input=int(k.get("mux_input", 0)),
                   z_points=[list(p) for p in k.get("z_points") or []],
                   z_by_current=[dict(c) for c in k.get("z_by_current") or []],
-                  circuit=k.get("circuit"), z_basis=str(k.get("z_basis", "")))
+                  circuit=k.get("circuit"), z_basis=str(k.get("z_basis", "")),
+                  l_by_current=[list(p) for p in k.get("l_by_current") or []])
     # 0.9.2's constant forward drop (#161) becomes a diode model with that drop (#191);
     # a datasheet forward curve, a model fitted to the curve.
     if link.spice is None and (link.diode_vf > 0 or link.vf_curve):
@@ -775,7 +779,7 @@ def biased_link(setup: PISetup, link: DcLink,
     """``link`` for an AC or Coupled Noise solve: a diode biased by the current the last
     DC solve found through it (``solved``, by link name, from
     :func:`kipi.ac.bias.dc_link_currents`), else by :func:`link_bias`'s estimate."""
-    if not (link.is_diode or (link.z_by_current and not link.uses_spice)):
+    if not (link.is_diode or ((link.z_by_current or link.l_by_current) and not link.uses_spice)):
         return link
     if solved and link.name in solved:
         amps = float(solved[link.name])

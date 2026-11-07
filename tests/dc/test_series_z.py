@@ -108,3 +108,30 @@ def test_feedthrough_through_resistance_is_its_dc_resistance():
                                              "through_resistance_ohm": 0.0032}}}}])
     setup, _ = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
     assert by_name(setup.links, "FB1").resistance == pytest.approx(0.0032)
+
+
+def test_inductance_follows_the_solved_current_and_holds_beyond():
+    pts = [[0.0, 10.83e-6], [0.4, 10.0e-6], [0.8, 8.41e-6]]
+    assert series_z.inductance_at(pts, 0.0) == pytest.approx(10.83e-6)
+    assert series_z.inductance_at(pts, -0.2) == pytest.approx(10.415e-6)
+    assert series_z.inductance_at(pts, 2.0) == pytest.approx(8.41e-6)
+
+
+def test_inductor_dc_bias_is_imported_beside_ac_and_biased():
+    pdn = _load_switch(datasheet_resistances=[{"spec": "rds_on", "typ": "0.089", "unit": "ohm"}])
+    pdn["rails"][0]["loads"][0].update(input_net="VIN_F", input_filter=[{
+        "refdes": "FB1", "class": "inductor", "net_in": "VIN", "net_out": "VIN_F",
+        "resistance_ohm": "unknown", "datasheet_figures": [{"spec": "dcr", "typ": "0.03", "unit": "ohm"}],
+        "dc_bias": {"columns": ["a", "h"], "points": [[0, 10.83e-6], [0.8, 8.41e-6]],
+                    "basis": "maker_data", "source": "Murata product data"}}])
+    setup, notes = TomachiePdnImporter(copy.deepcopy(pdn), filtered_board()).run()
+    fb1 = by_name(setup.links, "FB1")
+    assert fb1.l_by_current == [[0.0, 10.83e-6], [0.8, 8.41e-6]]
+    assert not fb1.is_short()
+    biased = biased_link(setup, fb1, {"FB1": -0.4})
+    w = W * np.array([1e5])
+    assert biased.impedance(w)[0].imag == pytest.approx(w[0] * 9.62e-6, rel=1e-6)
+    assert fb1.impedance(w)[0].imag == pytest.approx(w[0] * 10.83e-6, rel=1e-6)
+    back = by_name(PISetup.from_dict(setup.to_dict()).links, "FB1")
+    assert back.l_by_current == fb1.l_by_current
+    assert any("FB1" in n and "inductance" in n for n in notes)
