@@ -747,7 +747,8 @@ def cap_from_dict(c: dict) -> CapModel:
                     c.get("mfg_tolerance_pct"), spice=SpiceRef.from_dict(c.get("spice")),
                     values_from=dict(c.get("values_from") or {}),
                     defaults_because=c.get("defaults_because", ""),
-                    equivalent=c.get("equivalent", ""), doubt=c.get("doubt", ""))
+                    equivalent=c.get("equivalent", ""), doubt=c.get("doubt", ""),
+                    dc_bias_points=[list(p) for p in c.get("dc_bias_points") or []])
 
 
 def biased_link(setup: PISetup, link: DcLink,

@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """The AC part of the user's setup: capacitor models, probe points and sweep settings.
 
 These live in the same setup file as the DC power tree (:class:`kipi.dc.pi.model.PISetup`),
@@ -100,6 +101,7 @@ class CapModel:
     # and why the maker's own figure, used, is questionable ("" when it is not).
     equivalent: str = ""
     doubt: str = ""
+    dc_bias_points: List[List[float]] = field(default_factory=list)
 
     def values_from_detail(self) -> str:
         """Where each value came from, one by one: "capacitance schematic, ESL graph, ESR
@@ -167,9 +169,22 @@ class CapModel:
              * self.at_temperature(temp_c))
         if not (self.dc_bias and volts):
             return c
+        measured = self.kept_measured(abs(volts))
+        if measured is not None:
+            return c * measured
         kept = min(max(self.kept_at_rated_pct, 1.0), 100.0) / 100.0
         k = 1.0 / kept - 1.0
         return c / (1.0 + k * (abs(volts) / self.rated_v) ** BIAS_EXP)
+
+    def kept_measured(self, volts: float) -> Optional[float]:
+        pts = sorted((float(v), float(p)) for v, p in self.dc_bias_points)
+        if len(pts) < 2 or volts > pts[-1][0]:
+            return None
+        for (v0, p0), (v1, p1) in zip(pts, pts[1:]):
+            if v0 <= volts <= v1:
+                t = 0.0 if v1 == v0 else (volts - v0) / (v1 - v0)
+                return (p0 + t * (p1 - p0)) / 100.0
+        return None
 
     def within_tolerance(self, on: bool = True) -> float:
         """The share of its nominal capacitance a part at the low end of its manufacturing

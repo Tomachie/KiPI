@@ -1,3 +1,4 @@
+# Copyright (c) 2026 Tomachie LLC.
 """The AC values of a Tomachie ``.pdn.json`` (spec revision 9): what an impedance sweep
 takes per capacitor, per regulator and per load.
 
@@ -62,6 +63,12 @@ def fill_cap_model(m: CapModel, caps: List[dict], file_esl: float = 0.0) -> Tupl
         kept, basis = ac_value(ac.get("kept_at_rated"), "pct")
         if kept and m.kept_at_rated_pct == DEFAULT_KEPT_AT_RATED_PCT:
             m.kept_at_rated_pct, src["kept"] = kept, basis or "graph"
+        bias = ac.get("dc_bias") if isinstance(ac.get("dc_bias"), dict) else {}
+        pts = [p for p in bias.get("points") or []
+               if isinstance(p, (list, tuple)) and len(p) == 2]
+        if len(pts) >= 2 and not m.dc_bias_points:
+            m.dc_bias_points = [[float(v), float(p)] for v, p in pts]
+            src["kept"] = bias.get("basis") or "maker_model"
         if not m.esr_ohm:
             esr, basis = ac_value(ac.get("esr"), "ohm")
             if esr:
