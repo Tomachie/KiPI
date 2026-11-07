@@ -81,6 +81,7 @@ from kipi.dc.pi.results import (  # also importable from here, where they were d
     fmt_drop,  # noqa: F401
 )
 from kipi.core.progress import NULL, ProgressReporter
+from kipi.core.temperature import uniform as uniform_temperature
 from kipi.dc.solver import NetResult, pads_for
 from kipi.dc.solver.fem import LinearSystem, SolveError
 from kipi.dc.solver.post import compute_fields
@@ -231,6 +232,8 @@ class _TreeSolver:
         if errors:
             raise SolveError("Setup problems:\n- " + "\n- ".join(errors))
         self.snap, self.setup, self.progress = snap, setup, progress
+        if temperature is None and setup.thermal.copper_at_ambient:
+            temperature = uniform_temperature(setup.thermal.ambient_c)
         self.temperature, self.mesh_cache = temperature, mesh_cache
         self.factor_cache = factor_cache
         self.pads = _Pads(snap)

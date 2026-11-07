@@ -2345,7 +2345,13 @@ class PIPanel(QWidget, PartSelection):
         self.spin_airflow.setSpecialValueText("still air")
         self.spin_tgrid = _spin(0, 10, t.grid_mm, 2, " mm", 0.1)
         self.spin_tgrid.setSpecialValueText("auto")
+        self.chk_at_ambient = QCheckBox("Copper at ambient without co-simulation")
+        self.chk_at_ambient.setChecked(t.copper_at_ambient)
+        self.chk_at_ambient.setToolTip(
+            "With co-simulation off, solve the copper's resistivity, and parts with a "
+            "temperature model, at the ambient. Off: copper at 20 °C.")
         f.addRow(self.chk_thermal)
+        f.addRow(self.chk_at_ambient)
         f.addRow("Ambient", self.spin_ambient)
         f.addRow("Iterations", self.spin_iters)
         f.addRow("Airflow", self.spin_airflow)
@@ -2387,6 +2393,7 @@ class PIPanel(QWidget, PartSelection):
         f.addRow(note)
         self.chk_thermal.toggled.connect(self._thermal_changed)
         self.chk_load_power.toggled.connect(self._thermal_changed)
+        self.chk_at_ambient.toggled.connect(self._thermal_changed)
         for wdg in (self.spin_ambient, self.spin_airflow, self.spin_tgrid, self.spin_max_t,
                     self.spin_max_rise):
             wdg.valueChanged.connect(self._thermal_changed)
@@ -2401,11 +2408,14 @@ class PIPanel(QWidget, PartSelection):
         t.airflow_m_s = self.spin_airflow.value()
         t.grid_mm = self.spin_tgrid.value()
         t.load_power = self.chk_load_power.isChecked()
+        t.copper_at_ambient = self.chk_at_ambient.isChecked()
         t.max_temp_c = self.spin_max_t.value() or None
         t.max_rise_c = self.spin_max_rise.value() or None
-        for wdg in (self.spin_ambient, self.spin_iters, self.spin_airflow, self.spin_tgrid,
+        for wdg in (self.spin_iters, self.spin_airflow, self.spin_tgrid,
                     self.chk_load_power, self.spin_max_t, self.spin_max_rise):
             wdg.setEnabled(t.enabled)
+        self.spin_ambient.setEnabled(t.enabled or t.copper_at_ambient)
+        self.chk_at_ambient.setEnabled(not t.enabled)
         self.btn_solve.setText(self._solve_label())
         if getattr(self, "_tree", None) is not None:
             self._fill_thermal()        # the limits grade the last solve straight away
@@ -2531,7 +2541,8 @@ class PIPanel(QWidget, PartSelection):
                          (self.spin_airflow, t.airflow_m_s), (self.spin_tgrid, t.grid_mm),
                          (self.spin_max_t, t.max_temp_c or 0.0),
                          (self.spin_max_rise, t.max_rise_c or 0.0),
-                         (self.chk_thermal, t.enabled), (self.chk_load_power, t.load_power)):
+                         (self.chk_thermal, t.enabled), (self.chk_load_power, t.load_power),
+                         (self.chk_at_ambient, t.copper_at_ambient)):
             wdg.blockSignals(True)
             (wdg.setChecked if isinstance(wdg, QCheckBox) else wdg.setValue)(val)
             wdg.blockSignals(False)

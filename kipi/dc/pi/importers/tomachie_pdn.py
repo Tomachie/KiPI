@@ -142,6 +142,7 @@ class TomachiePdnImporter:
             self.setup.thermal.load_power = True
             self.notes.append("Thermal: load power is included (Thermal settings tab), "
                               "from the loads' currents and stated heat")
+        self._board_temperature()
         # One value per item is solved; the other ends of a range, summed up at the end.
         self.unused_current: List[Tuple[str, str]] = []     # (load, what is left out)
         # The maxima, solved in a worst-case solve (kipi.dc.pi.corner).
@@ -169,6 +170,23 @@ class TomachiePdnImporter:
         self.vrm_regs: Dict[str, dict] = {}
 
     # ------------------------------------------------------------ helpers
+    def _board_temperature(self):
+        if "ambient_max_c" not in self.pdn:
+            return
+        t = number(self.pdn.get("ambient_max_c"))
+        if t is None:
+            self.notes.append("Temperature: the file states no maximum ambient; the solves "
+                              "keep the setup's temperatures")
+            return
+        s = self.setup
+        s.thermal = dataclasses.replace(s.thermal, ambient_c=t, copper_at_ambient=True)
+        s.ac = dataclasses.replace(s.ac, temperature_c=t,
+                                   temperature="thermal" if s.ac.temperature == "thermal"
+                                   else "fixed")
+        self.notes.append(f"Temperature: every solve at the board's maximum ambient, {t:g} °C: "
+                          f"copper resistivity, parts with a temperature model, capacitor "
+                          f"dielectrics (Thermal and AC settings)")
+
     def _unique(self, name: str) -> str:
         taken = {x.name for x in [*self.setup.vrms, *self.setup.loads, *self.setup.links]}
         out, i = name, 2

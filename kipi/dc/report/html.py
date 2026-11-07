@@ -951,6 +951,8 @@ def write_report(path, tree, scenes: Dict[str, object], snap: BoardSnapshot, set
                      f"(TCR {s.tcr_for(n):g}/°C)".replace("  ", " ")
                      for n, r in sorted(s.rho_by_layer.items()))
                     if s.rho_by_layer else "")
+                 + (f"; copper solved at {setup.thermal.ambient_c:g} °C, the board's ambient"
+                    if th is None and setup.thermal.copper_at_ambient else "")
                  + ". Via plating, first matching rule (drill = hole in the laminate, plated "
                  f"inward): {_e('; '.join(r.label() for r in s.via_rules))}.</p>")
     parts.append(f"<p class='note'>Stackup, top to bottom: {_e(stackup_summary(snap.stackup))}.</p>")

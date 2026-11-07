@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Steady-state board temperature from copper losses, one temperature per copper layer.
 
 Each copper layer is a sheet in the plane: heat spreads sideways through its copper
@@ -64,6 +65,7 @@ class ThermalSettings:
     # PASS / FAIL limits on the solved copper's temperature, per layer (None = no limit)
     max_temp_c: Optional[float] = None
     max_rise_c: Optional[float] = None      # above ambient
+    copper_at_ambient: bool = False
 
     def limits_set(self) -> bool:
         return self.max_temp_c is not None or self.max_rise_c is not None
