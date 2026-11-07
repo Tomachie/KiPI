@@ -43,6 +43,7 @@ from kipi.ac.model import (
     DEFAULT_KEPT_AT_RATED_PCT, ACSettings, CapModel, PackageModel, Probe, report_format,
 )
 from kipi.core.model.spice import SpiceRef, constant_drop_ref  # noqa: F401 - re-exported
+from kipi.dc.pi import series_z
 from kipi.dc.solver.setup import SHORT_OHMS, SolveSettings
 from kipi.dc.thermal.model import ThermalSettings
 from kipi.noise.model import (
@@ -361,6 +362,10 @@ class DcLink:
     # The part's temperature, °C, its SPICE model is worked out at (#196): the copper's
     # under its pads, set by a solve that knows it; None: the model's nominal. Never saved.
     temp_c: Optional[float] = None
+    z_points: List[List[float]] = field(default_factory=list)
+    z_by_current: List[Dict] = field(default_factory=list)
+    circuit: Optional[Dict[str, float]] = None
+    z_basis: str = ""
 
     @property
     def uses_spice(self) -> bool:
@@ -410,10 +415,20 @@ class DcLink:
                 return float(r)
         return self.resistance
 
+    @property
+    def has_maker_z(self) -> bool:
+        return bool(self.circuit or self.z_points or self.z_by_current)
+
     def impedance(self, omega):
         """Small-signal impedance at angular frequency ``omega`` (an array)."""
         if self.uses_spice:
             return self.spice.impedance(omega, bias_a=self.bias_a or 0.0, temp_c=self.temp_c)
+        if self.circuit:
+            return series_z.circuit_impedance(self.circuit, omega)
+        if self.z_by_current:
+            return series_z.by_current_impedance(self.z_by_current, self.bias_a or 0.0, omega)
+        if self.z_points:
+            return series_z.table_impedance(self.z_points, omega)
         return self.resistance + 1j * omega * (self.esl_h or 0.0) + 0 * omega
 
     def admittance(self, omega) -> np.ndarray:
@@ -422,7 +437,8 @@ class DcLink:
 
     def is_short(self) -> bool:
         """Whether the part is a short in AC as in DC (merged away)."""
-        return self.resistance <= SHORT_OHMS and not self.esl_h and not self.uses_spice
+        return (self.resistance <= SHORT_OHMS and not self.esl_h and not self.uses_spice
+                and not self.has_maker_z)
 
 
 DEFAULT_VIA_CURRENT_LIMIT_A = 1.0
@@ -705,7 +721,10 @@ def _link(k: dict, pin) -> DcLink:
                   diode_vf_max=k.get("diode_vf_max", k.get("forward_v_max")),
                   vf_curve=k.get("vf_curve"),
                   rated_current_a=k.get("rated_current_a"),
-                  mux=str(k.get("mux", "")), mux_input=int(k.get("mux_input", 0)))
+                  mux=str(k.get("mux", "")), mux_input=int(k.get("mux_input", 0)),
+                  z_points=[list(p) for p in k.get("z_points") or []],
+                  z_by_current=[dict(c) for c in k.get("z_by_current") or []],
+                  circuit=k.get("circuit"), z_basis=str(k.get("z_basis", "")))
     # 0.9.2's constant forward drop (#161) becomes a diode model with that drop (#191);
     # a datasheet forward curve, a model fitted to the curve.
     if link.spice is None and (link.diode_vf > 0 or link.vf_curve):
@@ -756,10 +775,11 @@ def biased_link(setup: PISetup, link: DcLink,
     """``link`` for an AC or Coupled Noise solve: a diode biased by the current the last
     DC solve found through it (``solved``, by link name, from
     :func:`kipi.ac.bias.dc_link_currents`), else by :func:`link_bias`'s estimate."""
-    if not link.is_diode:
+    if not (link.is_diode or (link.z_by_current and not link.uses_spice)):
         return link
     if solved and link.name in solved:
-        return dataclasses.replace(link, bias_a=max(float(solved[link.name]), 0.0))
+        amps = float(solved[link.name])
+        return dataclasses.replace(link, bias_a=max(amps, 0.0) if link.is_diode else abs(amps))
     return dataclasses.replace(link, bias_a=link_bias(setup, link))
 
 

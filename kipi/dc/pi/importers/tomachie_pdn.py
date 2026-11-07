@@ -64,6 +64,7 @@ from kipi.dc.pi.model import (
     GROUND_REF_KINDS, SWITCHING_KINDS, DcLink, Load, PinRef, PISetup, Vrm, group_name,
     net_groups, volts_to_pct,
 )
+from kipi.dc.pi import series_z
 from kipi.dc.pi.diode_curve import DIODE_MIN_OHMS, diode_ref
 
 # A part on a rail by a signal pin only (detect, enable, reference): 0 A, not a load.
@@ -146,6 +147,7 @@ class TomachiePdnImporter:
         # The maxima, solved in a worst-case solve (kipi.dc.pi.corner).
         self.max_current: Dict[str, float] = {}
         self.max_resistance: List[str] = []
+        self.maker_z: Dict[str, List[str]] = {}
         self.unknown_current: List[str] = []
         self.static_current: Dict[str, float] = {}   # solved at a static figure, more not known
         self.not_supplied: List[str] = []    # on a rail by no supply pin: not a load
@@ -618,7 +620,29 @@ class TomachiePdnImporter:
                               "resistance lowers nothing (its loss is in the efficiency); "
                               "modeled as a short")
             typ, mx, fig_notes = 0.0, None, []
-        self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl, rated_a=rated_current(e))
+        ac = e.get("ac") if isinstance(e.get("ac"), dict) else {}
+        if typ is None and mx is None:
+            dcr = _positive_number(ac.get("dcr_ohm")) or _through_ohms(e)
+            if dcr:
+                typ, fig_notes = dcr, []
+        link = self._add_link(ref, a, b, typ, mx, fig_notes, esl_h=esl, rated_a=rated_current(e))
+        if not loop_of and e.get("class") in ("inductor", "ferrite"):
+            self._maker_z(link, ac)
+
+    def _maker_z(self, link: DcLink, ac: dict):
+        circuit = series_z.circuit_from(ac) if ac.get("basis") == "maker_equivalent_circuit" else None
+        curves = series_z.curves_from(ac)
+        points = series_z.points_from(ac)
+        if circuit:
+            link.circuit, kind = circuit, "maker's equivalent circuit"
+        elif len(curves) >= 2:
+            link.z_by_current, kind = curves, "maker's measured curves at their DC current"
+        elif len(points) >= 2:
+            link.z_points, kind = points, "maker's measured curve"
+        else:
+            return
+        link.z_basis = str(ac.get("basis", ""))
+        self.maker_z.setdefault(kind, []).append(link.name)
 
     def _add_link(self, ref: str, a, b, typ: Optional[float], mx: Optional[float],
                   fig_notes: List[str], what: str = "DC resistance",
@@ -1181,11 +1205,24 @@ class TomachiePdnImporter:
         if out:
             self.notes.append("Out of their supply range before any copper (the regulator's "
                               "output band against the part's datasheet): " + "; ".join(out))
+        for kind, names in self.maker_z.items():
+            self.notes.append(f"Series impedance (AC) from the {kind}: {', '.join(names)}")
         maxed = [f"{n} ({_amps(a)})" for n, a in self.max_current.items() if n in kept]
         if maxed or self.max_resistance:
             self.notes.append("Maximum currents and resistances are kept for a worst-case "
                               f"solve (beside Solve): {len(maxed)} loads, "
                               f"{len(self.max_resistance)} DC connections")
+
+
+def _positive_number(v) -> Optional[float]:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 else None
+
+
+def _through_ohms(e: dict) -> Optional[float]:
+    shunt = e.get("shunt_cap") if isinstance(e.get("shunt_cap"), dict) else {}
+    ac = shunt.get("ac") if isinstance(shunt.get("ac"), dict) else {}
+    maker = ac.get("maker_model") if isinstance(ac.get("maker_model"), dict) else {}
+    return _positive_number(maker.get("through_resistance_ohm"))
 
 
 def _amps(a: float) -> str:
