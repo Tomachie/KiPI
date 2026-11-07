@@ -168,6 +168,7 @@ class TomachiePdnImporter:
         self.rail_levels: Dict[str, List[float]] = {}   # rail -> its selectable voltages
         self.probes_without_ground: List[str] = []
         self.vrm_regs: Dict[str, dict] = {}
+        self.cells: Set[str] = set()
 
     # ------------------------------------------------------------ helpers
     def _board_temperature(self):
@@ -395,6 +396,9 @@ class TomachiePdnImporter:
             if reg is not None and reg.get("type") == "load_switch":
                 self._load_switch(reg, src, name)
                 continue
+            if reg is not None and reg.get("type") == "charger":
+                self._charger(reg, src, name)
+                continue
             v = self._voltage(r)
             out = self._source_pins(src, f"{src.get('refdes')} output")
             if self._behind_placed_output(name, src, out):
@@ -600,6 +604,50 @@ class TomachiePdnImporter:
         if iq is not None:
             self.setup.loads.append(Load(self._unique(f"{ref} quiescent"), vin, iq,
                                          ground=self._ground(ref)))
+
+    def _charger(self, reg: dict, src: dict, rail: str):
+        ref = reg["refdes"]
+        cell = reg.get("cell") if isinstance(reg.get("cell"), dict) else {}
+        if not cell.get("refdes"):
+            self.notes.append(f"Rail {rail}: battery charger {ref} with no battery or "
+                              "connector on its output; its loads are not imported")
+            self.skipped_rails.add(rail)
+            return
+        r = self.rails[rail]
+        if self._voltage(r) is None:
+            return
+        self._output_path(ref, src, rail)
+        if rail != cell.get("rail"):
+            return
+        out = self.idx.pin_ref(cell.get("pins", []), self.notes, f"Cell {cell['refdes']}")
+        if out is None:
+            self.notes.append(f"Rail {rail}: the cell {cell['refdes']} of charger {ref} "
+                              "not found on the board; its loads are not imported")
+            self.skipped_rails.add(rail)
+            return
+        self.cells.add(cell["refdes"])
+        self.setup.vrms.append(Vrm(self._unique(f"{cell['refdes']} {rail}"), out,
+                                   self._voltage(r), "source",
+                                   ground=self._ground(cell["refdes"], r.get("ground")),
+                                   **self._input_range(r, {})))
+        rails = ", ".join(reg.get("output_rails") or [rail])
+        entry = self._regulator_entry(reg)
+        vin = self.idx.pin_ref(entry["pins"], self.notes, f"{ref} input") if entry else None
+        if vin is None:
+            self.notes.append(f"{ref} ({rail}): battery charger; the cell {cell['refdes']} "
+                              f"supplies {rails}; its input pins not found, so its input "
+                              "current is not drawn")
+            return
+        self._input_filter(reg, entry)
+        label = self._unique(f"{ref} charge input")
+        self.setup.loads.append(Load(label, vin, self._current(entry, vin.net, label),
+                                     ground=self._ground(ref),
+                                     current_max=self.max_current.get(label),
+                                     current_known=label not in self.unknown_current))
+        self.notes.append(f"{ref} ({rail}): battery charger; the cell {cell['refdes']} "
+                          f"supplies {rails} (the battery case), and {ref} draws its input "
+                          f"current from {vin.net}; the charge current from {ref}'s "
+                          f"output into the cell is not solved in the copper")
 
     # ------------------------------------------------------------ series parts
     def _link(self, e: dict, loop_of: Optional[str] = None):
@@ -821,6 +869,8 @@ class TomachiePdnImporter:
         for l in rail.get("loads", []):
             if l["role"] == "regulator":
                 continue                   # the regulator's VRM input carries this current
+            if l["refdes"] in self.cells:
+                continue
             current = l.get("current")
             if isinstance(current, dict) and current.get("basis") in NOT_A_LOAD:
                 # On the rail by a detect, enable or reference pin only: it draws nothing.
