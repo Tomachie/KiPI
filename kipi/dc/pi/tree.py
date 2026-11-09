@@ -101,6 +101,16 @@ class _Pads:
     def __call__(self, ref: PinRef) -> List[str]:
         return [p.id for p in pads_for(self.snap, ref.net, ref.ref, ref.pins or None)]
 
+    def ohms(self, ref: PinRef, by_pin: Dict[str, float]) -> Optional[List[float]]:
+        """Each of ``ref``'s pads' package resistance from ``by_pin`` (Load.package_ohms),
+        in the pad order of ``self(ref)``; None unless every pad's pin has one."""
+        if not by_pin:
+            return None
+        nums = [p.number for p in pads_for(self.snap, ref.net, ref.ref, ref.pins or None)]
+        if not all(n in by_pin for n in nums):
+            return None
+        return [by_pin[n] for n in nums]
+
 
 def _two_point(gmat: np.ndarray) -> float:
     """The resistance between the first two nodes of conductance matrix ``gmat`` (0 for
@@ -511,7 +521,7 @@ class _TreeSolver:
         sources = [VoltageSource(f"{v.name} (gnd)", self.pads(v.ground), 0.0) for v in refs]
         loads = [CurrentLoad(f"{l.name} (return)", self.pads(l.ground),
                              -self.drawn(l, l.total_current()),
-                             optional=True)
+                             optional=True, pad_ohms=self.pads.ohms(l.ground, l.package_ohms))
                  for l in self.setup.loads if l.ground and l.ground.net in g]
         loads += self._vrm_ground_loads(g)
         return refs, self._system_for(g, sources, loads, self.label_of(g))
@@ -583,12 +593,14 @@ class _TreeSolver:
                 continue
             if not l.groups:
                 loads.append(CurrentLoad(l.name, self.pads(l.supply),
-                                         self.drawn(l, l.current), optional=True))
+                                         self.drawn(l, l.current), optional=True,
+                                         pad_ohms=self.pads.ohms(l.supply, l.package_ohms)))
                 continue
             for i, grp in enumerate(l.groups):
                 ref = PinRef(l.supply.ref, l.supply.net, list(grp.pins))
                 loads.append(CurrentLoad(_group_load_name(l, i), self.pads(ref),
-                                         self.drawn(l, grp.current), optional=True))
+                                         self.drawn(l, grp.current), optional=True,
+                                         pad_ohms=self.pads.ohms(ref, l.package_ohms)))
         return loads
 
     def _child_currents(self, rail: _Rail, vin_est: Dict[str, List[float]]) -> Dict[str, float]:

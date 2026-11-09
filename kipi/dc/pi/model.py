@@ -231,6 +231,10 @@ class Load:
     # layout from the datasheets (an import's figure, supply copper and ground return
     # together); shown beside the solved margin. None = not given.
     copper_margin_v: Optional[float] = None
+    # Each pin's resistance through the package to the die, ohms, by pin number, supply
+    # and ground pins alike (an IBIS [Pin] R_pin). A terminal all of whose pins have one
+    # is solved with a die node (CurrentLoad.pad_ohms); otherwise its pins are tied ideally.
+    package_ohms: Dict[str, float] = field(default_factory=dict)
 
     def total_current(self) -> float:
         return sum(g.current for g in self.groups) if self.groups else self.current
@@ -259,7 +263,8 @@ class Load:
     def __setstate__(self, state):
         # Setups pickled in results files before asymmetric tolerances: +/- one %.
         t = state.pop("tolerance_pct", None)
-        state = {"tol_min": None if t is None else -t, "tol_max": t, "tol_pct": True, **state}
+        state = {"tol_min": None if t is None else -t, "tol_max": t, "tol_pct": True,
+                 "package_ohms": {}, **state}
         self.__dict__.update(state)
 
 
@@ -592,7 +597,9 @@ class PISetup:
                                 for g in l.get("groups", [])],
                         current_max=l.get("current_max"),
                         current_known=bool(l.get("current_known", True)),
-                        copper_margin_v=l.get("copper_margin_v"))
+                        copper_margin_v=l.get("copper_margin_v"),
+                        package_ohms={str(k): float(v) for k, v in
+                                      (l.get("package_ohms") or {}).items()})
                    for l in d.get("loads", [])],
             links=[_link(k, pin) for k in d.get("links", [])],
             corner=d.get("corner", "typ"),
