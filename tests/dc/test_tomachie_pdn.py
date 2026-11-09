@@ -367,6 +367,10 @@ def test_current_not_known_gives_its_rail_a_headroom():
     pdn["rails"][1]["loads"][0]["current"] = "unknown"
     pdn["rails"][1]["loads"][0].pop("current_max", None)
     setup, notes = run(pdn)
+    # The headroom is linear in the rail's copper with the VRM's reference fixed; a VRM
+    # that regulates above its own ground pins moves with the ground current too, which
+    # leaves more margin than the headroom counts (it is then conservative).
+    setup.settings.regulate_above_own_ground = False
     u2 = by_name(setup.loads, "U2")
     assert (u2.current, u2.current_known) == (0.0, False)
     tree = solve_tree(board(), setup)
