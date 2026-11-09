@@ -320,6 +320,18 @@ def test_isolated_converter_is_a_switcher():
     assert not any("not known whether linear" in n for n in notes)
 
 
+def test_a_pmics_linear_output_draws_its_current_not_its_power():
+    """A PMIC with bucks and LDOs (STPMIC2L) types each output in output_kinds: an LDO
+    output draws its own current from the input, whatever the part's efficiency."""
+    pdn = copy.deepcopy(PDN)
+    pdn["regulators"][0].update(type="switching", efficiency="unknown",
+                                output_kinds={"+3V3": "linear"})
+    setup, notes = run(pdn)
+    u1 = by_name(setup.vrms, "U1 +3V3")
+    assert (u1.kind, u1.efficiency) == ("ldo", 1.0)
+    assert not any("efficiency not read" in n for n in notes)
+
+
 def test_source_pin_on_another_net_leaves_the_rail_out():
     """A file naming one regulator pin as the source of two rails (one LDO pin for
     both its 1V8 output and a 0V9 rail) is wrong about one of them: that rail is left out and said, and the

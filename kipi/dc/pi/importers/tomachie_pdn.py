@@ -373,7 +373,12 @@ class TomachiePdnImporter:
         return part
 
     def _regulator_kind(self, reg: dict, rail: str) -> Tuple[str, float]:
-        kind = VRM_KIND.get(reg.get("type"))
+        # A part with both kinds of output (a PMIC's bucks beside its LDOs) types each
+        # output: a linear one draws its output current from the input, not its power.
+        own = (reg.get("output_kinds") or {}).get(rail)
+        kind = VRM_KIND.get(own or reg.get("type"))
+        if own == "linear":
+            return kind, 1.0
         eff = number(reg.get("efficiency"))
         if kind is None:
             self.notes.append(f"{reg['refdes']} ({rail}): not known whether linear or "
