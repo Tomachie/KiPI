@@ -200,6 +200,22 @@ def test_load_switch_is_a_dc_connection_with_its_on_resistance():
     assert by_name(res.loads, "U2").passed is True
 
 
+def test_load_switch_feeding_two_rails_is_one_dc_connection():
+    """MB2059 U14 is the source of 5V_VIN and of VL behind R68 0R: one switch, one
+    on-resistance, one quiescent current - not two links in parallel."""
+    figs = [{"spec": "rds_on", "typ": "48", "max": "50", "unit": "mΩ", "page": 6}]
+    pdn = _load_switch(datasheet_resistances=figs,
+                       quiescent_current={"amps": 3.7e-4, "basis": "typ"})
+    second = copy.deepcopy(pdn["rails"][1])
+    second.update(name="+3V3_B", loads=[])
+    pdn["rails"].append(second)
+    pdn["regulators"][0]["output_rails"] = ["+3V3", "+3V3_B"]
+    setup, _ = run(pdn)
+    assert [l.name for l in setup.links if l.name.startswith("U1")] == ["U1"]
+    assert by_name(setup.links, "U1").resistance == pytest.approx(0.048)
+    assert [l.name for l in setup.loads if "quiescent" in l.name] == ["U1 quiescent"]
+
+
 def test_load_switch_without_an_on_resistance_is_a_short_and_said():
     setup, notes = run(_load_switch())
     u1 = by_name(setup.links, "U1")

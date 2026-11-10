@@ -573,6 +573,12 @@ class TomachiePdnImporter:
         output pins and its rail are DC connections too. Its quiescent current is drawn
         at its input pins, as an LDO VRM's is."""
         ref = reg["refdes"]
+        if ref in self.linked:
+            # A second rail behind the same switch (MB2059 U14: 5V_VIN, and VL behind
+            # R68 0R): the switch is already one DC connection with its quiescent load;
+            # a second would halve its on-resistance and draw its quiescent twice.
+            self._output_path(ref, src, rail)
+            return
         inputs = [(l, self.idx.pin_ref(l["pins"], self.notes, f"{ref} input"))
                   for l in self._regulator_entries(reg)]
         inputs = [(l, p) for l, p in inputs if p is not None]
