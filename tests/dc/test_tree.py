@@ -592,3 +592,13 @@ def test_isolated_converter_with_an_excluded_input_becomes_a_source():
     assert (u1.kind, u1.input, u1.input_ground) == ("source", None, None)
     assert u1.ground == PinRef("U1", "ISOGND", ["4"])
     assert validate(out) == []
+
+
+def test_return_drop_is_measured_from_the_feeding_vrms_ground():
+    """J1's ground (x 0..1) is the 0 V reference; U1's (x 10..11) and U2's (x 21..22) sit
+    further along the GND strip. v_ground is U2's ground above 0 V; return_drop only the
+    copper from U1's ground to U2's, as a tool measuring from the source's return has it."""
+    res = solve_tree(board(), setup("ldo", ground=True))
+    u2 = by_name(res.loads, "U2")
+    assert u2.v_ground is not None and u2.return_drop is not None
+    assert 0.0 < u2.return_drop < u2.v_ground

@@ -971,6 +971,7 @@ class _TreeSolver:
                          l.tolerance_label(), None, worst, self._pin_group_rows(l, sol), low,
                          high)
         rep.limit_low, rep.limit_high = l.limits(nominal)
+        rep.return_drop = self._return_drop(g, gv)
         rep.basis = self.corner.basis.get(l.name, "")
         rep.copper_margin = l.copper_margin_v
         if not self.tree_converged or g in self.not_converged:
@@ -984,6 +985,20 @@ class _TreeSolver:
             rep.passed = ((rep.limit_low is None or low >= rep.limit_low)
                           and (rep.limit_high is None or high <= rep.limit_high))
         return rep
+
+    def _return_drop(self, g: Group, load_ground) -> Optional[float]:
+        """The load's ground pins (mean) above the ground pins of the VRM driving its rail
+        (mean): the return copper between them. None without ground pins on either."""
+        vrm = self.driver[g]
+        if load_ground is None or not vrm.ground or vrm.ground.net not in self.groups:
+            return None
+        sol = self.ground_solutions.get(self.groups[vrm.ground.net])
+        if sol is None:
+            return None
+        src = _connected(_pad_voltages(sol, self.pads(vrm.ground)))
+        if not len(src) or not len(load_ground):
+            return None
+        return float(load_ground.mean()) - float(src.mean())
 
     def _pin_group_rows(self, l: Load, sol) -> List[tuple]:
         rows = []

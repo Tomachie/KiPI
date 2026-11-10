@@ -92,6 +92,11 @@ class LoadReport:
     # True when a load on the same rail has a current not known: an answer "in range" then
     # holds at the known currents (the Headroom says what the rest may add).
     unknowns_on_rail: bool = False
+    # The return: the load's ground pins (mean) above its feeding VRM's own ground pins
+    # (mean), volts - the ground copper this load's current crosses back to its source,
+    # on the same footing as a tool that measures from the source's return. None when
+    # either has no ground pins. v_ground is measured from the board's 0 V reference.
+    return_drop: Optional[float] = None
 
     def __setstate__(self, state):
         # Results files saved before boosts were reported: only the lowest pin is known,
@@ -104,6 +109,7 @@ class LoadReport:
         state = {"v_low": state.get("v_worst"), "v_high": None, "status": "",
                  "tolerance": "", "limit_low": None, "limit_high": None,
                  "copper_margin": None, "unknown_room_a": None, "unknowns_on_rail": False,
+                 "return_drop": None,
                  **state}
         state["pin_groups"] = [tuple(g) + (None,) * (5 - len(g))
                                for g in state.get("pin_groups", [])]
