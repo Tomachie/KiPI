@@ -922,3 +922,24 @@ def test_io_current_of_a_load_solved_as_one_node_is_returned_to_add():
     groups, _package, io = imp._die_supplies(load, "U7", 0.037)
     assert groups == [] and io == pytest.approx(0.07)
     assert any("I/O currents" in n for n in imp.notes)
+
+
+def test_via_plating_from_the_file_sets_the_via_rules():
+    """No board file states the barrel plating; Tomachie writes the IPC-6012 class it
+    assumes (pdn.json revision 20) and the via rules take it, drill ranges and fill kept."""
+    pdn = copy.deepcopy(PDN)
+    pdn["via_plating"] = {"through_um": 25, "blind_um": 20, "buried_um": 13,
+                          "microvia_um": 12, "basis": "user"}
+    setup, notes = run(pdn)
+    plating = {r.kind: r.plating_mm for r in setup.settings.via_rules}
+    assert plating["through"] == pytest.approx(0.025)
+    assert plating["pth"] == pytest.approx(0.025)
+    assert plating["buried"] == pytest.approx(0.013)
+    assert plating["micro"] == pytest.approx(0.012)
+    assert any("Via plating from the file (user): through 25 um" in n for n in notes)
+
+
+def test_no_via_plating_in_the_file_keeps_the_rules():
+    setup, notes = run(copy.deepcopy(PDN))
+    assert {r.kind: r.plating_mm for r in setup.settings.via_rules}["through"] == pytest.approx(0.020)
+    assert not any("Via plating" in n for n in notes)

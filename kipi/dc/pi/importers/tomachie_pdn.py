@@ -143,6 +143,7 @@ class TomachiePdnImporter:
             self.notes.append("Thermal: load power is included (Thermal settings tab), "
                               "from the loads' currents and stated heat")
         self._board_temperature()
+        self._via_plating()
         # One value per item is solved; the other ends of a range, summed up at the end.
         self.unused_current: List[Tuple[str, str]] = []     # (load, what is left out)
         # The maxima, solved in a worst-case solve (kipi.dc.pi.corner).
@@ -187,6 +188,30 @@ class TomachiePdnImporter:
         self.notes.append(f"Temperature: every solve at the board's maximum ambient, {t:g} °C: "
                           f"copper resistivity, parts with a temperature model, capacitor "
                           f"dielectrics (Thermal and AC settings)")
+
+    # pdn.json via_plating (revision 20) key -> the via rule kinds it sets.
+    _VIA_PLATING = {"through_um": ("through", "pth", "any"), "blind_um": ("blind", "blind_buried"),
+                    "buried_um": ("buried",), "microvia_um": ("micro",)}
+
+    def _via_plating(self):
+        """The via barrel plating the file states - no board file carries it, so Tomachie
+        writes the IPC-6012 class it assumes - into the setup's via rules, each rule's
+        drill range and fill kept. The designer changes it in the Via rules editor."""
+        vp = self.pdn.get("via_plating")
+        if not isinstance(vp, dict):
+            return
+        set_to = []
+        for key, kinds in self._VIA_PLATING.items():
+            um = number(vp.get(key))
+            if um is None or um <= 0:
+                continue
+            for r in self.setup.settings.via_rules:
+                if r.kind in kinds:
+                    r.plating_mm = um / 1000.0
+            set_to.append(f"{key[:-3]} {um:g} um")
+        if set_to:
+            self.notes.append(f"Via plating from the file ({vp.get('basis') or 'not stated'}): "
+                              f"{', '.join(set_to)}; change it in Via rules")
 
     def _unique(self, name: str) -> str:
         taken = {x.name for x in [*self.setup.vrms, *self.setup.loads, *self.setup.links]}
