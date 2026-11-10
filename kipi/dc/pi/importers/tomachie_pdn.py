@@ -961,7 +961,12 @@ class TomachiePdnImporter:
             self.notes.append(f"{label}: package resistance per ball is its terminal's times "
                               f"its ball count (an equal share) for {', '.join(shared)}")
         owners = [g for g in die if g.get("current_is") == "this_supply"]
-        if len(die) < 2 or len(owners) != 1:
+        estimated = [g for g in die if g.get("current_is") == "estimated"]
+        # No figure of its own (an FPGA's VCCO banks): the estimates are its current.
+        if not owners and estimated:
+            if label in self.unknown_current:
+                self.unknown_current.remove(label)
+        elif len(die) < 2 or len(owners) != 1:
             if len(die) >= 2:
                 self.notes.append(f"{label}: {len(die)} die supplies, but the file names none "
                                   "as the current's; solved as one node")
@@ -971,7 +976,7 @@ class TomachiePdnImporter:
         for g in die:
             pins = [p.split("_", 1)[1] if p.startswith(ref + "_") else p for p in g.get("pins", [])]
             name = g.get("name", "")
-            if g is owners[0]:
+            if owners and g is owners[0]:
                 groups.append(PinGroup(pins, current, name, mx))
                 continue
             est = amps(g.get("current")) if g.get("current_is") == "estimated" else None
@@ -987,7 +992,9 @@ class TomachiePdnImporter:
                 continue
             unstated.append(name or "?")
             groups.append(PinGroup(pins, 0.0, name, 0.0 if mx is not None else None))
-        self.notes.append(f"{label}: its current is {owners[0].get('name')}'s"
+        whose = (f"its current is {owners[0].get('name')}'s" if owners
+                 else "no current of its own; its estimated banks are solved")
+        self.notes.append(f"{label}: {whose}"
                           + (f"; {', '.join(unstated)} draw{'s' if len(unstated) == 1 else ''} "
                              "none stated (0 A solved)" if unstated else ""))
         return groups, package

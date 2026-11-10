@@ -862,3 +862,17 @@ def test_an_estimated_bank_draws_its_estimate_and_says_so():
     groups, _package = imp._die_supplies(load, "U7", 0.00235)
     assert [(g.name, g.current) for g in groups] == [("VDDIO3", 0.011), ("VDD", 0.00235)]
     assert any("[VDDIO3]" in n and "ESTIMATED" in n and "11 of 12" in n for n in imp.notes)
+
+
+def test_a_load_with_no_current_of_its_own_solves_its_estimated_banks():
+    """An FPGA on its VCCO rail with no data-sheet figure: its banks' estimates are its
+    current, and it is no longer counted as a load of unknown current."""
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    imp.unknown_current.append("U7")
+    load = _die_load()
+    load["die_supplies"][0].update(current_is="estimated", current={"amps": 0.004})
+    load["die_supplies"][1].update(current_is="estimated", current={"amps": 0.006})
+    groups, _package = imp._die_supplies(load, "U7", 0.0)
+    assert [(g.name, g.current) for g in groups] == [("VDDIO3", 0.004), ("VDD", 0.006)]
+    assert "U7" not in imp.unknown_current
+    assert any("no current of its own" in n for n in imp.notes)
