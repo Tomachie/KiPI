@@ -833,7 +833,7 @@ def test_die_supplies_are_separate_groups_with_their_own_current_and_package():
     and each ball's package resistance is its terminal's times the terminal's balls."""
     imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
     imp.max_current["U7"] = 0.0029
-    groups, package = imp._die_supplies(_die_load(), "U7", 0.00235)
+    groups, package, _io = imp._die_supplies(_die_load(), "U7", 0.00235)
     assert [(g.name, g.pins, g.current, g.current_max) for g in groups] == [
         ("VDDIO3", ["F8", "F10"], 0.0, 0.0), ("VDD", ["1G1", "1G3"], 0.00235, 0.0029)]
     assert package == {"F8": pytest.approx(0.097), "F10": pytest.approx(0.097),
@@ -847,8 +847,8 @@ def test_die_supplies_with_no_named_owner_stay_one_node():
     load = _die_load()
     for g in load["die_supplies"]:
         g["current_is"] = "the_load_s"
-    groups, _package = imp._die_supplies(load, "U7", 0.00235)
-    assert groups == []
+    groups, _package, io = imp._die_supplies(load, "U7", 0.00235)
+    assert groups == [] and io == 0.0
     assert any("names none as the current's" in n for n in imp.notes)
 
 
@@ -859,7 +859,7 @@ def test_an_estimated_bank_draws_its_estimate_and_says_so():
     load = _die_load()
     load["die_supplies"][0].update(current_is="estimated", current={
         "amps": 0.011, "basis": "estimated", "conditions": "11 of 12 VDDIO3 bank pins connected"})
-    groups, _package = imp._die_supplies(load, "U7", 0.00235)
+    groups, _package, _io = imp._die_supplies(load, "U7", 0.00235)
     assert [(g.name, g.current) for g in groups] == [("VDDIO3", 0.011), ("VDD", 0.00235)]
     assert any("[VDDIO3]" in n and "ESTIMATED" in n and "11 of 12" in n for n in imp.notes)
 
@@ -872,7 +872,37 @@ def test_a_load_with_no_current_of_its_own_solves_its_estimated_banks():
     load = _die_load()
     load["die_supplies"][0].update(current_is="estimated", current={"amps": 0.004})
     load["die_supplies"][1].update(current_is="estimated", current={"amps": 0.006})
-    groups, _package = imp._die_supplies(load, "U7", 0.0)
+    groups, _package, _io = imp._die_supplies(load, "U7", 0.0)
     assert [(g.name, g.current) for g in groups] == [("VDDIO3", 0.004), ("VDD", 0.006)]
     assert "U7" not in imp.unknown_current
     assert any("no current of its own" in n for n in imp.notes)
+
+
+def test_io_current_adds_to_the_supply_s_own_figure():
+    """Revision 19: VDD's IDD (2.35 mA, Table 24, all peripherals disabled) is measured
+    without the I/O load current, so VDD's io_current adds to it; VDDIO3, with no figure of
+    its own, draws its io_current alone (STM32MP215 data sheet 5.3.5.2)."""
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    imp.max_current["U7"] = 0.0029
+    load = _die_load()
+    load["die_supplies"][0]["io_current"] = {"amps": 0.0009, "conditions": "SPI1_SCK"}
+    load["die_supplies"][1]["io_current"] = {"amps": 0.0123}
+    groups, _package, io = imp._die_supplies(load, "U7", 0.00235)
+    assert io == 0.0
+    assert [(g.name, g.current) for g in groups] == [
+        ("VDDIO3", pytest.approx(0.0009)), ("VDD", pytest.approx(0.01465))]
+    assert groups[1].current_max == pytest.approx(0.0152)
+    assert any("[VDD]" in n and "I/O current" in n for n in imp.notes)
+
+
+def test_io_current_of_a_load_solved_as_one_node_is_returned_to_add():
+    """VDDQDDR on VDD2_DDR: the load's 37 mA names no one supply; its I/O current is
+    returned so the tied load carries both."""
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    load = _die_load()
+    for g in load["die_supplies"]:
+        g["current_is"] = "the_load_s"
+    load["die_supplies"][0]["io_current"] = {"amps": 0.07}
+    groups, _package, io = imp._die_supplies(load, "U7", 0.037)
+    assert groups == [] and io == pytest.approx(0.07)
+    assert any("I/O currents" in n for n in imp.notes)

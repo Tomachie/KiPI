@@ -908,7 +908,12 @@ class TomachiePdnImporter:
             ground = (self.idx.pin_ref(drv["return_pins"], self.notes,
                                        f"Return of {l['refdes']} on {name}")
                       if drv.get("return_pins") else None)
-            groups, package = ([], {}) if drv else self._die_supplies(l, label, current)
+            groups, package, io_tied = ([], {}, 0.0) if drv else self._die_supplies(l, label, current)
+            if io_tied:
+                # The I/O estimate of a load solved as one node: on top of its figure.
+                current += io_tied
+                if self.max_current.get(label) is not None:
+                    self.max_current[label] += io_tied
             self.setup.loads.append(Load(label, supply, current,
                                          **self._tolerance(rail, l, label),
                                          ground=ground or self._ground(returns,
@@ -932,20 +937,41 @@ class TomachiePdnImporter:
                                                                  rail.get("ground")),
                                              current_known=False))
 
+    @staticmethod
+    def _io_current(g: dict) -> Optional[float]:
+        """A die supply's I/O current (revision 19 ``io_current``; revision 18 wrote it as
+        ``current`` with ``current_is`` "estimated")."""
+        if isinstance(g.get("io_current"), dict):
+            return amps(g["io_current"])
+        if g.get("current_is") == "estimated":
+            return amps(g.get("current"))
+        return None
+
+    def _io_note(self, label: str, g: dict, a: float):
+        cur = g.get("io_current") if isinstance(g.get("io_current"), dict) else g.get("current")
+        why = cur.get("conditions", "") if isinstance(cur, dict) else ""
+        self.notes.append(f"{label} [{g.get('name', '?')}]: I/O current {_amps(a)} ESTIMATED, "
+                          f"not a data-sheet figure ({why}); change it to the bank's real current")
+
     def _die_supplies(self, l: dict, label: str, current: float):
-        """A load's balls by die supply (revision 18), as pin groups, and each ball's package
-        resistance by pin number.
+        """A load's balls by die supply (revision 18), as pin groups, each ball's package
+        resistance by pin number, and the I/O current to add to the load's own when it is
+        solved as one node.
 
         Balls the board joins on one net can feed different supplies inside the part
         (MB2059 U7: F8/F10 VDDIO3, F14 VDDIO1, 1G1.. VDD on VDDIO). Each supply is its own
         group, so two supplies are never one node. The load's current is the group's whose
-        row names it (``current_is`` "this_supply"); a supply with none stated draws 0 A and
-        is named in the notes. When the file names no one supply for the current, the load
-        stays one tied group. A ball's package resistance is its terminal's (all its balls
-        in parallel) times the terminal's ball count: an equal share, stated as such."""
+        row names it (``current_is`` "this_supply"); a supply with none stated draws 0 A.
+        A supply's I/O current (revision 19 ``io_current``: what its bank pins drive,
+        Tomachie's estimate) adds to whatever the supply draws by its own figure - a
+        data-sheet supply current is measured without it. When the file names no one
+        supply for the load's current, the load stays one tied node carrying its current
+        plus every I/O current. A ball's package resistance is its terminal's (all its
+        balls in parallel) times the terminal's ball count: an equal share, stated as
+        such."""
         die = l.get("die_supplies")
         if not isinstance(die, list) or not die:
-            return [], {}
+            return [], {}, 0.0
         ref = l["refdes"]
         package: Dict[str, float] = {}
         shared = []
@@ -961,43 +987,45 @@ class TomachiePdnImporter:
             self.notes.append(f"{label}: package resistance per ball is its terminal's times "
                               f"its ball count (an equal share) for {', '.join(shared)}")
         owners = [g for g in die if g.get("current_is") == "this_supply"]
-        estimated = [g for g in die if g.get("current_is") == "estimated"]
-        # No figure of its own (an FPGA's VCCO banks): the estimates are its current.
-        if not owners and estimated:
-            if label in self.unknown_current:
-                self.unknown_current.remove(label)
+        io = {id(g): self._io_current(g) for g in die}
+        with_io = [g for g in die if io[id(g)]]
+        load_has_own = label not in self.unknown_current
+        if not owners and with_io and not load_has_own:
+            # No figure of its own (an FPGA's VCCO banks): the I/O currents are its current.
+            self.unknown_current.remove(label)
         elif len(die) < 2 or len(owners) != 1:
+            tied = sum(io[id(g)] for g in with_io)
+            for g in with_io:
+                self._io_note(label, g, io[id(g)])
             if len(die) >= 2:
                 self.notes.append(f"{label}: {len(die)} die supplies, but the file names none "
-                                  "as the current's; solved as one node")
-            return [], package
+                                  "as the current's; solved as one node"
+                                  + (f" with the I/O currents ({_amps(tied)}) added"
+                                     if tied else ""))
+            return [], package, tied
         groups, unstated = [], []
         mx = self.max_current.get(label)
         for g in die:
             pins = [p.split("_", 1)[1] if p.startswith(ref + "_") else p for p in g.get("pins", [])]
             name = g.get("name", "")
+            extra = io[id(g)] or 0.0
+            if extra:
+                self._io_note(label, g, extra)
             if owners and g is owners[0]:
-                groups.append(PinGroup(pins, current, name, mx))
+                groups.append(PinGroup(pins, current + extra, name,
+                                       mx + extra if mx is not None else None))
                 continue
-            est = amps(g.get("current")) if g.get("current_is") == "estimated" else None
-            if est is not None:
-                # An I/O bank with no data-sheet current: Tomachie's estimate (connected
-                # bank pins x an assumed drive and duty) - the designer's to change.
-                est_max = amps(g.get("current_max"))
-                groups.append(PinGroup(pins, est, name, est_max if est_max is not None else est))
-                why = (g.get("current") or {}).get("conditions", "") \
-                    if isinstance(g.get("current"), dict) else ""
-                self.notes.append(f"{label} [{name}]: {_amps(est)} ESTIMATED, not a data-sheet "
-                                  f"figure ({why}); change it to the bank's real current")
+            if extra:
+                groups.append(PinGroup(pins, extra, name, extra))
                 continue
             unstated.append(name or "?")
             groups.append(PinGroup(pins, 0.0, name, 0.0 if mx is not None else None))
         whose = (f"its current is {owners[0].get('name')}'s" if owners
-                 else "no current of its own; its estimated banks are solved")
+                 else "no current of its own; its I/O currents are solved")
         self.notes.append(f"{label}: {whose}"
                           + (f"; {', '.join(unstated)} draw{'s' if len(unstated) == 1 else ''} "
                              "none stated (0 A solved)" if unstated else ""))
-        return groups, package
+        return groups, package, 0.0
 
     def _copper_margin(self, l: dict, label: str) -> Optional[float]:
         """The load's pre-layout copper margin, volts: what its supply copper and ground
