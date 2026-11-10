@@ -61,7 +61,7 @@ from kipi.dc.pi.importers.pdn_figures import (
     amps, curve_points, dc_resistance, forward_drop, number, rated_current,
 )
 from kipi.dc.pi.model import (
-    GROUND_REF_KINDS, SWITCHING_KINDS, DcLink, Load, PinRef, PISetup, Vrm, group_name,
+    GROUND_REF_KINDS, SWITCHING_KINDS, DcLink, Load, PinGroup, PinRef, PISetup, Vrm, group_name,
     net_groups, volts_to_pct,
 )
 from kipi.dc.pi import series_z
@@ -908,14 +908,17 @@ class TomachiePdnImporter:
             ground = (self.idx.pin_ref(drv["return_pins"], self.notes,
                                        f"Return of {l['refdes']} on {name}")
                       if drv.get("return_pins") else None)
+            groups, package = ([], {}) if drv else self._die_supplies(l, label, current)
             self.setup.loads.append(Load(label, supply, current,
                                          **self._tolerance(rail, l, label),
                                          ground=ground or self._ground(returns,
                                                                        rail.get("ground")),
+                                         groups=groups,
                                          current_max=self.max_current.get(label),
                                          current_known=label not in self.unknown_current
                                          and label not in self.static_current,
-                                         copper_margin_v=self._copper_margin(l, label)))
+                                         copper_margin_v=self._copper_margin(l, label),
+                                         package_ohms=package))
             self._probe(l, label, supply, self.setup.loads[-1].ground)
         for pin in rail.get("offboard_pins", []):
             supply = self.idx.pin_ref([pin], self.notes, f"Off-board pin {pin} on {name}")
@@ -928,6 +931,54 @@ class TomachiePdnImporter:
                                              ground=self._ground(supply.ref,
                                                                  rail.get("ground")),
                                              current_known=False))
+
+    def _die_supplies(self, l: dict, label: str, current: float):
+        """A load's balls by die supply (revision 18), as pin groups, and each ball's package
+        resistance by pin number.
+
+        Balls the board joins on one net can feed different supplies inside the part
+        (MB2059 U7: F8/F10 VDDIO3, F14 VDDIO1, 1G1.. VDD on VDDIO). Each supply is its own
+        group, so two supplies are never one node. The load's current is the group's whose
+        row names it (``current_is`` "this_supply"); a supply with none stated draws 0 A and
+        is named in the notes. When the file names no one supply for the current, the load
+        stays one tied group. A ball's package resistance is its terminal's (all its balls
+        in parallel) times the terminal's ball count: an equal share, stated as such."""
+        die = l.get("die_supplies")
+        if not isinstance(die, list) or not die:
+            return [], {}
+        ref = l["refdes"]
+        package: Dict[str, float] = {}
+        shared = []
+        for g in die:
+            pkg = g.get("package") if isinstance(g.get("package"), dict) else None
+            ohms, n = (number(pkg.get("ohms")), number(pkg.get("balls_in_terminal"))) if pkg \
+                else (None, None)
+            if ohms and n:
+                shared.append(g.get("name", "?"))
+                for p in g.get("pins", []):
+                    package[p.split("_", 1)[1] if p.startswith(ref + "_") else p] = ohms * n
+        if shared:
+            self.notes.append(f"{label}: package resistance per ball is its terminal's times "
+                              f"its ball count (an equal share) for {', '.join(shared)}")
+        owners = [g for g in die if g.get("current_is") == "this_supply"]
+        if len(die) < 2 or len(owners) != 1:
+            if len(die) >= 2:
+                self.notes.append(f"{label}: {len(die)} die supplies, but the file names none "
+                                  "as the current's; solved as one node")
+            return [], package
+        groups, unstated = [], []
+        mx = self.max_current.get(label)
+        for g in die:
+            pins = [p.split("_", 1)[1] if p.startswith(ref + "_") else p for p in g.get("pins", [])]
+            mine = g is owners[0]
+            if not mine:
+                unstated.append(g.get("name", "?"))
+            groups.append(PinGroup(pins, current if mine else 0.0, g.get("name", ""),
+                                   (mx if mine else 0.0) if mx is not None else None))
+        self.notes.append(f"{label}: its current is {owners[0].get('name')}'s; "
+                          f"{', '.join(unstated)} draw{'s' if len(unstated) == 1 else ''} "
+                          "none stated (0 A solved)")
+        return groups, package
 
     def _copper_margin(self, l: dict, label: str) -> Optional[float]:
         """The load's pre-layout copper margin, volts: what its supply copper and ground

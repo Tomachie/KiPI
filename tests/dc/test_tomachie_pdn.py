@@ -815,3 +815,38 @@ def test_the_setup_names_the_power_tree_it_came_from(tmp_path):
     assert "2026-10-27" in src and "format revision 2" in src
     assert PISetup.from_dict(setup.to_dict()).import_source == src
     assert f"Power tree: {src}" in source_meta(setup) and source_meta(PISetup()) == ""
+
+
+def _die_load(**over):
+    l = {"role": "ic", "refdes": "U7", "pins": ["U7_F8", "U7_F10", "U7_1G1", "U7_1G3"],
+         "die_supplies": [
+             {"name": "VDDIO3", "pins": ["U7_F8", "U7_F10"], "grouped_by": "package_model",
+              "package": {"ohms": 0.0485, "balls_in_terminal": 2}, "current_is": "not_stated"},
+             {"name": "VDD", "pins": ["U7_1G1", "U7_1G3"], "grouped_by": "package_model",
+              "package": {"ohms": 0.009, "balls_in_terminal": 4}, "current_is": "this_supply"}]}
+    l.update(over)
+    return l
+
+
+def test_die_supplies_are_separate_groups_with_their_own_current_and_package():
+    """MB2059 U7 on VDDIO: IDD is VDD's (1G1..), VDDIO3's balls (F8, F10) draw none stated,
+    and each ball's package resistance is its terminal's times the terminal's balls."""
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    imp.max_current["U7"] = 0.0029
+    groups, package = imp._die_supplies(_die_load(), "U7", 0.00235)
+    assert [(g.name, g.pins, g.current, g.current_max) for g in groups] == [
+        ("VDDIO3", ["F8", "F10"], 0.0, 0.0), ("VDD", ["1G1", "1G3"], 0.00235, 0.0029)]
+    assert package == {"F8": pytest.approx(0.097), "F10": pytest.approx(0.097),
+                       "1G1": pytest.approx(0.036), "1G3": pytest.approx(0.036)}
+    assert any("VDD's" in n and "VDDIO3 draws none stated" in n for n in imp.notes)
+    assert any("equal share" in n for n in imp.notes)
+
+
+def test_die_supplies_with_no_named_owner_stay_one_node():
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    load = _die_load()
+    for g in load["die_supplies"]:
+        g["current_is"] = "the_load_s"
+    groups, _package = imp._die_supplies(load, "U7", 0.00235)
+    assert groups == []
+    assert any("names none as the current's" in n for n in imp.notes)
