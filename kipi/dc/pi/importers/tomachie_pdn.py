@@ -970,14 +970,26 @@ class TomachiePdnImporter:
         mx = self.max_current.get(label)
         for g in die:
             pins = [p.split("_", 1)[1] if p.startswith(ref + "_") else p for p in g.get("pins", [])]
-            mine = g is owners[0]
-            if not mine:
-                unstated.append(g.get("name", "?"))
-            groups.append(PinGroup(pins, current if mine else 0.0, g.get("name", ""),
-                                   (mx if mine else 0.0) if mx is not None else None))
-        self.notes.append(f"{label}: its current is {owners[0].get('name')}'s; "
-                          f"{', '.join(unstated)} draw{'s' if len(unstated) == 1 else ''} "
-                          "none stated (0 A solved)")
+            name = g.get("name", "")
+            if g is owners[0]:
+                groups.append(PinGroup(pins, current, name, mx))
+                continue
+            est = amps(g.get("current")) if g.get("current_is") == "estimated" else None
+            if est is not None:
+                # An I/O bank with no data-sheet current: Tomachie's estimate (connected
+                # bank pins x an assumed drive and duty) - the designer's to change.
+                est_max = amps(g.get("current_max"))
+                groups.append(PinGroup(pins, est, name, est_max if est_max is not None else est))
+                why = (g.get("current") or {}).get("conditions", "") \
+                    if isinstance(g.get("current"), dict) else ""
+                self.notes.append(f"{label} [{name}]: {_amps(est)} ESTIMATED, not a data-sheet "
+                                  f"figure ({why}); change it to the bank's real current")
+                continue
+            unstated.append(name or "?")
+            groups.append(PinGroup(pins, 0.0, name, 0.0 if mx is not None else None))
+        self.notes.append(f"{label}: its current is {owners[0].get('name')}'s"
+                          + (f"; {', '.join(unstated)} draw{'s' if len(unstated) == 1 else ''} "
+                             "none stated (0 A solved)" if unstated else ""))
         return groups, package
 
     def _copper_margin(self, l: dict, label: str) -> Optional[float]:

@@ -850,3 +850,15 @@ def test_die_supplies_with_no_named_owner_stay_one_node():
     groups, _package = imp._die_supplies(load, "U7", 0.00235)
     assert groups == []
     assert any("names none as the current's" in n for n in imp.notes)
+
+
+def test_an_estimated_bank_draws_its_estimate_and_says_so():
+    """MB2059 U7 VDDIO3: no data-sheet current; Tomachie estimates its 11 connected bank pins
+    at 2 mA x 50 %, and KiPI solves it at VDDIO3's own balls, flagged for the designer."""
+    imp = TomachiePdnImporter(copy.deepcopy(PDN), board())
+    load = _die_load()
+    load["die_supplies"][0].update(current_is="estimated", current={
+        "amps": 0.011, "basis": "estimated", "conditions": "11 of 12 VDDIO3 bank pins connected"})
+    groups, _package = imp._die_supplies(load, "U7", 0.00235)
+    assert [(g.name, g.current) for g in groups] == [("VDDIO3", 0.011), ("VDD", 0.00235)]
+    assert any("[VDDIO3]" in n and "ESTIMATED" in n and "11 of 12" in n for n in imp.notes)
