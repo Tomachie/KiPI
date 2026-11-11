@@ -943,3 +943,14 @@ def test_no_via_plating_in_the_file_keeps_the_rules():
     setup, notes = run(copy.deepcopy(PDN))
     assert {r.kind: r.plating_mm for r in setup.settings.via_rules}["through"] == pytest.approx(0.020)
     assert not any("Via plating" in n for n in notes)
+
+
+def test_the_file_turns_on_own_ground_regulation_and_tied_load_pads():
+    """Without the file KiPI holds each VRM above 0 V and shares a load's current equally
+    over its pads; a pdn.json describes the parts, so its import regulates above each VRM's
+    own ground pins and ties each load's pads into one node."""
+    assert not PISetup().settings.regulate_above_own_ground
+    assert not PISetup().settings.tie_load_pads
+    setup, notes = run(copy.deepcopy(PDN))
+    assert setup.settings.regulate_above_own_ground and setup.settings.tie_load_pads
+    assert any("regulates above its own ground pins" in n for n in notes)
