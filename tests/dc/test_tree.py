@@ -1,3 +1,4 @@
+# Portions Copyright (c) 2026 Tomachie LLC.
 """Power-tree solves against closed-form results."""
 
 import math
@@ -10,7 +11,9 @@ from kipi.dc.pi.model import (
     DcLink, Load, PinRef, PISetup, Vrm, net_groups, validate, vin_range,
 )
 from kipi.core.model.spice import constant_drop_ref
-from kipi.dc.pi.tree import NOT_CONVERGED, OUT_OF_REGULATION, _mean_v, solve_tree
+from kipi.dc.pi.tree import (
+    ACCURACY_NOT_GUARANTEED, NOT_CONVERGED, OUT_OF_REGULATION, _mean_v, solve_tree,
+)
 from kipi.dc.solver.fem import SolveError
 
 from tree_boards import R, board, by_name, isolated_board, isolated_setup, pad, setup
@@ -253,14 +256,36 @@ def test_per_pin_group_currents():
 
     # The same total split equally gives a different (and wrong for this part) answer.
     s2 = setup("ldo")
+    s2.settings.tie_load_pads = False
     s2.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 1.0)
     eq = by_name(solve_tree(board_two_pin(), s2).loads, "U2")
     assert eq.v_worst == pytest.approx(v_mid - 0.5 * R(4), rel=1e-9)
 
 
-def _sensed_at_end(*loads):
+def test_tied_pins_draw_what_their_copper_delivers():
+    # U2's two pins are one node (its package joins them): the mid pin, nearer the VRM,
+    # takes the whole 1 A; the strip on to the end pin carries none, and both pins sit
+    # at the mid pin's voltage.
+    s = setup("ldo")
+    s.settings.tie_load_pads = True
+    s.loads[0] = Load("U2", PinRef("U2", "+3V3", []), 1.0)
+    res = solve_tree(board_two_pin(), s)
+    ld = by_name(res.loads, "U2")
+    v_mid = 3.3 - 1.0 * R(3)
+    assert ld.v_low == pytest.approx(v_mid, rel=1e-9)
+    assert ld.v_high == pytest.approx(v_mid, rel=1e-9)
+    term = next(t for g in res.groups.values() for t in g.result.fields.terminals
+                if t.name == "U2" and t.kind == "load")
+    assert term.i_solved
+    amps = dict(zip(term.pad_ids, term.i_pads))
+    assert amps["u2_3"] == pytest.approx(1.0, rel=1e-6)
+    assert amps["u2_1"] == pytest.approx(0.0, abs=1e-6)
+
+
+def _sensed_at_end(*loads, tied=True):
     """board_two_pin() with U1 sensing at U2's end pin (x 21) and the given loads."""
     s = setup("ldo", sense=True)
+    s.settings.tie_load_pads = tied
     s.loads[:] = loads
     return solve_tree(board_two_pin(), s)
 
@@ -284,7 +309,8 @@ def test_pins_before_the_sense_point_are_boosted():
 
 def test_worst_pin_is_furthest_from_nominal_either_way():
     # One load on both pins, sensed at the end pin: the end sits at 3.3 V, the mid pin above.
-    res = _sensed_at_end(Load("U2", PinRef("U2", "+3V3", ["1", "3"]), 1.0, tol_min=-1.0, tol_max=1.0))
+    res = _sensed_at_end(Load("U2", PinRef("U2", "+3V3", ["1", "3"]), 1.0, tol_min=-1.0, tol_max=1.0),
+                         tied=False)
     ld = by_name(res.loads, "U2")
     assert ld.v_low == pytest.approx(3.3, abs=1e-9)
     assert ld.v_high == pytest.approx(3.3 + 0.5 * R(4), rel=1e-9)
@@ -360,6 +386,37 @@ def test_ldo_in_dropout_fails_the_loads_it_feeds():
     assert "dropout" in by_name(res.vrms, "U1").regulation
     ld = by_name(res.loads, "U2")
     assert ld.passed is False and ld.verdict == OUT_OF_REGULATION
+
+
+def test_ldo_above_its_dropout_below_its_input_minimum_still_regulates():
+    """Its input minimum is where its datasheet states its accuracy from: below it, and
+    above its dropout, the loads it feeds fail as accuracy not guaranteed."""
+    s = setup("ldo")
+    s.vrms[1].dropout_v, s.vrms[1].vin_min = 1.0, 13.0   # 12 V in: 8.7 V across it
+    res = solve_tree(board(), s)
+    assert by_name(res.vrms, "U1").regulation == ""
+    ld = by_name(res.loads, "U2")
+    assert ld.passed is False and ld.verdict == ACCURACY_NOT_GUARANTEED
+    assert any("where its datasheet states its output accuracy" in w for w in res.warnings)
+    s.vrms[1].dropout_v = 0.0                  # no dropout stated: the minimum is the floor
+    assert by_name(solve_tree(board(), s).loads, "U2").verdict == OUT_OF_REGULATION
+
+
+def test_worst_case_judges_ldo_dropout_at_the_high_end_of_its_accuracy():
+    """Its loads are solved at its lowest output; its dropout at its highest, where it
+    needs the most input."""
+    s = setup("ldo")
+    s.corner = "max"
+    u1 = s.vrms[1]
+    u1.acc_min, u1.acc_max, u1.acc_pct, u1.acc_dv = 3.2, 3.4, False, False
+    v_in = by_name(solve_tree(board(), s).vrms, "U1").v_in
+    u1.dropout_v = v_in - 3.3          # met at its lowest output, not at its highest
+    res = solve_tree(board(), s)
+    assert "at its highest output, 3.4 V" in by_name(res.vrms, "U1").regulation
+    assert by_name(res.loads, "U2").verdict == OUT_OF_REGULATION
+    s.corner = "typ"                   # at its set voltage: 3.3 V
+    u1.dropout_v = v_in - 3.35
+    assert by_name(solve_tree(board(), s).vrms, "U1").regulation == ""
 
 
 def test_switcher_below_its_input_minimum_fails_the_loads_it_feeds():
@@ -578,3 +635,13 @@ def test_isolated_converter_with_an_excluded_input_becomes_a_source():
     assert (u1.kind, u1.input, u1.input_ground) == ("source", None, None)
     assert u1.ground == PinRef("U1", "ISOGND", ["4"])
     assert validate(out) == []
+
+
+def test_return_drop_is_measured_from_the_feeding_vrms_ground():
+    """J1's ground (x 0..1) is the 0 V reference; U1's (x 10..11) and U2's (x 21..22) sit
+    further along the GND strip. v_ground is U2's ground above 0 V; return_drop only the
+    copper from U1's ground to U2's, as a tool measuring from the source's return has it."""
+    res = solve_tree(board(), setup("ldo", ground=True))
+    u2 = by_name(res.loads, "U2")
+    assert u2.v_ground is not None and u2.return_drop is not None
+    assert 0.0 < u2.return_drop < u2.v_ground

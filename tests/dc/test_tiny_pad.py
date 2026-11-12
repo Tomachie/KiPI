@@ -1,4 +1,3 @@
-# Copyright (c) 2026 Tomachie LLC.
 """A terminal pad smaller than the mesh still holds a node."""
 
 from shapely.geometry import box

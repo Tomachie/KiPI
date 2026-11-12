@@ -25,7 +25,7 @@ PARDISO_TITLE = "PARDISO, a faster solver for large boards (optional)"
 PARDISO_PROS = [
     "Solves large rails several times faster: one 645k-unknown solve drops from about 8 s "
     "to 1.2 s, and a four-iteration electro-thermal run from about 90 s to 34 s.",
-    "Uses every processor core, and solves rails of up to 1M unknowns directly (200k "
+    "Uses every processor core, and solves rails of up to 3M unknowns directly (200k "
     "without it, beyond which KiPI switches to a slower iterative solver).",
 ]
 PARDISO_CONS = [

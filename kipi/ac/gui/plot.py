@@ -250,6 +250,8 @@ class ImpedancePlot(QWidget):
             if not math.isfinite(tk):
                 if c.above_hz and fk < c.above_hz:
                     why = f"only above the VRM bandwidth, {_eng_hz(c.above_hz)}"
+                elif getattr(c, "from_hz", None) and fk < c.from_hz:
+                    why = f"only from {_eng_hz(c.from_hz)}"
                 else:
                     why = f"not above {_eng_hz(c.target_hz)}"
                 rows.append(("Target", f"none here ({why})"))

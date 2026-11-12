@@ -4,6 +4,11 @@
 
 # KiPI — DC, AC and Coupled Noise Power Integrity Simulator (Standalone or KiCad Plugin)
 
+> **This is a fork of [drewsum/KiPI](https://github.com/drewsum/KiPI)**, written by Drew
+> Maatman, the original author, with changes by Tomachie LLC: an import of Tomachie
+> power-tree files (`<design>.pdn.json`), a worst-case solve, and fixes. It follows his
+> `main`; the rest of this README is Drew's.
+
 [![CI](https://github.com/drewsum/KiPI/actions/workflows/ci.yml/badge.svg)](https://github.com/drewsum/KiPI/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![KiCad 9.0.3+](https://img.shields.io/badge/KiCad-9.0.3%2B-314cb0.svg?logo=kicad&logoColor=white)](#requirements)
@@ -121,9 +126,10 @@ you uninstall KiPI in PCM.
    ln -s "<path to this repo>" ~/.local/share/kicad/10.0/plugins/KiPI       # Linux
    ```
 
-   Or, without git, download `KiPI-<version>.zip` from the
-   [latest release](https://github.com/drewsum/KiPI/releases/latest) and unzip it into the
-   plugins folder, which gives `plugins/KiPI`.
+   Or, without git, download this fork's
+   [source zip](https://github.com/Tomachie/KiPI/archive/refs/heads/main.zip), unzip it
+   into the plugins folder and rename `KiPI-main` to `KiPI`, which gives `plugins/KiPI`.
+   (Drew's releases do not have this fork's changes.)
 
 3. Restart the PCB editor. KiCad makes the plugin's Python environment in the background
    with only what KiPI needs to start (kicad-python), so the **KiPI** toolbar button appears
@@ -144,8 +150,8 @@ you uninstall KiPI in PCM.
 1. Install **Python 3.10 to 3.13** if you do not have one (from
    [python.org](https://www.python.org/downloads/), or your package manager). On Linux, add
    `python3-venv` (Debian, Ubuntu) and, for the setup window, `python3-tk`.
-2. Put the KiPI folder anywhere: clone this repo, or unzip `KiPI-<version>.zip` from the
-   [latest release](https://github.com/drewsum/KiPI/releases/latest).
+2. Put the KiPI folder anywhere: clone this repo, or unzip this fork's
+   [source zip](https://github.com/Tomachie/KiPI/archive/refs/heads/main.zip).
 3. Start KiPI with its launcher: double-click **`kipi_launcher.pyw`** (Windows), or run
 
    ```sh
@@ -199,11 +205,13 @@ folder next to the environment.
 
 ### Optional: faster solves on large boards (Windows and Linux, x86-64)
 
-If the optional [`pypardiso`](https://pypi.org/project/pypardiso/) package is installed,
-KiPI solves with Intel MKL's multithreaded PARDISO solver in place of SciPy's
-single-threaded one. On a 645k-unknown rail one solve drops from about 8 s to 1.2 s. Small
-boards gain little. It costs about 210 MB of download on Windows (320 MB on Linux) and
-there are no MKL packages for macOS or ARM.
+KiPI solves each rail with SciPy's single-threaded sparse solver, or with AMG when a rail
+has more than 200k unknowns. If the optional [`pypardiso`](https://pypi.org/project/pypardiso/)
+package is installed, KiPI uses Intel MKL's multithreaded PARDISO solver instead, and for
+rails of up to 3M unknowns. On a 645k-unknown rail one solve drops from about 8 s to 1.2 s,
+and a four-iteration electro-thermal run from about 90 s to 34 s; a 10-layer board's
+1.9M-unknown ground plane takes about 70 s, where AMG took about 30 minutes. Small boards
+gain little.
 
 KiPI installs it by default where it can, with an opt-out: in the launcher's first setup
 standalone, or in a prompt the first time the plugin opens. *About → Manage dependencies…*
@@ -320,9 +328,12 @@ can make quick work of power tree modelling by editing this file directly.
 
 ### 4. Solve
 
-Click **Solve all**. Every rail is meshed and solved, downstream loads first, so each VRM's
-input current includes everything it feeds. Progress streams into the log; **Cancel** stops
-the run.
+Choose **Typical** or **Worst case (max)** beside Solve all. Worst case solves each load at its **Max current** and each DC connection at its **Max resistance**; where no maximum is given the typical value is solved and the Notes tab names those items. The Loads table's **Current** column says which value each load was solved at. A Tomachie pdn.json import fills in both.
+
+Click **Solve all** (If rails are unticked in the Solve
+tab, Solve x of n will be displayed). Every rail is meshed and solved, the downstream loads first and then
+back towards the source, so each VRM's input current includes everything it feeds. Progress
+and solver residuals stream into the log; **Cancel** stops the run.
 
 Click **Report** to write an HTML report next to the board, or choose **PDF**. The HTML
 report is a single portable file with the summary and every results table, an interactive 3D
