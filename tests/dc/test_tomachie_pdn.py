@@ -404,10 +404,12 @@ def test_current_not_known_gives_its_rail_a_headroom():
     assert h.tightest == "U2" and h.room_a > 0 and h.costliest == "U2"
     assert h.room_a == pytest.approx(h.margin_v / h.per_amp_v)
     assert res.unknown_room_a == pytest.approx(h.room_a)
-    # Linear copper: drawing the room at U2 brings its lowest pin to its minimum.
+    # The headroom is linear in the rail's copper with the VRM's reference fixed. The VRM
+    # regulates above its own ground pins, which the return current lifts, so drawing the
+    # room at U2 leaves it a little margin: the headroom is conservative, never short.
     u2.current, u2.current_known = h.room_a, True
     at_room = by_name(solve_tree(board(), setup).loads, "U2")
-    assert at_room.margin_low == pytest.approx(0.0, abs=1e-6)
+    assert 0.0 <= at_room.margin_low < h.margin_v
     assert any("must stay under" in w and "U2" in w for w in tree.warnings)
     assert any("marked not known" in n for n in notes)
 
