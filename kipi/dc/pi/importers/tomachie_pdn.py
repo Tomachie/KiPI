@@ -58,7 +58,7 @@ from kipi.dc.pi.importers.tomachie_ac import (
 )
 
 from kipi.dc.pi.importers.pdn_figures import (
-    amps, curve_points, dc_resistance, forward_drop, number, rated_current,
+    amps, curve_points, dc_resistance, forward_drop, hoist_details, number, rated_current,
 )
 from kipi.dc.pi.model import (
     GROUND_REF_KINDS, SWITCHING_KINDS, DcLink, Load, PinGroup, PinRef, PISetup, Vrm, group_name,
@@ -128,7 +128,7 @@ class TomachiePdnImporter:
             raise PdnImportError(f"Not a {SCHEMA} version {SCHEMA_VERSION} file "
                                  f"(schema {pdn.get('schema')!r}, "
                                  f"version {pdn.get('schema_version')!r})")
-        self.pdn = pdn
+        self.pdn = pdn = hoist_details(pdn)      # revision 21 details, read as flat
         self.idx = PadIndex(snap)
         self.notes: List[str] = []
         # Only the power tree is replaced: solve settings, thermal, the report option, the

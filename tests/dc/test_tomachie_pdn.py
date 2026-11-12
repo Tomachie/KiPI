@@ -950,3 +950,50 @@ def test_the_file_turns_on_tied_load_pads():
     setup, notes = run(copy.deepcopy(PDN))
     assert setup.settings.tie_load_pads
     assert any("pads are one node" in n for n in notes)
+
+
+def _nest_details(node, groups):
+    """The revision-21 form of a file: each key named in ``groups`` ({key: group}) moved
+    under ``details.<group>`` at the level it sits on."""
+    if isinstance(node, list):
+        return [_nest_details(x, groups) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out, details = {}, {}
+    for k, v in node.items():
+        if k in groups:
+            details.setdefault(groups[k], {})[k] = _nest_details(v, groups)
+        else:
+            out[k] = _nest_details(v, groups)
+    if details:
+        out["details"] = details
+    return out
+
+
+REVISION_21_GROUPS = {"via_plating": "process", "ambient_max_c": "temp",
+                      "total_current_max": "worst_case", "total_max_complete": "worst_case",
+                      "loads_without_max_current": "worst_case", "die_supplies": "die",
+                      "copper_margin": "margin", "datasheet_currents": "datasheet",
+                      "ac": "ac", "esl": "esl", "dc_bias": "dc_bias"}
+
+
+def test_a_revision_21_file_reads_as_its_flat_form_did():
+    """What the DC import need not read sits under ``details`` from revision 21; this
+    reader lifts it and imports the file exactly as the flat form before it."""
+    pdn = copy.deepcopy(PDN)
+    pdn["ambient_max_c"] = 55
+    pdn["via_plating"] = {"through_um": 25, "blind_um": 20, "buried_um": 13, "microvia_um": 12,
+                          "basis": "user"}
+    pdn["rails"][1]["total_current_max"] = {"amps": 1.5, "basis": "max"}
+    pdn["rails"][1]["loads"][0]["copper_margin"] = {"v": 0.08, "worst_supply_v": 3.2,
+                                                    "supply_min_v": 3.0, "series_drop_v": 0.0,
+                                                    "low_end_basis": "band", "current_a": 1.0}
+    nested = _nest_details(pdn, REVISION_21_GROUPS)
+    assert "ambient_max_c" not in nested and nested["details"]["temp"]["ambient_max_c"] == 55
+    assert "copper_margin" not in nested["rails"][1]["loads"][0]
+    flat, flat_notes = run(pdn)
+    read, notes = run(nested)
+    assert read == flat and notes == flat_notes
+    assert by_name(read.loads, "U2").copper_margin_v == pytest.approx(0.08)
+    assert read.thermal.ambient_c == 55
+    assert {r.kind: r.plating_mm for r in read.settings.via_rules}["through"] == pytest.approx(0.025)

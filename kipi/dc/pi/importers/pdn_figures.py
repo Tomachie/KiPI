@@ -28,6 +28,26 @@ OHMS_PER_UNIT = {"ohm": 1.0, "ohms": 1.0, "Ω": 1.0, "mohm": 1e-3, "mΩ": 1e-3,
 _NUMBER = re.compile(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?")
 
 
+def hoist_details(node):
+    """``node`` with every ``details`` object's groups lifted beside it (revision 21: what a
+    DC import need not read - die, worst_case, margin, datasheet, ac, esl, dc_bias, process,
+    temp - sits under one ``details`` object per level). A reader that wants them reads the
+    file as if they were flat; a key already present beside ``details`` is kept. Files
+    written before revision 21 come back unchanged."""
+    if isinstance(node, list):
+        return [hoist_details(x) for x in node]
+    if not isinstance(node, dict):
+        return node
+    out = {k: hoist_details(v) for k, v in node.items() if k != "details"}
+    details = node.get("details")
+    if isinstance(details, dict):
+        for group in details.values():
+            if isinstance(group, dict):
+                for k, v in group.items():
+                    out.setdefault(k, hoist_details(v))
+    return out
+
+
 def number(value) -> Optional[float]:
     """A value field as a float; None for a word such as "unknown"."""
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
