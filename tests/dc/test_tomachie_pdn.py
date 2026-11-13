@@ -126,6 +126,21 @@ def test_path_to_rail_follows_the_chain_only():
              {"refdes": "R40", "net_in": "SW", "net_out": "FB"}]
     assert [e["refdes"] for e in path_to_rail(parts, "SW", "+5V")] == ["L1"]
 
+def test_a_diode_beside_the_fuse_is_a_bypass_and_both_fuses_are_links():
+    """cm4-robo-controller D29 sits across the motor fuse F1, anode on V_MOTOR: a regen
+    path, reverse-biased for the supply current. The walk takes F1 and leaves D29 off (a
+    user, 2026-11-12: imported as the path, D29 took the motors' 6.1 A, 3.67 W, 253 C).
+    Two parts of the same kind in parallel are both DC connections."""
+    parts = [{"refdes": "Q1", "class": "transistor", "net_in": "J1", "net_out": "PRE"},
+             {"refdes": "D29", "class": "diode", "net_in": "PRE", "net_out": "V_MOTOR"},
+             {"refdes": "F1", "class": "fuse", "net_in": "PRE", "net_out": "V_MOTOR"}]
+    assert [e["refdes"] for e in path_to_rail(parts, "J1", "V_MOTOR")] == ["Q1", "F1"]
+    two = [{"refdes": "F1", "class": "fuse", "net_in": "PRE", "net_out": "V"},
+           {"refdes": "F2", "class": "fuse", "net_in": "PRE", "net_out": "V"}]
+    assert [e["refdes"] for e in path_to_rail(two, "PRE", "V")] == ["F1", "F2"]
+    alone = [{"refdes": "D1", "class": "diode", "net_in": "PRE", "net_out": "V"}]
+    assert [e["refdes"] for e in path_to_rail(alone, "PRE", "V")] == ["D1"]
+
 
 @pytest.mark.parametrize("figs,expect", [
     ([{"spec": "dcr", "max": "0.080", "unit": "ohm"},
