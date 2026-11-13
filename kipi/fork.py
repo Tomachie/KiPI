@@ -14,17 +14,3 @@ TAG = "tomachie.8"
 BY = "Tomachie LLC"
 REPO = "https://github.com/Tomachie/KiPI"
 VERSION = f"{__version__}+{TAG}"
-# How this fork's DC model differs from the release it is built on, for About and the
-# reports. Every item reads from a Tomachie power-tree file (pdn.json) and is off without one.
-DIFFERS = (
-    "Die and package model: each ball of a load joins its die through its package resistance "
-    "(the maker's IBIS package model), so a ball with poor copper shows its own drop; die "
-    "supplies are separate pin groups with their own currents, I/O bank currents on top",
-    "Worst-case corner beside the typical: maximum currents and resistances, board inputs at "
-    "their minimum through the cable allowance",
-    "Pre-layout copper margin beside the solved margin, headroom for loads of unknown current, "
-    "each load's return drop",
-    "Capacitor and series-part AC values from the makers' own model files (ESR, ESL, SRF, "
-    "impedance and inductance against DC current), via plating and ambient from the file",
-    "A load's pads are one node, as its package joins them, when the file describes the part",
-)

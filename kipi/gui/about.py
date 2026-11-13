@@ -226,7 +226,6 @@ _fetched_this_session = False
 def info_text() -> str:
     """Plain-text summary for pasting into an issue."""
     lines = [f"{NAME} {fork.VERSION}", REPO, f"Fork: {fork.REPO}"]
-    lines += [f"Fork differs: {d}" for d in fork.DIFFERS]
     lines += [f"{k}: {v}" for k, v in versions()]
     return "\n".join(lines)
 
@@ -262,8 +261,6 @@ class AboutDialog(QDialog):
             f"Source: <a href='{REPO}'>{REPO}</a><br>"
             f"Fork with changes by {fork.BY}: "
             f"<a href='{fork.REPO}'>{fork.REPO}</a><br>"
-            f"How it differs (each from a Tomachie power-tree file, off without one):<ul>"
-            + "".join(f"<li>{html.escape(d)}</li>" for d in fork.DIFFERS) + "</ul>"
             f"Report a bug: <a href='{ISSUES}'>{ISSUES}</a><br>"
             f"License: {LICENSE}</p>"
             f"<p><b>Running on</b></p><table>{dep_rows}</table>")
