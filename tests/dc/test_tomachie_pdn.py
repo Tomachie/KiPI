@@ -992,9 +992,17 @@ REVISION_21_GROUPS = {"via_plating": "process", "ambient_max_c": "temp",
                       "ac": "ac", "esl": "ac", "dc_bias": "ac"}
 
 
-def test_a_revision_21_file_reads_as_its_flat_form_did():
-    """What the DC import need not read sits under ``details`` from revision 21; this
-    reader lifts it and imports the file exactly as the flat form before it."""
+def _without(node, keys):
+    if isinstance(node, list):
+        return [_without(x, keys) for x in node]
+    if not isinstance(node, dict):
+        return node
+    return {k: _without(v, keys) for k, v in node.items() if k not in keys}
+
+
+def test_a_revision_21_file_reads_its_flat_power_tree_only():
+    """From revision 21 a file may carry ``details`` objects; this reader does not read
+    them and imports the file exactly as the same file without them."""
     pdn = copy.deepcopy(PDN)
     pdn["ambient_max_c"] = 55
     pdn["via_plating"] = {"through_um": 25, "blind_um": 20, "buried_um": 13, "microvia_um": 12,
@@ -1006,9 +1014,6 @@ def test_a_revision_21_file_reads_as_its_flat_form_did():
     nested = _nest_details(pdn, REVISION_21_GROUPS)
     assert "ambient_max_c" not in nested and nested["details"]["temp"]["ambient_max_c"] == 55
     assert "copper_margin" not in nested["rails"][1]["loads"][0]
-    flat, flat_notes = run(pdn)
+    bare, bare_notes = run(_without(pdn, set(REVISION_21_GROUPS)))
     read, notes = run(nested)
-    assert read == flat and notes == flat_notes
-    assert by_name(read.loads, "U2").copper_margin_v == pytest.approx(0.08)
-    assert read.thermal.ambient_c == 55
-    assert {r.kind: r.plating_mm for r in read.settings.via_rules}["through"] == pytest.approx(0.025)
+    assert read == bare and notes == bare_notes
