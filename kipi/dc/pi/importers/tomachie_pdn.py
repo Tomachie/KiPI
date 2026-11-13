@@ -100,22 +100,35 @@ def _return_part(load: dict) -> str:
 def path_to_rail(parts: List[dict], start: str, rail: str) -> List[dict]:
     """The parts of a regulator's ``output_path`` that lead from its output net to its
     rail, in order. Files written before Tomachie 5.137 also list parts that only hang
-    off the output node (pull-ups, feedback-divider legs); those are not on the walk."""
-    reached: Dict[str, Optional[dict]] = {start: None}
+    off the output node (pull-ups, feedback-divider legs); those are not on the walk.
+
+    Parts in PARALLEL between two nets of the walk are all on it (two fuses, a fuse and
+    a 0R): each is a DC connection and they share the current. A diode beside another
+    part is a bypass for the other direction (a regen diode across a motor fuse, anode
+    on the rail side) and carries none of the supply current: it is left off the walk.
+    A diode alone between the two nets is the path."""
+    reached: Dict[str, List[dict]] = {start: []}
     queue = deque([start])
     while queue and rail not in reached:
         net = queue.popleft()
         for e in parts:
             nxt = (e.get("net_out") if e.get("net_in") == net else
                    e.get("net_in") if e.get("net_out") == net else None)
-            if nxt and nxt not in reached:
-                reached[nxt] = dict(e, net_in=net, net_out=nxt)
+            if not nxt or nxt == net:
+                continue
+            if nxt not in reached:
+                reached[nxt] = [dict(e, net_in=net, net_out=nxt)]
                 queue.append(nxt)
+            elif reached[nxt] and reached[nxt][0]["net_in"] == net:
+                reached[nxt].append(dict(e, net_in=net, net_out=nxt))
     path: List[dict] = []
     net = rail
-    while reached.get(net) is not None:
-        path.insert(0, reached[net])
-        net = reached[net]["net_in"]
+    while reached.get(net):
+        step = reached[net]
+        if len(step) > 1 and any(e.get("class") != "diode" for e in step):
+            step = [e for e in step if e.get("class") != "diode"]
+        path = step + path
+        net = step[0]["net_in"]
     return path
 
 
